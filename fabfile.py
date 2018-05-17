@@ -10,7 +10,9 @@ from fabric.api import env, sudo
 
 env.warn_only = True # ignore exceptions and handle them yurself
 
-env.hosts = ['rejh1.srv.releng.mdc1.mozilla.com', 'rejh2.srv.releng.mdc1.mozilla.com', 'rejh1.srv.releng.scl3.mozilla.com', 'rejh2.srv.releng.scl3.mozilla.com']
+env.hosts = ['rejh1.srv.releng.mdc1.mozilla.com', 'rejh2.srv.releng.mdc1.mozilla.com',
+             'rejh1.srv.releng.mdc2.mozilla.com', 'rejh2.srv.releng.mdc2.mozilla.com',
+             'rejh1.srv.releng.scl3.mozilla.com', 'rejh2.srv.releng.scl3.mozilla.com']
 
 command = 'puppet agent -t'
 
