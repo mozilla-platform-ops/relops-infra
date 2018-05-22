@@ -15,7 +15,7 @@ for c in {1..14}; do
             continue
         fi
     fi
-    echo $c" "$nstart
+    echo $dc": "$c" "$nstart >&2
     # For linux, we are using the first 15 on each chassis.
     for i in {1..15}; do
         I=$(( nstart + i ))
@@ -25,6 +25,10 @@ for c in {1..14}; do
         hostname=${hostname_prefix}$(printf "%03g" "${I}")
         url="https://queue.taskcluster.net/v1/provisioners/releng-hardware/worker-types/${workerType}/workers/mdc${dc}/${hostname}"
         wget -q -O - "${url}" >/dev/null 2>&1 \
-            || echo "${I} ${url} : --hostname Administrator@moon-chassis-${c}.inband.releng.mdc${dc}.mozilla.com --addr c${i}n1"
+            || {
+		echo "${hostname}.test.releng.mdc${dc}.mozilla.com"
+		echo "${url}" >&2
+		echo "--hostname Administrator@moon-chassis-${c}.inband.releng.mdc${dc}.mozilla.com --addr c${i}n1" >&2
+	}
     done
 done | tee moonshot_taskcluster_state.$(date +"%H:%M:%S").log
