@@ -4,7 +4,7 @@ hostname_prefix="t-linux64-ms-"
 workerType="gecko-t-linux-talos"
 
 for c in {1..14}; do
-    dc=$(( c / 7 + 1 ))
+    dc=$(( c / 8 + 1 ))
     nstart=$(( (c - 1) * 45 ))
     if (( dc > 1 )); then
         # The last chassis in mdc1 has only 30 cartridges installed
