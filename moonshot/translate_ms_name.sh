@@ -2,7 +2,8 @@
 
 hostname_prefix="t-linux64-ms-"
 workerType="gecko-t-linux-talos"
-check_hostname=${1}
+
+: ${1?"Usage: $0 hostname[s]"}
 
 for c in {1..14}; do
     dc=$(( c / 8 + 1 ))
@@ -18,8 +19,9 @@ for c in {1..14}; do
         if ! (( c % 7 )) && (( i > 10 )); then
             break
         fi
-        hostname=${hostname_prefix}$(printf "%03g" "${I}")
-        if [[ $hostname = $check_hostname ]] || [[ $hostname = ${hostname_prefix}${check_hostname} ]]; then
+        host_number="$(printf "%03g" "${I}")"
+        hostname="${hostname_prefix}${host_number}"
+        if [[ " ${@} " =~ "${hostname}" ]] || [[ " ${@} " =~ "${host_number}" ]]; then
             echo "${hostname}.test.releng.mdc${dc}.mozilla.com https://moon-chassis-${c}.inband.releng.mdc${dc}.mozilla.com/#/node/show/overview/r/rest/v1/Systems/c${i}n1"
             echo "--hostname Administrator@moon-chassis-${c}.inband.releng.mdc${dc}.mozilla.com --addr c${i}n1" >&2
             url="https://queue.taskcluster.net/v1/provisioners/releng-hardware/worker-types/${workerType}/workers/mdc${dc}/${hostname}"
@@ -28,7 +30,6 @@ for c in {1..14}; do
             else
                 echo "Worker not found: ${url}"
             fi
-            exit 0
         fi
     done
 done
