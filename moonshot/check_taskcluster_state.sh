@@ -39,6 +39,7 @@ false && {
 		echo "${hostname}.test.releng.mdc${dc}.mozilla.com"
 		echo "${url}" >&2
 		echo "--hostname Administrator@moon-chassis-${c}.inband.releng.mdc${dc}.mozilla.com --addr c${i}n1" >&2
+        }
 	}
     done
 done | tee moonshot_taskcluster_state.$(date +"%H:%M:%S").log
