@@ -1,0 +1,152 @@
+#!/usr/bin/expect --
+
+set (--password) ""
+set (--kickstart_password) ""
+
+proc named {args defaults} {
+    upvar 1 "" ""
+    array set "" $defaults
+    foreach {key value} $args {
+        if {![info exists ($key)]} {
+            error "bad option '$key', should be one of: [lsort [array names {}]]"
+        }
+        set ($key) $value
+    }
+}
+named $argv {--password "" --kickstart_password "" --hostname "" --addr ""}
+
+if {$(--password) == ""} {
+    send_user "\rilo password: "
+    if {[gets stdin (--password)] <= 0} {
+        send_user "\rNo password entered.\n\r"
+    }
+}
+
+if {$(--kickstart_password) == ""} {
+    send_user "\rkickstart password: "
+    if {[gets stdin (--kickstart_password)] <= 0} {
+        send_user "\rNo kickstart password entered.\n\r"
+    }
+}
+
+set password $(--password)
+set kickstart $(--kickstart_password)
+set ilo $(--hostname)
+set node $(--addr)
+
+send_user "\rConnecting to $ilo to control $node ..."
+
+set force_conservative 1
+if {$force_conservative} {
+	set send_slow {1 .1}
+	proc send {ignore arg} {
+		sleep .1
+		exp_send -s -- $arg
+	}
+}
+
+set timeout 60
+spawn ssh -oStrictHostKeyChecking=no "$ilo"
+match_max 100000
+expect "password: "
+send -- "${password}\r"
+expect "hpiLO->"
+send -- "set node bootonce pxe $node\r"
+expect "hpiLO->"
+set retries 2
+while { $retries > 0 } {
+	send -- "set node power off force $node\r"
+	expect "hpiLO->"
+	set waiting 6
+	send_user "\rWaiting for power off "
+	while { $waiting > 0 } {
+	    sleep 5
+	    set waiting [ expr $waiting - 1 ]
+	    send -- "show node power $node\r"
+	    expect {
+		"*Off" { set waiting -1 }
+		"*On" { send_user "." }
+	    }
+	}
+    if { $waiting == -1 } { set retries 0 }
+    set retries [ expr $retries - 1 ]
+}
+send_user "\rPower is off"
+send_user "\n\r"
+sleep 0.5
+set retries 2
+while { $retries > 0 } {
+	send -- "set node power on $node\r"
+	expect "hpiLO->"
+	set waiting 6
+	send_user "\rWaiting for power on "
+	while { $waiting > 0 } {
+	    sleep 5
+	    set waiting [ expr $waiting - 1 ]
+	    send -- "show node power $node\r"
+	    expect {
+		"*On" { set waiting -1 }
+		"*Off" { send_user "." }
+	    }
+	}
+    if { $waiting == -1 } { set retries 0 }
+    set retries [ expr $retries - 1 ]
+}
+send_user "\rPower is on"
+send_user "\n\r"
+sleep 0.2
+expect "hpiLO->"
+send -- "connect node vsp $node\r"
+send_user "\rcheck vsp\r"
+expect "Virtual Serial Port Active: "
+send_user "\n\r"
+set timeout -1
+send_user "\rWaiting for boot menu on $node "
+for {set NUM 0} {$NUM <= 5} {incr NUM} {
+    send -- " "
+    send_user "."
+    sleep 5
+}
+set timeout -1
+sleep 2
+
+#expect "Starting drivers. Please wait, this may take a few moments....\r"
+#expect "Fetching Netboot Image\r"
+expect "\r      Press 'e' to edit the selected item, or 'c' for a command prompt.   "
+# "\[04;80H \[0m\[30m\[47m\[04;01H      Chainload Grub on EFI System Partition                                   \[0m\[37m\[40m\[04;79H\[05;01H      Install Ubuntu 16.04.0 LTS x86_64 on moonshot"
+
+send -- "\[B"
+expect "Install Ubuntu"
+send -- "e"
+set timeout 60
+expect "Press Ctrl-x to start, Ctrl-c for a command prompt or Escape to"
+expect "initrd.gz                    \[10;01H                                                                               \[11;01H                                                                               \[12;01H                                                                               \[13;01H                                                                               \[14;01H                                                                               \[15;01H                                                                               \[16;01H                                                                               \[17;01H                                                                               \[18;01H                                                                               \[04;80H \[18;80H \[04;01H"
+#expect -exact "\[0m\[30m\[40m\[2J\[01;01H\[0m\[37m\[40m\[0m\[30m\[40m\[2J\[01;01H\[0m\[37m\[40m\[20;07HPress Ctrl-x to start, Ctrl-c for a command prompt or Escape to     
+#\r      discard edits and return to the menu. Pressing Tab lists possible   
+#\r      completions.                                                        \[04;01Hsetparams 'Install Ubuntu 16.04.0 LTS x86_64 on moonshot'                      \[05;01H                                                                               \[06;01H    linuxefi images/Ubuntu-16.04.0-x86_64-server/linux ro auto=true url=http:/\\
+#\r\[07;01H/repos/repos/kickstart/ubuntu_16.04_x64_moonshot.preseed priority=critical int\\
+#\r\[08;01Herface=auto                                                                    \[09;01H    initrdefi images/Ubuntu-16.04.0-x86_64-server/initrd.gz                    \[10;01H                                                                               \[11;01H                                                                               \[12;01H                                                                               \[13;01H                                                                               \[14;01H                                                                               \[15;01H                                                                               \[16;01H                                                                               \[17;01H                                                                               \[18;01H                                                                               \[04;80H \[18;80H \[04;01H"
+sleep 1
+send -- "\[B"
+expect -exact "\[05;01H"
+send -- "\[B"
+expect -exact "\[06;01H"
+send -- "\[B"
+expect -exact "\[09;01H"
+send -- "\[D"
+expect -exact "\[08;12H"
+send -- " "
+sleep 1
+send -- "PUPPET_PASS="
+sleep 1
+send -- "$kickstart"
+sleep 1
+send -- ""
+send_user "\rInitiated boot ..."
+sleep 3
+send -- "("
+expect "hpiLO->"
+send -- "exit\r"
+expect eof
+send_user "\rFinished $ilo $node"
+
