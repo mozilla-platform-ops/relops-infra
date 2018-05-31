@@ -3,7 +3,10 @@
 # https://gist.github.com/catlee/9f85b4d51425a41cdc33ab8c7b754507/revisions
 
 from __future__ import print_function
+
+import datetime
 from taskcluster import Queue
+from taskcluster.exceptions import TaskclusterRestFailure
 from taskcluster.utils import fromNow
 from argparse import ArgumentParser
 
@@ -28,9 +31,20 @@ def main():
         quarantineUntil = fromNow('-1 hours')
 
     q = Queue()
+    expire = datetime.datetime.now() + datetime.timedelta(62) # roughly 2 months
 
     for worker_id in args.workers:
-        res = q.quarantineWorker(args.provisioner, args. worker_type,
+        try:
+            res = q.getWorker(args.provisioner, args.worker_type, args.worker_group, worker_id)
+        except TaskclusterRestFailure as e:
+            if 'ResourceNotFound' in repr(e):
+                # Create a dummy if the worker is not in taskcluster
+                q.declareWorker(args.provisioner, args.worker_type, args.worker_group, worker_id, {"expires":expire})
+            else:
+                print('getWorker failed: {}'.format(e))
+                continue
+
+        res = q.quarantineWorker(args.provisioner, args.worker_type,
                                  args.worker_group, worker_id,
                                  payload={'quarantineUntil': quarantineUntil })
         if 'quarantineUntil' in res:
