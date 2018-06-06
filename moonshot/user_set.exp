@@ -1,0 +1,90 @@
+#!/usr/bin/expect --
+
+set (--password) ""
+set (--userpassword) ""
+
+proc named {args defaults} {
+    upvar 1 "" ""
+    array set "" $defaults
+    foreach {key value} $args {
+        if {![info exists ($key)]} {
+            error "bad option '$key', should be one of: [lsort [array names {}]]"
+        }
+        set ($key) $value
+    }
+}
+named $argv {--hostname "" --password "" --user "" --userpassword "" --type "operator"}
+
+if {$(--password) == ""} {
+    send_user "\rilo password: "
+    if {[gets stdin (--password)] <= 0} {
+        send_user "\rNo ilo password entered.\n\r"
+    }
+}
+
+if {$(--userpassword) == ""} {
+    send_user "\ruser password: "
+    if {[gets stdin (--userpassword)] <= 0} {
+        send_user "\rNo user password entered.\n\r"
+    }
+}
+
+set ilo $(--hostname)
+set password $(--password)
+set user $(--user)
+set userpassword $(--userpassword)
+set usertype $(--type)
+
+send_user "\rConnecting to $ilo to set up user $user ...\n\r"
+
+set force_conservative 1
+if {$force_conservative} {
+    set send_slow {1 .1}
+    proc send {ignore arg} {
+        sleep .1
+        exp_send -s -- $arg
+    }
+}
+
+set timeout 30
+spawn ssh -oStrictHostKeyChecking=no "$ilo"
+match_max 100000
+expect "password: "
+send -- "${password}\r"
+expect "hpiLO->"
+send -- "show user $user\r"
+expect {
+    "*User Name: $user" {
+        send_user "$user found.\n\r"
+        send -- "set user password $user $userpassword\r"
+        expect "User: \"$user\" password set."
+    }
+    "*User: Unable to show user information." {
+        send -- "add user $user $userpassword\r"
+        expect "User: \"$user\" added."
+        send_user "\rUser created"
+    }
+}
+send -- "show user $user\r"
+expect {
+    "*Status: Disabled" {
+        send -- "enable user $user\r"
+        expect "User: \"$user\" enabled."
+        send_user "Enabled $user\n\r"
+    }
+    "*Status: Enabled" {
+        send_user "$user is enabled\n\r"
+    }
+}
+send -- "set user privilege $user $usertype\r"
+expect "privileges set"
+send -- "show user $user\r"
+
+#send -- "remove user access $user chassis sA,B\r"
+#expect "User: Access removed."
+
+#send -- "show user $user\r"
+
+send_user "\n\r"
+
+send -- "exit\r"
