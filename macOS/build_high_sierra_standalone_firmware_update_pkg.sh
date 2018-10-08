@@ -26,8 +26,8 @@ cat <<EOF >> /tmp/HighSierraFirmwareUpdateStandalone/scripts/postinstall
 #!/bin/sh
 
 # run as root; firmware will be install on next boot
-/usr/libexec/FirmwareUpdateLauncher -p "$PWD/Tools"
-/usr/libexec/efiupdater -p "$PWD/Tools/EFIPayloads"
+/usr/libexec/FirmwareUpdateLauncher -p "\$PWD/Tools"
+/usr/libexec/efiupdater -p "\$PWD/Tools/EFIPayloads"
 
 exit 0
 EOF
