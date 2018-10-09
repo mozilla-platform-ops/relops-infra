@@ -28,8 +28,8 @@ cat <<EOF >> /tmp/${MACOS_NAME}FirmwareUpdateStandalone/scripts/postinstall
 
 # run as root; firmware will be install on next boot
 # make sure FirmwareUpdateLauncher exists; does not come installed on yosemite
-/usr/libexec/FirmwareUpdateLauncher -p "$PWD/Tools"
-/usr/libexec/efiupdater -p "$PWD/Tools/EFIPayloads"
+/usr/libexec/FirmwareUpdateLauncher -p "\$PWD/Tools"
+/usr/libexec/efiupdater -p "\$PWD/Tools/EFIPayloads"
 
 exit 0
 EOF
