@@ -1,0 +1,114 @@
+#!/usr/bin/expect --
+
+set (--password) ""
+
+proc named {args defaults} {
+    upvar 1 "" ""
+    array set "" $defaults
+    foreach {key value} $args {
+        if {![info exists ($key)]} {
+            error "bad option '$key', should be one of: [lsort [array names {}]]"
+        }
+        set ($key) $value
+    }
+}
+named $argv {--password "" --hostname "" --addr ""}
+
+if {$(--password) == ""} {
+    send_user "\rilo password: "
+    if {[gets stdin (--password)] <= 0} {
+        send_user "\rNo password entered.\n\r"
+    }
+}
+
+set password $(--password)
+set ilo $(--hostname)
+set node $(--addr)
+
+send_user "\rConnecting to $ilo to control $node ..."
+
+set force_conservative 1
+if {$force_conservative} {
+	set send_slow {1 .1}
+	proc send {ignore arg} {
+		sleep .1
+		exp_send -s -- $arg
+	}
+}
+
+set timeout 60
+spawn ssh -oStrictHostKeyChecking=no "$ilo"
+match_max 100000
+expect "password: "
+send -- "${password}\r"
+
+expect "hpiLO->"
+set waiting 6
+send_user "\rIs power on? "
+while { $waiting > 0 } {
+    sleep 5
+    set waiting [ expr $waiting - 1 ]
+    send -- "show node power $node\r"
+    expect {
+	"*On" { set waiting -1 }
+	"*Off" { send_user "." }
+    }
+}
+if { $waiting == -1 } {
+    send_user "\rpower is on. "
+} else {
+    send -- "exit\r"
+    exit 1
+}
+
+expect "hpiLO->"
+set retries 2
+while { $retries > 0 } {
+	send -- "set node power off force $node\r"
+	expect "hpiLO->"
+	set waiting 6
+	send_user "\rWaiting for power off "
+	while { $waiting > 0 } {
+	    sleep 5
+	    set waiting [ expr $waiting - 1 ]
+	    send -- "show node power $node\r"
+	    expect {
+		"*Off" { set waiting -1 }
+		"*On" { send_user "." }
+	    }
+	}
+    if { $waiting == -1 } { set retries 0 }
+    set retries [ expr $retries - 1 ]
+}
+send_user "\rPower is off"
+send_user "\n\r"
+sleep 5
+set retries 2
+while { $retries > 0 } {
+	send -- "set node power on $node\r"
+	expect "hpiLO->"
+	set waiting 6
+	send_user "\rWaiting for power on "
+	while { $waiting > 0 } {
+	    sleep 5
+	    set waiting [ expr $waiting - 1 ]
+	    send -- "show node power $node\r"
+	    expect {
+		"*On" { set waiting -1 }
+		"*Off" { send_user "." }
+	    }
+	}
+    if { $waiting == -1 } { set retries 0 }
+    set retries [ expr $retries - 1 ]
+}
+send_user "\rPower is on"
+send_user "\n\r"
+expect "hpiLO->"
+send -- "exit\r"
+expect eof
+send_user "\rFinished $ilo $node"
+if { $status == 0 } {
+  exit 0
+} else {
+  exit 1
+}
