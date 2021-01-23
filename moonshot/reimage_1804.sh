@@ -15,6 +15,6 @@ boot_params=""
 
 for node in $@; do
     echo $node
-    ./reimage_1804.exp --chassis relops@${hostname} --node C1N$node --boot-params "$boot_params" \
+    ./reimage_1804.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
         | tee ${0%%.sh}.$chassis.$node.$(date +"%H:%M:%S").log
 done
