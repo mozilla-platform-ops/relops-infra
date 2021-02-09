@@ -3,6 +3,12 @@
 hostname_prefix="t-linux64-ms-"
 workerType="gecko-t-linux-talos"
 
+if [[ "${1}" -eq "win" ]]; then
+hostname_prefix="T-W1064-MS-"
+workerType="gecko-t-win10-64-hw"
+	shift
+fi
+
 : ${1?"Usage: $0 hostname[s]"}
 
 for c in {1..14}; do
@@ -14,7 +20,7 @@ for c in {1..14}; do
         nstart=$(( nstart - 15 ))
     fi
     # For linux, we are using the first 15 on each chassis.
-    for i in {1..15}; do
+    for i in {1..45}; do
         I=$(( nstart + i ))
         if ! (( c % 7 )) && (( i > 10 )); then
             break

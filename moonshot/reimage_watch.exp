@@ -75,7 +75,10 @@ while { $retries > 0 } {
 }
 send_user "\rPower is off"
 send_user "\n\r"
-sleep 0.5
+send -- "set node bootonce pxe $node\r"
+expect "bootonce: PXE"
+expect "hpiLO->"
+sleep 5
 set retries 2
 while { $retries > 0 } {
 	send -- "set node power on $node\r"
@@ -109,8 +112,7 @@ for {set NUM 0} {$NUM <= 5} {incr NUM} {
     send_user "."
     sleep 5
 }
-set timeout -1
-sleep 2
+set timeout 300
 
 #expect "Starting drivers. Please wait, this may take a few moments....\r"
 #expect "Fetching Netboot Image\r"
@@ -144,11 +146,10 @@ sleep 4
 send -- "$kickstart"
 sleep 5
 send -- ""
-send_user "\rInitiated boot ..."
-sleep 8
-send -- "("
+sleep 60
+#send -- "("
 expect "hpiLO->"
-send -- "exit\r"
-expect eof
-send_user "\rFinished $ilo $node"
+#send -- "exit\r"
+#expect eof
+#send_user "\rFinished $ilo $node"
 
