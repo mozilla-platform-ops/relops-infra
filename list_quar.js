@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 // example usage:
-// ./quarantine_tc.js gecko-t-linux-talos mdc1 "1 year" "1 day" t-linux64-ms{226..240}
-//
+// node list_quar.js gecko-t-linux-talos  # to list quarantined workers
+// node list_quar.js gecko-t-linux-talos 1 # to list non-quarantined workers
 
 var taskcluster = require('taskcluster-client');
 taskcluster.config(taskcluster.fromEnvVars());
