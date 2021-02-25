@@ -1,6 +1,5 @@
 #!/bin/bash
 
-sshkey=/home/mcornmesser/moonshot_audit/ssh/ilo_id_rsa
 work_dir=work_dir
 remote_script_dir=c:\\programdata\\puppetlabs\\ronin\\audit
 remote_restore_script=$remote_script_dir\\force_restore.ps1
