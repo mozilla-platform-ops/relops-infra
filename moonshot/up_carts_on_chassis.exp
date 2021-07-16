@@ -1,0 +1,75 @@
+#!/usr/bin/expect --
+
+set force_conservative 1
+if {$force_conservative} {
+	set send_slow {1 .1}
+	proc send {ignore arg} {
+		sleep .1
+		exp_send -s -- $arg
+	}
+}
+
+set timeout 120
+match_max 100000
+
+set (--password) ""
+
+proc named {args defaults} {
+    upvar 1 "" ""
+    array set "" $defaults
+    foreach {key value} $args {
+        if {![info exists ($key)]} {
+            error "bad option '$key', should be one of: [lsort [array names {}]]"
+        }
+        set ($key) $value
+    }
+}
+named $argv {--password "" --hostname "" --nodes ""}
+
+if {$(--password) == ""} {
+    send_user "\rilo password: "
+    if {[gets stdin (--password)] <= 0} {
+        send_user "\rNo password entered.\n\r"
+    }
+}
+
+set password $(--password)
+set ilo $(--hostname)
+set nodes $(--nodes)
+
+send_user "\rConnecting to $ilo to control $nodes ..."
+
+
+set retries 2
+while { $retries > 0 } {
+  spawn ssh -oStrictHostKeyChecking=no "$ilo"
+  expect {
+    "password: " { send -- "${password}\r"; set retries 0 }
+    timeout { puts "timeout waiting for ssh login prompt" }
+  }
+  set retries [ expr $retries - 1 ]
+}
+
+set style "force"
+send -- "set node power off $style $nodes\r"
+expect "hpiLO->"
+sleep 30
+
+send -- "show node power $nodes\r"
+expect "hpiLO->"
+send_user "\n\r"
+
+send -- "set node power on $nodes\r"
+expect "hpiLO->"
+
+send_user "\n\r"
+sleep 30
+
+send -- "show node power $nodes\r"
+expect "hpiLO->"
+send_user "\n\r"
+
+send -- "exit\r"
+
+expect eof
+send_user "\rFinished $ilo $nodes"
