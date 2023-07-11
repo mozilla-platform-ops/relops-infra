@@ -14,7 +14,7 @@
 
 * NOTE: This is requires a completed try push without any pending tasks
 * NOTE: This script takes a while since it relies heavily on re-running failed tests several times 
-* NOTE: 
+* NOTE: Run it one line at a time for now
 * Launch powershell window using VS Code or Powershell ISE window
 * Set the environment variables locally so you can re-run using taskcluster client
 
@@ -24,4 +24,3 @@ $ENV:TASKCLUSTER_ACCESS_TOKEN = "bar"
 $ENV:TASKCLUSTER_ROOT_URL = "https://firefox-ci-tc.services.mozilla.com/"
 ```
 * Run [treeherder.ps1](.\treeherder.ps1)
-* The script should exit if
