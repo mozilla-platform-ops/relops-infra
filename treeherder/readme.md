@@ -3,7 +3,7 @@
 ## Requirements
 
 * Taskcluster client credentials
-* A completed try push and its revision string
+* A completed try push and its revision
 
 ## To-Do
 
