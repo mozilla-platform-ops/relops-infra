@@ -44,12 +44,12 @@ if (-Not (Get-TaskCluster)) {
     throw "taskcluster not found in path"
 }
 
-$revision = "659725318f9909c795c32301236c257697f683c9"
+$revision = "ef9f7b7091d9d8ad7487521f8db90bd3d8aa07a9"
 $push_id = Get-TreeHerderPushID -Revision $revision
 
 ## Set taskcluster variables
-$ENV:TASKCLUSTER_CLIENT_ID = "xxxxx"
-$ENV:TASKCLUSTER_ACCESS_TOKEN = "yyyy"
+$ENV:TASKCLUSTER_CLIENT_ID = "foo"
+$ENV:TASKCLUSTER_ACCESS_TOKEN = "bar"
 $ENV:TASKCLUSTER_ROOT_URL = "https://firefox-ci-tc.services.mozilla.com/"
 
 ## Check the status of the try push
@@ -77,7 +77,7 @@ foreach ($p in $wee) {
 
 ## loop through each failed job and set name/value output 
 ## NOTE: this is the first attempt at organizing failed runs
-$failed_jobs_orig = for ($i = 0; $i -lt $try_push_failures.count; $i++) {
+$failed_1 = for ($i = 0; $i -lt $try_push_failures.count; $i++) {
     $collection = $try_push_failures.results[$i]
     [PSCustomObject]@{
         "failure_classification_id" = $collection[0]
@@ -101,22 +101,31 @@ $failed_jobs_orig = for ($i = 0; $i -lt $try_push_failures.count; $i++) {
     }
 }
 
-$failed_jobs_orig
-break
-
 ## re-run each failed task again
-$failed_jobs_orig | ConvertFrom-Json | ForEach-Object {
+$failed_1 | ForEach-Object {
     $task = $PSItem.task_id
     taskcluster task rerun $task
 }
 
 ## Check the status of the original failed tasks that are re-ran
-$status_1 = $failed_jobs_orig | ForEach-Object {
+$status_1 = $failed_1 | ForEach-Object {
     $task = $PSItem.task_id
     taskcluster api queue status $task | ConvertFrom-Json | Select-Object -ExpandProperty status
 }
 
-break
+## Loop through the failed tests and check their status until complete
+do {
+    Start-Sleep -Seconds 30
+    $status_1 = $failed_1 | ForEach-Object {
+        $task = $PSItem.task_id
+        taskcluster api queue status $task | ConvertFrom-Json | Select-Object -ExpandProperty status
+    }    
+    $running = ($status_1.state|Group-Object|Where-Object{$PSItem.name -eq "Running"}).count
+    Write-host "Processing $running running jobs | $(Get-Date)"
+} until (
+    $status_1.state -notcontains "running"
+)
+
 
 ## Get the tasks which failed again after the first re-run
 $failed_2 = $status_1 | Where-Object {
@@ -129,18 +138,47 @@ $failed_2 | ForEach-Object {
     taskcluster task rerun $task
 }
 
-## Check the status of the 2nd time re-running
-$status_3 = $failed_2 | ForEach-Object {
-    $task = $PSItem.taskId
-    taskcluster api queue status $task | ConvertFrom-Json | Select-Object -ExpandProperty status
-}
-
-break
+## Loop through the failed tests and check their status until complete
+do {
+    Start-Sleep -Seconds 30
+    $status_3 = $failed_2 | ForEach-Object {
+        $task = $PSItem.taskId
+        taskcluster api queue status $task | ConvertFrom-Json | Select-Object -ExpandProperty status
+    }
+    $running = ($status_3.state|Group-Object|Where-Object{$PSItem.name -eq "Running"}).count
+    Write-host "Processing $running running jobs | $(Get-Date)"
+} until (
+    $status_3.state -notcontains "running"
+)
 
 ## Store the results of the tasks that fail 3 times in a row
 $failed_3 = $status_3 | Where-Object {
     $psitem.state -eq "failed"
 }
 
-## Send the output to Joel
-$failed_3
+## For each of the failed again tasks, re-run them for the 3rd time
+$failed_3 | ForEach-Object {
+    $task = $PSItem.taskId
+    taskcluster task rerun $task
+}
+
+## Loop through the failed tests and check their status until complete
+do {
+    Start-Sleep -Seconds 30
+    $status_4 = $failed_3 | ForEach-Object {
+        $task = $PSItem.taskId
+        taskcluster api queue status $task | ConvertFrom-Json | Select-Object -ExpandProperty status
+    }
+    $running = ($status_4.state|Group-Object|Where-Object{$PSItem.name -eq "Running"}).count
+    Write-host "Processing $running running jobs | $(Get-Date)"
+} until (
+    $status_4.state -notcontains "running"
+)
+
+## Group them by test name from the originally failed tests
+$final = $failed_1 | Where-Object {
+    $psitem.task_id -in $failed_3.taskId
+}
+
+## Output the final result to json and export to local homedir
+$final | ConvertTo-Json | Out-File "~/$($revision)_failed.json"
