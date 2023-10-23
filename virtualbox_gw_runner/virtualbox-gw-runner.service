@@ -1,0 +1,14 @@
+[Unit]
+Description=virtualbox gw runner service
+
+[Service]
+Type=simple
+EnvironmentFile=/home/ubuntu/.virtualbox_gw_runner/env_file
+ExecStart=/home/ubuntu/.local/bin/poetry run ./virtualbox_gw_runner.py
+ExecStop=/usr/bin/pkill -USR2 -f virtualbox_gw_runner
+Restart=always
+WorkingDirectory=/home/ubuntu/.virtualbox_gw_runner
+User=ubuntu
+
+[Install]
+WantedBy=multi-user.target

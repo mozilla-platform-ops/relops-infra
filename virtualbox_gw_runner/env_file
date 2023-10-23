@@ -1,0 +1,7 @@
+# to export on command line: `export $(grep -v '^#' env_file | xargs)`
+# to unset: `unset $(grep -v '^#' env_file | sed -E 's/(.*)=.*/\1/' | xargs)`
+
+# PYTHONUNBUFFERED ensures journalctl output is instant, vs bufferred
+PYTHONUNBUFFERED=1
+TC_CLIENT_ID=""
+TC_ACCESS_TOKEN=""

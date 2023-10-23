@@ -1,0 +1,6 @@
+provider:
+    providerType: google
+worker:
+    implementation: generic-worker
+    path: /home/ubuntu/.taskcluster/generic-worker-simple
+    configPath: /home/ubuntu/.taskcluster/generic-worker.config
