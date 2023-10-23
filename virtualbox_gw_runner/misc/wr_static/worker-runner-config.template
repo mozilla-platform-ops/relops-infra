@@ -1,0 +1,34 @@
+getSecrets: false
+provider:
+    providerType: standalone
+    rootURL: "https://firefox-ci-tc.services.mozilla.com"
+    clientID: {{client_id}}
+    accessToken: {{access_token}}
+    workerPoolID: "gecko-t/t-linux-vm-2204-wayland"
+    workerGroup: {{region}}
+    workerID: "{{worker_id}}"
+worker:
+    implementation: generic-worker
+    path: /home/ubuntu/.taskcluster/generic-worker-simple
+    configPath: /home/ubuntu/.taskcluster/generic-worker.config
+workerConfig:
+    cachesDir:                        /home/ubuntu/caches
+    certificate:                      ""
+    checkForNewDeploymentEverySecs:   0
+    cleanUpTaskDirs:                  true
+    ed25519SigningKeyLocation:        "/home/ubuntu/.taskcluster/ed25519_signing_key"
+    idleTimeoutSecs:                  86400  # 1 day
+    livelogExecutable:                "/home/ubuntu/.taskcluster/livelog"
+    numberOfTasksToRun:               1
+    provisionerId:                    "gecko-t"
+    publicIP:                         {{external_ip}}
+    requiredDiskSpaceMegabytes:       10240
+    sentryProject:                    "generic-worker"
+    shutdownMachineOnIdle:            false
+    shutdownMachineOnInternalError:   false
+    taskclusterProxyExecutable:       "/home/ubuntu/.taskcluster/taskcluster-proxy"
+    #taskclusterProxyPort:             8080
+    tasksDir:                         "/home/ubuntu/tasks"
+    workerType:                       "t-linux-vm-2204-wayland"
+    wstAudience:                      "firefoxcitc"
+    wstServerURL:                     "https://firefoxci-websocktunnel.services.mozilla.com/"
