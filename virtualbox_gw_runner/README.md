@@ -5,13 +5,14 @@ Drives a Virtualbox VM as a Taskcluster worker.
 ## overview
 
 what it does:
-- stops the guest VM
-- restores the VM to a snapshot
-- optimizes guest CPU and memory to use max CPU and max RAM (minus a reserve)
-- starts the guest VM
-- configures /etc/hosts on guest vm to have GCP 'metadata' entry
-- starts worker-manager inside the guest VM
-- repeats the steps above forever
+- starts worker manager in the host
+- repeats infintely (until credential expiration)
+  - stops the guest VM
+  - restores the VM to a snapshot
+  - optimizes guest CPU and memory to use max CPU and max RAM (minus a reserve)
+  - starts the guest VM
+  - scp's g-w dependencies to VM
+  - starts generic-worker in the VM
 
 
 ## installation
