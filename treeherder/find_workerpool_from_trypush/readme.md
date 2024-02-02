@@ -14,4 +14,3 @@ $params = @{
 Get-WorkerPoolTasks @Params
 
 ```
-* Run [treeherder.ps1](.\treeherder.ps1)
