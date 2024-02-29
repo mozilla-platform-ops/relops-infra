@@ -112,18 +112,15 @@ function Get-WorkerPoolTasks {
             }
         }
     
-        ## foreach task, get the routes
         foreach ($task in $tc_results) {
             $task_def = taskcluster task def $task.task_id | ConvertFrom-Json
-            if ($task_def.taskQueueId -eq $WorkerPool) {
-                [PSCustomObject]@{
-                    Task           = $task
-                    TaskDefinition = $task_def
-                    Revision       = $rev
-                    TaskId         = "https://firefox-ci-tc.services.mozilla.com/tasks/$($task.task_id)"
-                }
+            [PSCustomObject]@{
+                Task           = $task
+                TaskDefinition = $task_def
+                WorkerPoolId   = $task_def.taskQueueId
+                Revision       = $rev
+                TaskId         = "https://firefox-ci-tc.services.mozilla.com/tasks/$($task.task_id)"
             }
         }
     }
-
 }
