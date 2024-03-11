@@ -15,7 +15,7 @@ what it does:
   - starts generic-worker in the VM
 
 
-## installation
+## initial installation on Linux host
 
 ```bash
 # clone repo
@@ -46,7 +46,16 @@ journalctl -u virtualbox-gw-runner --follow
 # checksums_v49.1.1.txt	start-worker*
 # generic-worker-simple*	taskcluster-proxy*
 # livelog*
+```
 
-# add secret to worker-runner-config.template
-vi worker-runner-config.template
+## updating installation on Linux host
+
+And perhaps automatic installation soon (still needs to handle git clone and more?).
+
+```bash
+# NOTES:
+# ensure the TC directory is present and populated correctly (see section above)
+# ensure the gcp project and instance name are correct in below before running
+
+./dev_transfer.sh
 ```
