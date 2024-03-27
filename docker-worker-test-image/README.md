@@ -39,6 +39,7 @@ v2 works on GCP instances with no local ssd
 
 - Tweaks
   - The else block is unecessary.
+  - Disable `set -x`.
 - Notes
   - We don't want `elif [ -e /dev/sdb ]` to hit on GCP instances... they're not local ssd on this instance class. Good that it doesn't check for `/dev/sd*`.
 
