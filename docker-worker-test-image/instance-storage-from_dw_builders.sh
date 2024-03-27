@@ -10,35 +10,35 @@ user_data_url=http://169.254.169.254/latest/user-data
 curl_opt='--silent --connect-timeout 5'
 
 # unless we are instructed to use tmpfs
-if curl \$curl_opt \$user_data_url > /dev/null 2>&1; then
-    tmpfs_size=\$(curl \$curl_opt \$user_data_url | jq .tmpfsSize | tr -d \")
+if curl $curl_opt $user_data_url > /dev/null 2>&1; then
+    tmpfs_size=$(curl $curl_opt $user_data_url | jq .tmpfsSize | tr -d \")
 fi
 
 # Create logical volume
 # Do not attempt to create if volume already exists (upstart respawn).
-if ! [ -z "\$tmpfs_size" -o "\$tmpfs_size" == "null" ]; then
-    mount -t tmpfs -o size=\$tmpfs_size tmpfs /mnt
+if ! [ -z "$tmpfs_size" -o "$tmpfs_size" == "null" ]; then
+    mount -t tmpfs -o size=$tmpfs_size tmpfs /mnt
 elif ! lvdisplay | grep instance_storage; then
     echo "Creating logical volume 'instance_storage'"
     # Find instance storage devices
     # c5 and newer has nvme* devices. The nvmeN devices can't be used
     # with vgcreate. But nvmeNnN can.
-    root_device=\$(mount | grep " / " | awk '{print \$1}')
+    root_device=$(mount | grep " / " | awk '{print $1}')
     if [ -e /dev/nvme0 ]; then
         # root device is /dev/nvme[0-9]
-        root_device=\${root_device:0:10}
-        devices=\$(ls -1 /dev/nvme*n* | grep -v "\${root_device}" || true)
+        root_device=${root_device:0:10}
+        devices=$(ls -1 /dev/nvme*n* | grep -v "${root_device}" || true)
     elif [ -e /dev/sda ]; then
         # root device is /dev/sd[a-z]
-        root_device=\${root_device:0:8}
-        devices=\$(ls /dev/sd* | grep -v "\${root_device}" || true)
+        root_device=${root_device:0:8}
+        devices=$(ls /dev/sd* | grep -v "${root_device}" || true)
     elif [ -e /dev/xvda ]; then
         # root device is /dev/xvd[a-z]
-        root_device=\${root_device:0:9}
-        devices=\$(ls -1 /dev/xvd* | grep -v "\${root_device}" || true)
+        root_device=${root_device:0:9}
+        devices=$(ls -1 /dev/xvd* | grep -v "${root_device}" || true)
     fi
 
-    if [ -z "\${devices}" ]; then
+    if [ -z "${devices}" ]; then
         echo "could not find devices to use for instance storage"
         # Bug 1570188; this is a hack to run in GCP where instance volumes aren't
         # configured.  We should do something much smarter.
@@ -48,13 +48,13 @@ elif ! lvdisplay | grep instance_storage; then
         exit
     fi
 
-    echo "Found devices: \$devices"
+    echo "Found devices: $devices"
 
     # Unmount block-device if already mounted, the first block-device always is
-    for d in \$devices; do umount \$d || true; done
+    for d in $devices; do umount $d || true; done
 
     # Create volume group containing all instance storage devices
-    echo \$devices | xargs vgcreate -y instance_storage
+    echo $devices | xargs vgcreate -y instance_storage
 
     # Create logical volume with all storage
     lvcreate -y -l 100%VG -n all instance_storage
@@ -63,7 +63,7 @@ else
 fi
 
 # Check to see if instance_storage-all is mounted already
-if [ -z "\$tmpfs_size" -o "\$tmpfs_size" == "null" ]; then
+if [ -z "$tmpfs_size" -o "$tmpfs_size" == "null" ]; then
     if ! df -T /dev/mapper/instance_storage-all | grep 'ext4'; then
         # Format logical volume with ext4
         echo "Logical volume does not appear mounted."
