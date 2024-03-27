@@ -1,6 +1,6 @@
 #!/bin/bash -ve
 
-# set -x
+set -x
 
 # The goal of this script is to initialize instance storage.
 # We create an LVM logical volume from all available storage devices,
