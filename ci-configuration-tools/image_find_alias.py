@@ -3,6 +3,8 @@
 import yaml
 import argparse
 
+SUFFIXES_TO_STRIP = ['-fxci-level3-gcp', '-fxci-level1-gcp']
+
 class WorkerImages:
     def __init__(self, file_path='worker-images.yml'):
         self.data = self.load_image_data(file_path)
@@ -20,7 +22,15 @@ class WorkerImages:
                 for sub_key, sub_value in value.items():
                     if image_name in sub_value:
                         aliases.append(f"{key}-{sub_key}")
+        # Strip off defined suffixes from the aliases
+        aliases = [self.strip_suffix(alias) for alias in aliases]
         return aliases
+
+    @staticmethod
+    def strip_suffix(alias):
+        for suffix in SUFFIXES_TO_STRIP:
+            alias = alias.replace(suffix, '')
+        return alias
 
 def main():
     parser = argparse.ArgumentParser(description='Find aliases for a given image.')
