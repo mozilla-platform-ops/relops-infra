@@ -31,9 +31,10 @@ sorted_counts = sorted(source_image_counts.items(), key=lambda x: x[1], reverse=
 # Print the results and optionally run the command for each source image
 for source_image, count in sorted_counts:
     search_value = source_image.split('/')[-1]
-    print(f'{count}: {source_image}')
     
     if args.aliases:
         result = subprocess.run(['./image_find_alias.py', search_value], capture_output=True, text=True)
-        for line in result.stdout.splitlines():
-            print(f'    {line}')
+        alias_output = result.stdout.strip().replace('\n', ', ')
+        print(f'{count}: {source_image} ({alias_output})')
+    else:
+        print(f'{count}: {source_image}')
