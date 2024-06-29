@@ -2,11 +2,13 @@
 
 import re
 import argparse
+import subprocess
 from collections import Counter
 
 # Initialize argument parser
 parser = argparse.ArgumentParser(description='Process and count source images in a JSON file.')
 parser.add_argument('-r', '--reverse', action='store_true', help='reverse the sorting order')
+parser.add_argument('-a', '--aliases', action='store_true', help='call image_find_alias.py and display its output')
 args = parser.parse_args()
 
 # Initialize a counter for source images
@@ -26,6 +28,12 @@ with open('generated.json') as f:
 # Sort and display the counts
 sorted_counts = sorted(source_image_counts.items(), key=lambda x: x[1], reverse=args.reverse)
 
-# Print the results
+# Print the results and optionally run the command for each source image
 for source_image, count in sorted_counts:
+    search_value = source_image.split('/')[-1]
     print(f'{count}: {source_image}')
+    
+    if args.aliases:
+        result = subprocess.run(['./image_find_alias.py', search_value], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            print(f'    {line}')
