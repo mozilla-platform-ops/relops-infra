@@ -4,8 +4,12 @@ set -e
 
 export TASKCLUSTER_ROOT_URL="https://firefox-ci-tc.services.mozilla.com/"
 
-. ./venv/bin/activate
+# venv-based
+#
+# . ./venv/bin/activate
+# ci-admin check --environment firefoxci
 
 
-ci-admin check --environment firefoxci
-#ci-admin generate --environment firefoxci
+# pipenv-based
+#
+pipenv run ci-admin check --environment firefoxci
