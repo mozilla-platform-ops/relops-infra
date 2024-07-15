@@ -11,3 +11,9 @@ The generated json from `ci-config generate` isn't what we want (we want the unr
 ```
 ./install.sh PATH_TO_YOUR_CI_CONFIGURATION_CLIENT
 ```
+
+## Usage
+
+Python scripts have self-explanatory help and usage (via -h or --help).
+
+Bash scripts are named logically and should be simple enough to see what they're doing.
