@@ -11,4 +11,4 @@ SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 #   - otherwise create directory with all isntalled symlinks and remove those in target dir before installation every time
 
 #./make_symlinks_for_executables.py --ignore "${SCRIPT_PATH}" /Users/aerickson/hg/ci-configuration
-./make_symlinks_for_executables.py --ignore "${SCRIPT_PATH}" /Users/aerickson/git/fxci-config
+./make_symlinks_for_executables.py --ignore "${SCRIPT_PATH}" "${HOME}/git/fxci-config"
