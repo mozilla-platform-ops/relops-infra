@@ -3,4 +3,4 @@
 set -e
 #set -x
 
-./pool_images.py | cut -f 2 -d ':' | sort | uniq -c | sort | grep -v win
+./pools_images.py | cut -f 2 -d ':' | sort | uniq -c | sort | grep -v win
