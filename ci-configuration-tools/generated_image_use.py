@@ -6,7 +6,7 @@ import subprocess
 from collections import Counter
 
 # Initialize argument parser
-parser = argparse.ArgumentParser(description='Process and count source images in a JSON file.')
+parser = argparse.ArgumentParser(description='Reads the generated ci-config (from generated.json, created by generate.sh) and lists images used (and optionally their alias, sorted by count).')
 parser.add_argument('-r', '--reverse', action='store_true', help='reverse the sorting order')
 parser.add_argument('-a', '--aliases', action='store_true', help='call image_find_alias.py and display its output')
 args = parser.parse_args()
