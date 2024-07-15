@@ -8,7 +8,7 @@ from collections import Counter
 # Initialize argument parser
 parser = argparse.ArgumentParser(description='Reads the generated ci-config (from generated.json, created by generate.sh) and lists images used (and optionally their alias, sorted by count).')
 parser.add_argument('-r', '--reverse', action='store_true', help='reverse the sorting order')
-parser.add_argument('-a', '--aliases', action='store_true', help='call image_find_alias.py and display its output')
+parser.add_argument('-a', '--aliases', action='store_true', help='call images_find_alias.py and display its output')
 args = parser.parse_args()
 
 # Initialize a counter for source images
@@ -33,7 +33,7 @@ for source_image, count in sorted_counts:
     search_value = source_image.split('/')[-1]
     
     if args.aliases:
-        result = subprocess.run(['./image_find_alias.py', search_value], capture_output=True, text=True)
+        result = subprocess.run(['./images_find_alias.py', search_value], capture_output=True, text=True)
         alias_output = result.stdout.strip().replace('\n', ', ')
         print(f'{count}: {source_image} ({alias_output})')
     else:
