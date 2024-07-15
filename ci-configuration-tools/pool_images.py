@@ -35,11 +35,22 @@ def print_pool_names_and_images(data):
           print(f"{pool_name}: {image}")
         # print("cccc")
 
-# Path to the YAML file
-file_path = 'worker-pools.yml'
 
-# Load the YAML file
-yaml_data = load_yaml_file(file_path)
 
-# Print pool names and images
-print_pool_names_and_images(yaml_data)
+if __name__ == '__main__':
+    # use argparse to show help
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Reads worker-pools.yml and lists images used.')
+    # parser.add_argument('-r', '--reverse', action='store_true', help='reverse the sorting order')
+    args = parser.parse_args()
+    
+
+    # Path to the YAML file
+    file_path = 'worker-pools.yml'
+
+    # Load the YAML file
+    yaml_data = load_yaml_file(file_path)
+
+    # Print pool names and images
+    print_pool_names_and_images(yaml_data)
