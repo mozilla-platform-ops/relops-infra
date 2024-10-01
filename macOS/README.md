@@ -7,3 +7,7 @@ __build_high_sierra_standalone_firmware_update_pkg.sh__
 
 __build_mojave_standalone_firmware_update_pkg.sh__
 + See notes above
+
+
+__taskcluster_bins_download_aws.py__
++ Fetches the latest Taskcluster binaries, renames them and transfers them to the AWS bucket Puppet uses when converging macOS hosts
