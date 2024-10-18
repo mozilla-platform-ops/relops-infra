@@ -1,12 +1,10 @@
-Certainly! Here’s the updated README.md with a section on how to create and use the binary using PyInstaller:
-
 generate_runner_state.py
 
 Overview
 
 generate_runner_state.py is an interactive command-line utility for generating a runner_state.toml file based on specific machine configurations from Mozilla’s CI infrastructure. The utility clones the ronin_puppet repository, reads the appropriate YAML file for the selected machine group, and dynamically creates the TOML file with relevant configuration and state information.
 
-The script offers an interactive menu for selecting group names, optional host limitation, and colorized output to enhance the user experience.
+The script offers an interactive menu for selecting group names, optional host limitation, colorized output, and the ability to use an existing ronin_puppet directory or clone to a user-specified location.
 
 Features
 
@@ -17,7 +15,8 @@ Features
 	•	For other groups, the FQDN prefix is set to test.releng.mdc1.mozilla.com.
 	•	Safe Runner directory: The generated runner_state.toml is written to a Safe Runner directory in the user’s home directory.
 	•	Optional host limitation: The script allows you to limit the number of hosts that appear in the remaining_hosts field of the generated TOML file.
-	•	Executable binary: The script can be compiled into a standalone binary using PyInstaller for easy distribution.
+	•	Search for existing ronin_puppet directories: If an existing ronin_puppet directory is found on the system, the user can choose to use it, avoiding unnecessary cloning.
+	•	User-defined clone location: If no existing directory is found or the user prefers not to use it, they can specify where to clone the repository, with /tmp/ronin_puppet as the default.
 
 Requirements
 
@@ -47,7 +46,7 @@ pip install pyyaml toml colorama
 
 Usage
 
-Simply run the script and interact with the menu to choose a group and specify optional host limitations.
+Simply run the script and interact with the menu to choose a group, limit the number of hosts, and specify (or select) the clone directory.
 
 Example
 
@@ -55,18 +54,26 @@ Example
 
 When you run the script, it will:
 
-	•	Clone the ronin_puppet repository into /tmp (if not already cloned).
+	•	Search for existing ronin_puppet directories on your system.
+	•	Ask if you’d like to use one of the existing directories or provide a new path for cloning.
+	•	Clone the ronin_puppet repository (if needed) into the specified directory.
 	•	Display a menu of valid group names to choose from.
 	•	Optionally prompt you to limit the number of hosts.
 	•	Create a runner_state.toml file in the ~/Safe Runner/ directory.
 
 Sample Interaction:
 
+Found the following ronin_puppet directories:
+1. /Users/yourusername/Documents/ronin_puppet
+
+Would you like to use one of these directories? (y/n): n
+Enter the directory where you would like to clone ronin_puppet:
+[Press Enter to use /tmp/ronin_puppet]:
+
 Please choose a group from the following list:
 1. gecko-t-osx-1015-r8
 2. gecko-t-osx-1015-r8-staging
 3. gecko-t-osx-1100-r8-latest
-4. gecko-t-osx-1200-r8-latest
 ...
 
 Enter the number of the group you want to select: 3
@@ -165,7 +172,6 @@ Feel free to submit issues or pull requests if you have suggestions or improveme
 
 Changes Summary:
 
-	•	Added a new Creating and Using a Binary section to guide users on how to package and run the script as a standalone binary using PyInstaller.
-	•	Explained the advantages of using a binary for distribution.
-
-Let me know if this is what you were looking for!
+	•	Added new functionality for searching existing ronin_puppet directories.
+	•	Added options to select a clone location and update the paths in the generated TOML.
+	•	Updated steps for creating and using a binary with PyInstaller.

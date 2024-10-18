@@ -58,25 +58,68 @@ def choose_group_name():
         print(Fore.RED + "Invalid input. Please enter a number.")
         sys.exit(1)
 
+# Function to search for an existing ronin_puppet directory
+def search_existing_ronin_puppet():
+    try:
+        result = subprocess.check_output(
+            ['mdfind', 'kMDItemKind == "Folder" && kMDItemFSName == "ronin_puppet"'], 
+            universal_newlines=True
+        )
+        existing_dirs = result.strip().split('\n') if result.strip() else []
+        return existing_dirs
+    except subprocess.CalledProcessError:
+        return []
+
+# Function to get the clone directory from the user with a default choice
+def get_clone_directory(default_clone_dir="/tmp/ronin_puppet"):
+    print(f"{Fore.CYAN}Enter the directory where you would like to clone ronin_puppet:")
+    clone_dir = input(f"[Press Enter to use {default_clone_dir}]: ")
+    return clone_dir.strip() or default_clone_dir
+
 # Main function
 def main():
+    # Search for an existing ronin_puppet directory
+    existing_dirs = search_existing_ronin_puppet()
+
+    if existing_dirs:
+        print(Fore.CYAN + "Found the following ronin_puppet directories:")
+        for idx, dir in enumerate(existing_dirs, start=1):
+            print(f"{Fore.YELLOW}{idx}. {dir}")
+
+        use_existing = input(Fore.GREEN + "Would you like to use one of these directories? (y/n): ").lower()
+        if use_existing == 'y':
+            chosen_dir = input(Fore.CYAN + "Enter the number of the directory to use: ")
+            try:
+                chosen_dir = int(chosen_dir)
+                if 1 <= chosen_dir <= len(existing_dirs):
+                    clone_dir = existing_dirs[chosen_dir - 1]
+                else:
+                    print(Fore.RED + "Invalid choice. Exiting.")
+                    sys.exit(1)
+            except ValueError:
+                print(Fore.RED + "Invalid input. Exiting.")
+                sys.exit(1)
+        else:
+            clone_dir = get_clone_directory()
+    else:
+        clone_dir = get_clone_directory()
+
+    # Step 1: Define the repository URL
+    repo_url = "https://github.com/mozilla-platform-ops/ronin_puppet.git"
+
+    # Step 2: Clone the repository into the chosen directory if it doesn't exist
+    if not os.path.exists(clone_dir):
+        print(f"{Fore.GREEN}Cloning repository {repo_url} into {clone_dir}...")
+        subprocess.run(["git", "clone", repo_url, clone_dir], check=True)
+    else:
+        print(f"{Fore.YELLOW}Repository already exists in {clone_dir}, skipping clone...")
+
     # Choose the group name interactively
     group_name = choose_group_name()
 
     # Ask if the user wants to limit the number of hosts
     num_hosts = input(Fore.CYAN + "Enter the number of hosts to include (or press Enter to include all hosts): ")
     num_hosts = int(num_hosts) if num_hosts.isdigit() else None
-
-    # Step 1: Define the repository URL and the target directory for cloning
-    repo_url = "https://github.com/mozilla-platform-ops/ronin_puppet.git"
-    clone_dir = "/tmp/ronin_puppet"
-
-    # Step 2: Clone the repository into /tmp/ronin_puppet if it doesn't exist
-    if not os.path.exists(clone_dir):
-        print(f"{Fore.GREEN}Cloning repository {repo_url} into {clone_dir}...")
-        subprocess.run(["git", "clone", repo_url, clone_dir], check=True)
-    else:
-        print(f"{Fore.YELLOW}Repository already exists in {clone_dir}, skipping clone...")
 
     # Step 3: Determine the YAML file path based on the group_name
     if "m1" in group_name:
