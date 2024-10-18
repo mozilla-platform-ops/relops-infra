@@ -4,8 +4,11 @@ import os
 import yaml
 import toml
 import subprocess
-import argparse
 import sys
+from colorama import Fore, Style, init
+
+# Initialize colorama
+init(autoreset=True)
 
 # List of acceptable group names
 VALID_GROUP_NAMES = [
@@ -36,38 +39,87 @@ VALID_GROUP_NAMES = [
     "gecko-t-osx-1100-m1",
 ]
 
-# Function to validate the group name
-def validate_group_name(group_name):
-    if group_name not in VALID_GROUP_NAMES:
-        print(f"Error: '{group_name}' is not a valid group name.")
+# Function to display a list of valid group names and prompt the user to choose one
+def choose_group_name():
+    print(Fore.CYAN + "Please choose a group from the following list:")
+    for idx, group_name in enumerate(VALID_GROUP_NAMES, start=1):
+        print(f"{Fore.YELLOW}{idx}. {group_name}")
+    
+    choice = input(Fore.GREEN + "Enter the number of the group you want to select: ")
+    
+    try:
+        choice = int(choice)
+        if 1 <= choice <= len(VALID_GROUP_NAMES):
+            return VALID_GROUP_NAMES[choice - 1]
+        else:
+            print(Fore.RED + "Invalid choice. Exiting.")
+            sys.exit(1)
+    except ValueError:
+        print(Fore.RED + "Invalid input. Please enter a number.")
         sys.exit(1)
+
+# Function to search for an existing ronin_puppet directory
+def search_existing_ronin_puppet():
+    try:
+        result = subprocess.check_output(
+            ['mdfind', 'kMDItemKind == "Folder" && kMDItemFSName == "ronin_puppet"'], 
+            universal_newlines=True
+        )
+        existing_dirs = result.strip().split('\n') if result.strip() else []
+        return existing_dirs
+    except subprocess.CalledProcessError:
+        return []
+
+# Function to get the clone directory from the user with a default choice
+def get_clone_directory(default_clone_dir="/tmp/ronin_puppet"):
+    print(f"{Fore.CYAN}Enter the directory where you would like to clone ronin_puppet:")
+    clone_dir = input(f"[Press Enter to use {default_clone_dir}]: ")
+    return clone_dir.strip() or default_clone_dir
 
 # Main function
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Generate runner_state.toml for the given group.")
-    parser.add_argument("group_name", help="The group name to use.")
-    parser.add_argument(
-        "--num_hosts", 
-        type=int, 
-        help="Optional: Specify the number of hosts to include in the remaining_hosts field."
-    )
-    args = parser.parse_args()
+    # Search for an existing ronin_puppet directory
+    existing_dirs = search_existing_ronin_puppet()
 
-    # Validate the group name
-    group_name = args.group_name
-    validate_group_name(group_name)
+    if existing_dirs:
+        print(Fore.CYAN + "Found the following ronin_puppet directories:")
+        for idx, dir in enumerate(existing_dirs, start=1):
+            print(f"{Fore.YELLOW}{idx}. {dir}")
 
-    # Step 1: Define the repository URL and the target directory for cloning
+        use_existing = input(Fore.GREEN + "Would you like to use one of these directories? (y/n): ").lower()
+        if use_existing == 'y':
+            chosen_dir = input(Fore.CYAN + "Enter the number of the directory to use: ")
+            try:
+                chosen_dir = int(chosen_dir)
+                if 1 <= chosen_dir <= len(existing_dirs):
+                    clone_dir = existing_dirs[chosen_dir - 1]
+                else:
+                    print(Fore.RED + "Invalid choice. Exiting.")
+                    sys.exit(1)
+            except ValueError:
+                print(Fore.RED + "Invalid input. Exiting.")
+                sys.exit(1)
+        else:
+            clone_dir = get_clone_directory()
+    else:
+        clone_dir = get_clone_directory()
+
+    # Step 1: Define the repository URL
     repo_url = "https://github.com/mozilla-platform-ops/ronin_puppet.git"
-    clone_dir = "/tmp/ronin_puppet"
 
-    # Step 2: Clone the repository into /tmp/ronin_puppet if it doesn't exist
+    # Step 2: Clone the repository into the chosen directory if it doesn't exist
     if not os.path.exists(clone_dir):
-        print(f"Cloning repository {repo_url} into {clone_dir}...")
+        print(f"{Fore.GREEN}Cloning repository {repo_url} into {clone_dir}...")
         subprocess.run(["git", "clone", repo_url, clone_dir], check=True)
     else:
-        print(f"Repository already exists in {clone_dir}, skipping clone...")
+        print(f"{Fore.YELLOW}Repository already exists in {clone_dir}, skipping clone...")
+
+    # Choose the group name interactively
+    group_name = choose_group_name()
+
+    # Ask if the user wants to limit the number of hosts
+    num_hosts = input(Fore.CYAN + "Enter the number of hosts to include (or press Enter to include all hosts): ")
+    num_hosts = int(num_hosts) if num_hosts.isdigit() else None
 
     # Step 3: Determine the YAML file path based on the group_name
     if "m1" in group_name:
@@ -82,7 +134,7 @@ def main():
         with open(yaml_file_path, 'r') as file:
             inventory_data = yaml.safe_load(file)
     except FileNotFoundError:
-        print(f"Error: The file '{yaml_file_path}' does not exist.")
+        print(f"{Fore.RED}Error: The file '{yaml_file_path}' does not exist.")
         sys.exit(1)
 
     # Step 5: Retrieve targets under the specified group name
@@ -96,9 +148,9 @@ def main():
     # Step 6: Only keep the part before the first dot for each target
     cleaned_targets = [target.split('.')[0] for target in targets]
 
-    # Step 7: If num_hosts argument is provided, limit the number of hosts to that value
-    if args.num_hosts and args.num_hosts <= len(cleaned_targets):
-        cleaned_targets = cleaned_targets[:args.num_hosts]
+    # Step 7: If num_hosts was provided, limit the number of hosts to that value
+    if num_hosts and num_hosts <= len(cleaned_targets):
+        cleaned_targets = cleaned_targets[:num_hosts]
 
     # Step 8: Get the current user using the environment variable
     current_user = os.environ['USER']
@@ -107,7 +159,7 @@ def main():
     safe_runner_dir = os.path.join(os.path.expanduser("~"), "Safe Runner")
     if not os.path.exists(safe_runner_dir):
         os.makedirs(safe_runner_dir)
-        print(f"Created directory: {safe_runner_dir}")
+        print(f"{Fore.GREEN}Created directory: {safe_runner_dir}")
 
     # Step 10: Check if the group_name contains "m1" or "m2" and set fqdn_prefix accordingly
     if "m1" in group_name or "m2" in group_name:
@@ -147,7 +199,7 @@ def main():
     with open(toml_file_path, 'w') as toml_file:
         toml_file.write(toml_string)
 
-    print(f"'runner_state.toml' created successfully at {toml_file_path}")
+    print(f"{Fore.GREEN}runner_state.toml created successfully at {toml_file_path}")
 
 # Run the main function
 if __name__ == "__main__":
