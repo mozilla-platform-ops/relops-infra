@@ -1,5 +1,14 @@
 import paramiko
 import os
+import time
+
+# Function to incrementally read command output
+def read_output(stdout):
+    while not stdout.channel.exit_status_ready():
+        # Read data if available
+        if stdout.channel.recv_ready():
+            output = stdout.channel.recv(1024).decode()
+            print(output, end='')
 
 # Prompt for SSH details
 hostname = input("Enter the hostname to SSH into: ")
@@ -66,12 +75,24 @@ try:
     print("Generating the settings file on the remote machine...")
     stdin, stdout, stderr = client.exec_command(command)
 
-    # Print the result of the command
-    print(stdout.read().decode())
-    print(stderr.read().decode())
+    # Read and print the output incrementally
+    read_output(stdout)
+    read_output(stderr)
 
     print(f"Settings file created successfully on {hostname}")
-    
+
+    # Prompt the user to run Puppet now
+    run_puppet = input("Do you wish to run puppet now? (yes/no): ").strip().lower()
+    if run_puppet == 'yes':
+        print("Running puppet on the remote machine...")
+        stdin, stdout, stderr = client.exec_command("sudo /usr/local/bin/run-puppet.sh")
+
+        # Read and print the output incrementally
+        read_output(stdout)
+        read_output(stderr)
+    else:
+        print("Puppet run skipped.")
+
 finally:
     # Close the SSH connection
     client.close()
