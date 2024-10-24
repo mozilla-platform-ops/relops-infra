@@ -3,6 +3,8 @@
 
 This Python script connects to a remote machine over SSH and generates a settings file (`/etc/puppet/ronin_settings`) with Puppet-specific configuration values. The script supports authentication using an RSA or Ed25519 private key from your local `.ssh` directory.
 
+The script also prompts the user at the end if they would like to run `run-puppet.sh`. The output of both the settings file creation and the Puppet run is read incrementally to avoid blocking the script execution.
+
 ## Requirements
 
 - Python 3.x
@@ -42,20 +44,27 @@ The script will prompt for the following inputs:
 Enter the hostname to SSH into: t-linux64-ms-137.test.releng.mdc1.mozilla.com
 Enter your SSH username: myuser
 Enter the path to your SSH private key file (or press enter to use '~/.ssh/id_ed25519'): 
-Enter the puppet repo URL: https://github.com/myrepo/ronin_puppet.git
-Enter the puppet branch name: my-branch-name
-Enter the puppet mail address: myemail@example.com
+Enter the puppet repo URL: 'https://github.com/myrepo/ronin_puppet.git'
+Enter the puppet branch name: 'my-branch-name'
+Enter the puppet mail address: 'myemail@example.com'
+/etc/puppet/ronin_settings already exists. Do you want to overwrite it? (yes/no): yes
+Generating the settings file on the remote machine...
+Do you wish to run puppet now? (yes/no): yes
+Running puppet on the remote machine...
 \`\`\`
 
 After providing the necessary inputs, the script will:
 
 1. Connect to the remote machine using the SSH private key.
 2. Create or overwrite the `/etc/puppet/ronin_settings` file on the remote machine with the provided Puppet configuration values.
+3. Prompt the user whether to run Puppet via the `sudo /usr/local/bin/run-puppet.sh` script.
+
+The output from both the settings file creation and Puppet run will be printed incrementally to avoid blocking the script, allowing the user to see live output.
 
 ## Notes
 
 - Ensure the SSH public key (associated with the private key) is added to the remote machine's `~/.ssh/authorized_keys` file for the specified user.
-- The script requires `sudo` privileges on the remote machine to write to `/etc/puppet/`.
+- The script requires `sudo` privileges on the remote machine to write to `/etc/puppet/` and to run Puppet.
 - The default SSH key is `~/.ssh/id_ed25519`. You can provide a custom key by specifying the file path when prompted.
 
 ## Troubleshooting
