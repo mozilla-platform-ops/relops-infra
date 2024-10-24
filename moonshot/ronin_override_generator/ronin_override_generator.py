@@ -31,15 +31,7 @@ except paramiko.SSHException as e:
     print(f"Failed to load the SSH key: {str(e)}")
     exit(1)
 
-# Prompt for Puppet values
-puppet_repo = input("Enter the puppet repo URL: ")
-puppet_branch = input("Enter the puppet branch name: ")
-puppet_mail = input("Enter the puppet mail address: ")
-
-# Command to create the /etc/puppet/ronin_settings file remotely
-command = f"""echo -e '# if you place this file at `/etc/puppet/ronin_settings`\n# the `run-puppet.sh` script will use the values here.\n\n# puppet overrides\nPUPPET_REPO=\"{puppet_repo}\"\nPUPPET_BRANCH=\"{puppet_branch}\"\nPUPPET_MAIL=\"{puppet_mail}\"\n\n# taskcluster overrides\n# WORKER_TYPE_OVERRIDE=gecko-t-linux-talos-1804-staging' | sudo tee /etc/puppet/ronin_settings"""
-
-# SSH to the remote machine and execute the command
+# SSH to the remote machine and check if the file exists
 try:
     # Create an SSH client
     client = paramiko.SSHClient()
@@ -48,6 +40,27 @@ try:
     # Connect to the remote machine using the SSH private key
     print(f"Connecting to {hostname} with the SSH key {ssh_key_path}...")
     client.connect(hostname, username=username, pkey=private_key)
+
+    # Check if the file already exists
+    check_file_command = "test -f /etc/puppet/ronin_settings && echo 'exists' || echo 'not found'"
+    stdin, stdout, stderr = client.exec_command(check_file_command)
+    file_status = stdout.read().decode().strip()
+
+    if file_status == 'exists':
+        # Prompt the user if they'd like to overwrite the file
+        overwrite = input("/etc/puppet/ronin_settings already exists. Do you want to overwrite it? (yes/no): ").strip().lower()
+        if overwrite != 'yes':
+            print("Exiting without making changes.")
+            client.close()
+            exit(0)
+
+    # Proceed with getting the Puppet values
+    puppet_repo = input("Enter the puppet repo URL: ")
+    puppet_branch = input("Enter the puppet branch name: ")
+    puppet_mail = input("Enter the puppet mail address: ")
+
+    # Command to create the /etc/puppet/ronin_settings file remotely
+    command = f"""echo -e '# if you place this file at `/etc/puppet/ronin_settings`\n# the `run-puppet.sh` script will use the values here.\n\n# puppet overrides\nPUPPET_REPO=\"{puppet_repo}\"\nPUPPET_BRANCH=\"{puppet_branch}\"\nPUPPET_MAIL=\"{puppet_mail}\"\n\n# taskcluster overrides\n# WORKER_TYPE_OVERRIDE=gecko-t-linux-talos-1804-staging' | sudo tee /etc/puppet/ronin_settings"""
 
     # Execute the command
     print("Generating the settings file on the remote machine...")
