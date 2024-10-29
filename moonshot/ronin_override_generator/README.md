@@ -14,18 +14,16 @@ The script also prompts the user at the end if they would like to run `run-puppe
 
 The script requires the `paramiko` library for SSH functionality. If it's not installed, you can install it using `pip`:
 
-\`\`\`bash
+python3 -m venv myenv
+source myenv/bin/activate
 pip install paramiko
-\`\`\`
 
 ## Usage
 
 1. Clone or download the script to your local machine.
 2. Run the script with Python 3:
 
-\`\`\`bash
-python3 linux_conf.py
-\`\`\`
+python3 ronin_override_generator.py
 
 ### Script Execution
 
