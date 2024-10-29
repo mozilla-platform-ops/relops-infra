@@ -15,7 +15,9 @@ The script also prompts the user at the end if they would like to run `run-puppe
 The script requires the `paramiko` library for SSH functionality. If it's not installed, you can install it using `pip`:
 
 python3 -m venv myenv
+
 source myenv/bin/activate
+
 pip install paramiko
 
 ## Usage
