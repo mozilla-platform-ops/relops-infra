@@ -40,7 +40,7 @@ The script will prompt for the following inputs:
 
 ### Example
 
-\`\`\`bash
+```
 Enter the hostname to SSH into: t-linux64-ms-137.test.releng.mdc1.mozilla.com
 Enter your SSH username: myuser
 Enter the path to your SSH private key file (or press enter to use '~/.ssh/id_ed25519'): 
@@ -51,7 +51,7 @@ Enter the puppet mail address: 'myemail@example.com'
 Generating the settings file on the remote machine...
 Do you wish to run puppet now? (yes/no): yes
 Running puppet on the remote machine...
-\`\`\`
+```
 
 After providing the necessary inputs, the script will:
 
