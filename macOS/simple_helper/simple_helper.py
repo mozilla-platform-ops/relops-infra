@@ -24,11 +24,12 @@ def make_request(endpoint, method="GET", payload=None):
         print(f"Error: {response.status_code} - {response.text}")
         return None
 
+# Device and Group Management
 def fetch_all_devices():
     """Fetch all devices using pagination."""
     endpoint = "devices"
-    limit = 10  # Number of devices to fetch per page
-    starting_after = None  # Used for pagination
+    limit = 10
+    starting_after = None
     all_devices = []
 
     print("Fetching all devices...")
@@ -54,11 +55,17 @@ def fetch_all_devices():
 
     return all_devices
 
+def list_devices():
+    """List all devices."""
+    all_devices = fetch_all_devices()
+    for device in all_devices:
+        print(f"ID: {device['id']}, Name: {device['attributes']['name']}")
+
 def fetch_all_device_groups():
     """Fetch all device groups using pagination."""
     endpoint = "device_groups"
-    limit = 10  # Number of groups to fetch per page
-    starting_after = None  # Used for pagination
+    limit = 10
+    starting_after = None
     all_groups = []
 
     print("Fetching all device groups...")
@@ -83,6 +90,12 @@ def fetch_all_device_groups():
             break
 
     return all_groups
+
+def list_device_groups():
+    """List all device groups."""
+    all_groups = fetch_all_device_groups()
+    for group in all_groups:
+        print(f"ID: {group['id']}, Name: {group['attributes']['name']}")
 
 def pick_device_group():
     """Display a picker to select a device group."""
@@ -149,21 +162,154 @@ def assign_devices_to_group_with_picker(hostnames):
     print(f"Successes: {', '.join(successes) if successes else 'None'}")
     print(f"Failures: {', '.join(failures) if failures else 'None'}")
 
-def list_devices():
-    """List all devices using pagination."""
+# Script Management
+def fetch_all_scripts():
+    """Fetch all scripts using pagination."""
+    endpoint = "scripts"
+    limit = 10
+    starting_after = None
+    all_scripts = []
+
+    print("Fetching all scripts...")
+
+    while True:
+        paginated_endpoint = f"{endpoint}?limit={limit}"
+        if starting_after:
+            paginated_endpoint += f"&starting_after={starting_after}"
+
+        response = make_request(paginated_endpoint)
+
+        if response and "data" in response:
+            scripts = response["data"]
+            all_scripts.extend(scripts)
+
+            if scripts:
+                starting_after = scripts[-1]["id"]
+            else:
+                break
+        else:
+            print("No more scripts found or an error occurred.")
+            break
+
+    return all_scripts
+
+def list_scripts():
+    """List all scripts."""
+    all_scripts = fetch_all_scripts()
+    for script in all_scripts:
+        print(f"ID: {script['id']}, Name: {script['attributes']['name']}")
+
+def pick_script():
+    """Display a picker to select a script."""
+    all_scripts = fetch_all_scripts()
+
+    if not all_scripts:
+        print("No scripts available.")
+        return None
+
+    print("\nAvailable Scripts:")
+    for i, script in enumerate(all_scripts):
+        print(f"{i + 1}. {script['attributes']['name']} (ID: {script['id']})")
+
+    while True:
+        try:
+            choice = int(input("\nSelect a script by number: ")) - 1
+            if 0 <= choice < len(all_scripts):
+                return all_scripts[choice]
+            else:
+                print("Invalid selection. Please try again.")
+        except ValueError:
+            print("Please enter a valid number.")
+
+def retrieve_script():
+    """Retrieve details of a specific script."""
+    selected_script = pick_script()
+    if not selected_script:
+        print("No script selected.")
+        return
+
+    script_id = selected_script["id"]
+    print(f"ID: {script_id}, Name: {selected_script['attributes']['name']}")
+    print("Details:", selected_script["attributes"])
+
+# Script Job Management
+def create_script_job_with_picker(hostnames):
+    """Create a script job for given hostnames using a script picker."""
+    selected_script = pick_script()
+    if not selected_script:
+        print("No script selected.")
+        return
+
+    script_id = selected_script["id"]
+
     all_devices = fetch_all_devices()
-    for device in all_devices:
-        print(f"ID: {device['id']}, Name: {device['attributes']['name']}")
+    device_ids = []
 
-def list_device_groups():
-    """List all device groups using pagination."""
-    all_groups = fetch_all_device_groups()
-    for group in all_groups:
-        print(f"ID: {group['id']}, Name: {group['attributes']['name']}")
+    for hostname in hostnames:
+        for device in all_devices:
+            if device["attributes"]["name"] == hostname:
+                device_ids.append(device["id"])
+                break
+        else:
+            print(f"Warning: Hostname '{hostname}' not found. Skipping...")
 
+    if not device_ids:
+        print("No valid devices found. Script job not created.")
+        return
+
+    payload = {
+        "script_id": script_id,
+        "device_ids": ",".join(map(str, device_ids))
+    }
+    response = requests.post(
+        f"{BASE_URL}script_jobs",
+        auth=(get_api_key(), ''),
+        data=payload
+    )
+
+    if response.status_code in [200, 201]:
+        print("Script job created successfully!")
+    else:
+        print(f"Failed to create script job. Error: {response.status_code} - {response.text}")
+
+def cancel_script_job():
+    """Cancel a specific script job."""
+    endpoint = "script_jobs"
+    all_jobs = make_request(endpoint)
+
+    if not all_jobs or "data" not in all_jobs:
+        print("No script jobs available.")
+        return
+
+    jobs = all_jobs["data"]
+
+    print("\nAvailable Script Jobs:")
+    for i, job in enumerate(jobs):
+        print(f"{i + 1}. Job ID: {job['id']}")
+
+    while True:
+        try:
+            choice = int(input("\nSelect a script job by number: ")) - 1
+            if 0 <= choice < len(jobs):
+                job_id = jobs[choice]["id"]
+                response = requests.delete(
+                    f"{BASE_URL}/script_jobs/{job_id}",
+                    auth=(get_api_key(), '')
+                )
+                if response.status_code == 200:
+                    print(f"Script job {job_id} canceled successfully.")
+                else:
+                    print(f"Failed to cancel script job {job_id}.")
+                break
+            else:
+                print("Invalid selection. Please try again.")
+        except ValueError:
+            print("Please enter a valid number.")
+
+# Interactive Mode
 def interactive_mode():
-    """Interactive mode for the SimpleMDM tool."""
-    print("Welcome to the SimpleMDM Tool Interactive Mode!")
+    """Interactive mode for the Simple Helper tool."""
+    print("Welcome to the Simple Helper Interactive Mode!")
     print("Type 'help' for a list of commands or 'exit' to quit.")
 
     commands = {
@@ -172,17 +318,27 @@ def interactive_mode():
         "assign-device": lambda: assign_devices_to_group_with_picker(
             input("Enter hostnames (comma-separated): ").strip().split(",")
         ),
+        "list-scripts": list_scripts,
+        "retrieve-script": retrieve_script,
+        "create-script-job": lambda: create_script_job_with_picker(
+            input("Enter hostnames (comma-separated): ").strip().split(",")
+        ),
+        "cancel-script-job": cancel_script_job,
         "help": lambda: print("\n".join([
             "Commands:",
             "  list-devices                - List all devices",
             "  list-device-groups          - List all device groups",
             "  assign-device               - Assign multiple devices to a group using hostnames",
+            "  list-scripts                - List all scripts",
+            "  retrieve-script             - Retrieve details of a specific script",
+            "  create-script-job           - Apply a script to specific hostnames",
+            "  cancel-script-job           - Cancel a script job",
             "  exit                        - Exit the tool"
         ]))
     }
 
-    try:
-        while True:
+    while True:
+        try:
             user_input = input("> ").strip()
             if user_input == "exit":
                 print("Goodbye!")
@@ -191,11 +347,12 @@ def interactive_mode():
                 commands[user_input]()
             else:
                 print("Unknown command. Type 'help' for a list of commands.")
-    except KeyboardInterrupt:
-        print("\nControl + C detected. Exiting...")
+        except KeyboardInterrupt:
+            print("\nControl + C detected...exiting")
+            break
 
 if __name__ == "__main__":
     try:
         interactive_mode()
-    except KeyboardInterrupt:
-        print("\nControl + C detected. Exiting...")
+    except Exception as e:
+        print(f"An error occurred: {e}")
