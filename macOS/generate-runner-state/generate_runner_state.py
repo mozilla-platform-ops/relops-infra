@@ -28,6 +28,7 @@ VALID_GROUP_NAMES = [
     "nss-1-b-osx-1015",
     "nss-3-b-osx-1015",
     "gecko-t-osx-1400-r8-staging",
+    "gecko-t-osx-1400-r8",
     "gecko-t-osx-1400-m2-staging",
     "gecko-t-osx-1400-m2",
     "gecko-1-b-osx-arm64",
