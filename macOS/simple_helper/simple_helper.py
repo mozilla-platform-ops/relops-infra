@@ -5,28 +5,24 @@ API_KEY_ENV_VAR = "SIMPLEMDM_API_KEY"
 BASE_URL = "https://a.simplemdm.com/api/v1/"
 
 def get_api_key():
-    """Fetch API key from environment variable."""
     api_key = os.getenv(API_KEY_ENV_VAR)
     if not api_key:
         raise ValueError(f"Environment variable {API_KEY_ENV_VAR} is not set.")
     return api_key
 
 def make_request(endpoint, method="GET", payload=None):
-    """Make a request to the SimpleMDM API."""
     api_key = get_api_key()
     url = BASE_URL + endpoint
     response = requests.request(method, url, auth=(api_key, ''), json=payload)
     if response.status_code in [200, 201]:
         return response.json()
-    elif response.status_code == 202:  # Asynchronous success
+    elif response.status_code == 202:
         return None
     else:
         print(f"Error: {response.status_code} - {response.text}")
         return None
 
-# Device and Group Management
 def fetch_all_devices():
-    """Fetch all devices using pagination."""
     endpoint = "devices"
     limit = 10
     starting_after = None
@@ -56,13 +52,11 @@ def fetch_all_devices():
     return all_devices
 
 def list_devices():
-    """List all devices."""
     all_devices = fetch_all_devices()
     for device in all_devices:
         print(f"ID: {device['id']}, Name: {device['attributes']['name']}")
 
 def fetch_all_device_groups():
-    """Fetch all device groups using pagination."""
     endpoint = "device_groups"
     limit = 10
     starting_after = None
@@ -92,13 +86,11 @@ def fetch_all_device_groups():
     return all_groups
 
 def list_device_groups():
-    """List all device groups."""
     all_groups = fetch_all_device_groups()
     for group in all_groups:
         print(f"ID: {group['id']}, Name: {group['attributes']['name']}")
 
 def pick_device_group():
-    """Display a picker to select a device group."""
     all_groups = fetch_all_device_groups()
 
     if not all_groups:
@@ -120,7 +112,6 @@ def pick_device_group():
             print("Please enter a valid number.")
 
 def assign_devices_to_group_with_picker(hostnames):
-    """Assign multiple devices to a group using a group picker."""
     all_devices = fetch_all_devices()
 
     group_id = pick_device_group()
@@ -162,9 +153,7 @@ def assign_devices_to_group_with_picker(hostnames):
     print(f"Successes: {', '.join(successes) if successes else 'None'}")
     print(f"Failures: {', '.join(failures) if failures else 'None'}")
 
-# Script Management
 def fetch_all_scripts():
-    """Fetch all scripts using pagination."""
     endpoint = "scripts"
     limit = 10
     starting_after = None
@@ -194,13 +183,11 @@ def fetch_all_scripts():
     return all_scripts
 
 def list_scripts():
-    """List all scripts."""
     all_scripts = fetch_all_scripts()
     for script in all_scripts:
         print(f"ID: {script['id']}, Name: {script['attributes']['name']}")
 
 def pick_script():
-    """Display a picker to select a script."""
     all_scripts = fetch_all_scripts()
 
     if not all_scripts:
@@ -222,7 +209,6 @@ def pick_script():
             print("Please enter a valid number.")
 
 def retrieve_script():
-    """Retrieve details of a specific script."""
     selected_script = pick_script()
     if not selected_script:
         print("No script selected.")
@@ -232,9 +218,7 @@ def retrieve_script():
     print(f"ID: {script_id}, Name: {selected_script['attributes']['name']}")
     print("Details:", selected_script["attributes"])
 
-# Script Job Management
 def create_script_job_with_picker(hostnames):
-    """Create a script job for given hostnames using a script picker."""
     selected_script = pick_script()
     if not selected_script:
         print("No script selected.")
@@ -273,7 +257,6 @@ def create_script_job_with_picker(hostnames):
         print(f"Failed to create script job. Error: {response.status_code} - {response.text}")
 
 def cancel_script_job():
-    """Cancel a specific script job."""
     endpoint = "script_jobs"
     all_jobs = make_request(endpoint)
 
@@ -306,9 +289,50 @@ def cancel_script_job():
         except ValueError:
             print("Please enter a valid number.")
 
-# Interactive Mode
+def update_os_for_hostnames(
+    hostnames,
+    os_update_mode="force_update",
+    version_type="latest_minor_version"
+):
+    all_devices = fetch_all_devices()
+    api_key = get_api_key()
+    successes = []
+    failures = []
+
+    for hostname in hostnames:
+        print(f"\nProcessing {hostname}...")
+
+        matching_device = next((d for d in all_devices if d["attributes"]["name"] == hostname), None)
+        if not matching_device:
+            print(f"❌ Device not found: {hostname}")
+            failures.append(hostname)
+            continue
+
+        device_id = matching_device["id"]
+        payload = {
+            "os_update_mode": os_update_mode,
+            "version_type": version_type
+        }
+
+        response = requests.post(
+            f"{BASE_URL}devices/{device_id}/update_os",
+            auth=(api_key, ''),
+            json=payload
+        )
+
+        if response.status_code == 202:
+            print(f"✅ Update triggered for {hostname} (Device ID {device_id})")
+            successes.append(hostname)
+        else:
+            print(f"❌ Failed to trigger update for {hostname}")
+            print(f"   Status: {response.status_code} - {response.text}")
+            failures.append(hostname)
+
+    print("\nSummary:")
+    print(f"Successful: {', '.join(successes) if successes else 'None'}")
+    print(f"Failed: {', '.join(failures) if failures else 'None'}")
+
 def interactive_mode():
-    """Interactive mode for the Simple Helper tool."""
     print("Welcome to the Simple Helper Interactive Mode!")
     print("Type 'help' for a list of commands or 'exit' to quit.")
 
@@ -324,6 +348,9 @@ def interactive_mode():
             input("Enter hostnames (comma-separated): ").strip().split(",")
         ),
         "cancel-script-job": cancel_script_job,
+        "update-os": lambda: update_os_for_hostnames(
+            input("Enter hostnames (comma-separated): ").strip().split(",")
+        ),
         "help": lambda: print("\n".join([
             "Commands:",
             "  list-devices                - List all devices",
@@ -333,6 +360,7 @@ def interactive_mode():
             "  retrieve-script             - Retrieve details of a specific script",
             "  create-script-job           - Apply a script to specific hostnames",
             "  cancel-script-job           - Cancel a script job",
+            "  update-os                   - Trigger a macOS update on selected hostnames",
             "  exit                        - Exit the tool"
         ]))
     }
