@@ -1,68 +1,103 @@
+# 🛠️ Simple Helper Tool
 
-# Simple Helper Tool
+An interactive CLI for managing **devices**, **device groups**, **scripts**, **script jobs**, and triggering **macOS updates** via the [SimpleMDM API](https://simplemdm.com/).
 
-This tool provides an interactive interface for managing devices, device groups, scripts, and script jobs using the SimpleMDM API.
+---
 
-## Requirements
+## 🚀 Features
 
-- Python 3.7 or higher
-- Pipenv for dependency management
+- 📱 List & assign devices
+- 🗂️ Manage device groups
+- 📜 Run & cancel scripts
+- 💻 Trigger macOS updates across multiple hosts
+- 🔁 Interactive, resumable flow with CLI pickers
 
-## Setup
+---
 
-1. Clone the repository or download the tool.
-2. Open a terminal and navigate to the directory where the tool is located:
+## 🧰 Requirements
+
+- Python **3.7+** (Python 3.11+ recommended)
+- [`pipenv`](https://pipenv.pypa.io/en/latest/) for environment management
+- An environment variable `SIMPLEMDM_API_KEY` set with your SimpleMDM API key
+
+---
+
+## ⚙️ Setup
+
+1. Clone the repository:
+
    ```bash
-   cd /path/to/tool
+   git clone https://github.com/rcurranmoz/relops-infra.git
+   cd simple_helper
    ```
-3. Install the dependencies using Pipenv (one-time setup):
+
+2. Install dependencies:
+
    ```bash
    pipenv install
    ```
 
-4. Activate the Pipenv shell:
+3. Activate the virtual environment:
+
    ```bash
    pipenv shell
    ```
 
-## Usage
+4. (One-time) export your API key:
 
-Run the tool by executing:
+   ```bash
+   export SIMPLEMDM_API_KEY=your_key_here
+   ```
+
+---
+
+## 🧑‍💻 Usage
+
+Run the tool:
+
 ```bash
 python simple_helper.py
 ```
 
-## Commands
+Type `help` in the prompt for a list of commands.
 
-Below are the available commands in the interactive mode:
+---
 
-1. **Device Management**:
-   - `list-devices`: List all devices with pagination.
-   - `assign-device`: Assign multiple devices to a device group using a picker.
+## 💡 Commands
 
-2. **Device Group Management**:
-   - `list-device-groups`: List all device groups with pagination.
+### 📱 Device Management
+- `list-devices` – List all enrolled devices
+- `assign-device` – Assign one or more devices to a selected group
 
-3. **Script Management**:
-   - `list-scripts`: List all available scripts.
-   - `retrieve-script`: Retrieve details of a specific script using a picker.
+### 🗂️ Device Group Management
+- `list-device-groups` – Show all device groups
 
-4. **Script Job Management**:
-   - `create-script-job`: Apply a script to specific hostnames using a picker.
-   - `cancel-script-job`: Cancel a specific script job using a picker.
+### 📜 Script Management
+- `list-scripts` – View all uploaded scripts
+- `retrieve-script` – Show full details of a selected script
 
-5. **Help**:
-   - `help`: Display a list of available commands.
+### 🧪 Script Jobs
+- `create-script-job` – Push a selected script to specific hosts
+- `cancel-script-job` – Cancel a selected script job
 
-6. **Exit**:
-   - `exit`: Quit the tool.
+### 🔄 OS Update
+- `update-os` – Trigger macOS updates for specified hostnames (e.g., `macmini-r8-1,macmini-r8-2`)
 
-## Notes
+### 🆘 Help & Exit
+- `help` – Show available commands
+- `exit` – Exit the tool
 
-- Ensure your environment variable `SIMPLEMDM_API_KEY` is set before running the tool.
+---
+
+## ⚠️ Notes
+
+- Your API key must be set via the `SIMPLEMDM_API_KEY` environment variable before use.
 - Use `pipenv shell` to activate the environment before each session.
 
-## Exiting
+---
 
-- Type `exit` to quit the tool.
-- Press `Ctrl+C` to exit gracefully at any time.
+## ❌ Exiting
+
+- Type `exit` at any time, or press `Ctrl+C` to quit gracefully.
+
+---
