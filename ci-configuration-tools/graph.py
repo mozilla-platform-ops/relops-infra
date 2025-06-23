@@ -60,6 +60,7 @@ def main():
                 pool_to_image[pool_id].append(image)
 
     lines = [
+        '%%{init: { "flowchart": { "htmlLabels": true, "curve": "curve", "useMaxWidth": 500, "diagramPadding": 10 } } }%%',
         "graph TD",
         "classDef poolNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
         "classDef aliasNode fill:#d0e7ff,stroke:#333,stroke-width:1px,width:600px;",  # light blue
