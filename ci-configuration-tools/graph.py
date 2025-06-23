@@ -46,6 +46,8 @@ def main():
         "classDef poolNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
         "classDef aliasNode fill:#ffd6e0,stroke:#333,stroke-width:1px;",  # light pink
         "classDef imageNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
+        "classDef l3imageNode fill:#fff9b1,stroke:#333,stroke-width:1px;"  # light yellow
+
     ]
     pool_nodes = []
     alias_nodes = []
@@ -69,11 +71,15 @@ def main():
                             for provider, path in resolved.items():
                                 path_str = f"{provider}: {path}" if isinstance(path, str) else f"{provider}: {path.get('name', '')}"
                                 path_node = sanitize_node_id(f"{alias_node}_{provider}".replace("-", "_"))
-                                lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::imageNode')
+                                # Check for 'level3' in path_str to determine node class
+                                node_class = "l3imageNode" if "level3" in path_str else "imageNode"
+                                lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::{node_class}')
                                 image_nodes.append(path_node)
                         elif isinstance(resolved, str):
                             path_node = sanitize_node_id(f"{alias_node}_img")
-                            lines.append(f'    {alias_node} --> {path_node}["{resolved}"]:::imageNode')
+                            # Check for 'level3' in resolved string to determine node class
+                            node_class = "l3imageNode" if "level3" in resolved else "imageNode"
+                            lines.append(f'    {alias_node} --> {path_node}["{resolved}"]:::{node_class}')
                             image_nodes.append(path_node)
             else:
                 alias_node = sanitize_node_id(alias.replace("-", "_").replace("/", "_"))
@@ -84,11 +90,15 @@ def main():
                     for provider, path in resolved.items():
                         path_str = f"{provider}: {path}" if isinstance(path, str) else f"{provider}: {path.get('name', '')}"
                         path_node = sanitize_node_id(f"{alias_node}_{provider}".replace("-", "_"))
-                        lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::imageNode')
+                        # Check for 'level3' in path_str to determine node class
+                        node_class = "l3imageNode" if "level3" in path_str else "imageNode"
+                        lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::{node_class}')
                         image_nodes.append(path_node)
                 elif isinstance(resolved, str):
                     path_node = sanitize_node_id(f"{alias_node}_img")
-                    lines.append(f'    {alias_node} --> {path_node}["{resolved}"]:::imageNode')
+                    # Check for 'level3' in resolved string to determine node class
+                    node_class = "l3imageNode" if "level3" in resolved else "imageNode"
+                    lines.append(f'    {alias_node} --> {path_node}["{resolved}"]:::{node_class}')
                     image_nodes.append(path_node)
 
     with open("worker_pools_images.mmd", "w") as f:
