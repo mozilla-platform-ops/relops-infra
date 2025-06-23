@@ -27,6 +27,14 @@ def sanitize_node_id(s):
     # Only allow alphanumeric and underscores in node IDs
     return re.sub(r'[^a-zA-Z0-9_]', '', s)
 
+def shorten_image_path(path):
+    # Remove known prefixes from image paths
+    if not isinstance(path, str):
+        return path
+    # Example: 'projects/taskcluster-imaging/global/images/docker-firefoxci-gcp-l1-googlecompute-2025-06-13t18-31-38z'
+    # becomes 'docker-firefoxci-gcp-l1-googlecompute-2025-06-13t18-31-38z'
+    return path.split('/')[-1]
+
 def main():
     parser = argparse.ArgumentParser(description="Generate Mermaid diagram for worker pools and images.")
     parser.add_argument('-g', '--generate', action='store_true', help='Generate image using mmdc')
@@ -79,17 +87,20 @@ def main():
                         resolved = resolve_image_alias(v, images)
                         if isinstance(resolved, dict):
                             for provider, path in resolved.items():
-                                path_str = f"{provider}: {path}" if isinstance(path, str) else f"{provider}: {path.get('name', '')}"
+                                # Shorten path for display
+                                short_path = shorten_image_path(path) if isinstance(path, str) else path.get('name', '')
+                                path_str = f"{provider}: {short_path}"
                                 path_node = sanitize_node_id(f"{alias_node}_{provider}".replace("-", "_"))
                                 # Check for 'level3' in path_str to determine node class
                                 node_class = "l3imageNode" if "level3" in path_str else "imageNode"
                                 lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::{node_class}')
                                 image_nodes.append(path_node)
                         elif isinstance(resolved, str):
+                            short_resolved = shorten_image_path(resolved)
                             path_node = sanitize_node_id(f"{alias_node}_img")
-                            # Check for 'level3' in resolved string to determine node class
-                            node_class = "l3imageNode" if "level3" in resolved else "imageNode"
-                            lines.append(f'    {alias_node} --> {path_node}["{resolved}"]:::{node_class}')
+                            # Check for 'level3' in short_resolved to determine node class
+                            node_class = "l3imageNode" if "level3" in short_resolved else "imageNode"
+                            lines.append(f'    {alias_node} --> {path_node}["{short_resolved}"]:::{node_class}')
                             image_nodes.append(path_node)
             else:
                 alias_node = sanitize_node_id(alias.replace("-", "_").replace("/", "_"))
@@ -98,17 +109,19 @@ def main():
                 resolved = resolve_image_alias(alias, images)
                 if isinstance(resolved, dict):
                     for provider, path in resolved.items():
-                        path_str = f"{provider}: {path}" if isinstance(path, str) else f"{provider}: {path.get('name', '')}"
+                        short_path = shorten_image_path(path) if isinstance(path, str) else path.get('name', '')
+                        path_str = f"{provider}: {short_path}"
                         path_node = sanitize_node_id(f"{alias_node}_{provider}".replace("-", "_"))
                         # Check for 'level3' in path_str to determine node class
                         node_class = "l3imageNode" if "level3" in path_str else "imageNode"
                         lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::{node_class}')
                         image_nodes.append(path_node)
                 elif isinstance(resolved, str):
+                    short_resolved = shorten_image_path(resolved)
                     path_node = sanitize_node_id(f"{alias_node}_img")
-                    # Check for 'level3' in resolved string to determine node class
-                    node_class = "l3imageNode" if "level3" in resolved else "imageNode"
-                    lines.append(f'    {alias_node} --> {path_node}["{resolved}"]:::{node_class}')
+                    # Check for 'level3' in short_resolved to determine node class
+                    node_class = "l3imageNode" if "level3" in short_resolved else "imageNode"
+                    lines.append(f'    {alias_node} --> {path_node}["{short_resolved}"]:::{node_class}')
                     image_nodes.append(path_node)
 
     with open("worker_pools_images.mmd", "w") as f:
