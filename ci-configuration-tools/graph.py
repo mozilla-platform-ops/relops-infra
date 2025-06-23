@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import yaml
 import re
 from collections import defaultdict
@@ -39,10 +41,20 @@ def main():
             else:
                 pool_to_image[pool_id].append(image)
 
-    lines = ["graph TD"]
+    lines = [
+        "graph TD",
+        "classDef poolNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
+        "classDef aliasNode fill:#ffd6e0,stroke:#333,stroke-width:1px;",  # light pink
+        "classDef imageNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
+    ]
+    pool_nodes = []
+    alias_nodes = []
+    image_nodes = []
+
     for pool_id, image_aliases in pool_to_image.items():
         pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
-        lines.append(f'    {pool_node}["{pool_id}"]')
+        lines.append(f'    {pool_node}["{pool_id}"]:::poolNode')
+        pool_nodes.append(pool_node)
         for alias in image_aliases:
             if isinstance(alias, dict):
                 # e.g., {'by-chain-of-trust': ...}
@@ -50,29 +62,34 @@ def main():
                     if v:
                         alias_str = f"{k}: {v}"
                         alias_node = sanitize_node_id(f"{pool_node}_{k}".replace("-", "_").replace("/", "_"))
-                        lines.append(f'    {pool_node} --> {alias_node}["{alias_str}"]')
+                        lines.append(f'    {pool_node} --> {alias_node}["{alias_str}"]:::aliasNode')
+                        alias_nodes.append(alias_node)
                         resolved = resolve_image_alias(v, images)
-                        # handle resolved as before...
                         if isinstance(resolved, dict):
                             for provider, path in resolved.items():
                                 path_str = f"{provider}: {path}" if isinstance(path, str) else f"{provider}: {path.get('name', '')}"
                                 path_node = sanitize_node_id(f"{alias_node}_{provider}".replace("-", "_"))
-                                lines.append(f'    {alias_node} --> {path_node}["{path_str}"]')
+                                lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::imageNode')
+                                image_nodes.append(path_node)
                         elif isinstance(resolved, str):
                             path_node = sanitize_node_id(f"{alias_node}_img")
-                            lines.append(f'    {alias_node} --> {path_node}["{resolved}"]')
+                            lines.append(f'    {alias_node} --> {path_node}["{resolved}"]:::imageNode')
+                            image_nodes.append(path_node)
             else:
                 alias_node = sanitize_node_id(alias.replace("-", "_").replace("/", "_"))
-                lines.append(f'    {pool_node} --> {alias_node}["{alias}"]')
+                lines.append(f'    {pool_node} --> {alias_node}["{alias}"]:::aliasNode')
+                alias_nodes.append(alias_node)
                 resolved = resolve_image_alias(alias, images)
                 if isinstance(resolved, dict):
                     for provider, path in resolved.items():
                         path_str = f"{provider}: {path}" if isinstance(path, str) else f"{provider}: {path.get('name', '')}"
                         path_node = sanitize_node_id(f"{alias_node}_{provider}".replace("-", "_"))
-                        lines.append(f'    {alias_node} --> {path_node}["{path_str}"]')
+                        lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::imageNode')
+                        image_nodes.append(path_node)
                 elif isinstance(resolved, str):
                     path_node = sanitize_node_id(f"{alias_node}_img")
-                    lines.append(f'    {alias_node} --> {path_node}["{resolved}"]')
+                    lines.append(f'    {alias_node} --> {path_node}["{resolved}"]:::imageNode')
+                    image_nodes.append(path_node)
 
     with open("worker_pools_images.mmd", "w") as f:
         f.write("\n".join(lines))
