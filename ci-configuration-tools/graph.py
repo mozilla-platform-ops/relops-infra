@@ -30,6 +30,7 @@ def sanitize_node_id(s):
 def main():
     parser = argparse.ArgumentParser(description="Generate Mermaid diagram for worker pools and images.")
     parser.add_argument('-g', '--generate', action='store_true', help='Generate image using mmdc')
+    parser.add_argument('--pool-exclude', type=str, default=None, help='Exclude pools whose pool_id matches this string')
     args = parser.parse_args()
 
     pools = load_yaml("worker-pools.yml")
@@ -38,6 +39,8 @@ def main():
     pool_to_image = defaultdict(list)
     for pool in pools.get("pools", []):
         pool_id = pool.get("pool_id")
+        if args.pool_exclude and args.pool_exclude in pool_id:
+            continue  # Skip excluded pools
         config = pool.get("config", {})
         image = config.get("image")
         if image:
@@ -51,8 +54,8 @@ def main():
     lines = [
         "graph TD",
         "classDef poolNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
-        "classDef aliasNode fill:#fff9b1,stroke:#333,stroke-width:1px;"  # light yellow
-        "classDef imageNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
+        "classDef aliasNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
+        "classDef imageNode fill:#fff9b1,stroke:#333,stroke-width:1px;"  # light yellow
         "classDef l3imageNode fill:#ffd6e0,stroke:#333,stroke-width:1px;",  # light pink
 
     ]
