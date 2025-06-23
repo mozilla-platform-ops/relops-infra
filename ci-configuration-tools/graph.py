@@ -3,6 +3,9 @@
 import yaml
 import re
 from collections import defaultdict
+import argparse
+import subprocess
+import sys
 
 def load_yaml(path):
     with open(path) as f:
@@ -25,6 +28,10 @@ def sanitize_node_id(s):
     return re.sub(r'[^a-zA-Z0-9_]', '', s)
 
 def main():
+    parser = argparse.ArgumentParser(description="Generate Mermaid diagram for worker pools and images.")
+    parser.add_argument('-g', '--generate', action='store_true', help='Generate image using mmdc')
+    args = parser.parse_args()
+
     pools = load_yaml("worker-pools.yml")
     images = load_yaml("worker-images.yml")
 
@@ -43,10 +50,10 @@ def main():
 
     lines = [
         "graph TD",
-        "classDef poolNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
-        "classDef aliasNode fill:#ffd6e0,stroke:#333,stroke-width:1px;",  # light pink
-        "classDef imageNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
-        "classDef l3imageNode fill:#fff9b1,stroke:#333,stroke-width:1px;"  # light yellow
+        "classDef poolNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
+        "classDef aliasNode fill:#fff9b1,stroke:#333,stroke-width:1px;"  # light yellow
+        "classDef imageNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
+        "classDef l3imageNode fill:#ffd6e0,stroke:#333,stroke-width:1px;",  # light pink
 
     ]
     pool_nodes = []
@@ -104,6 +111,20 @@ def main():
     with open("worker_pools_images.mmd", "w") as f:
         f.write("\n".join(lines))
     print("Mermaid diagram written to worker_pools_images.mmd")
+
+    if args.generate:
+        dest_name = "worker_pools_images.pdf"
+        try:
+            subprocess.run([
+                "mmdc",
+                "-i", "worker_pools_images.mmd",
+                "-o", dest_name
+            ], check=True)
+            print(f"Image generated: {dest_name}")
+        except FileNotFoundError:
+            print("Error: mmdc not found. Please install @mermaid-js/mermaid-cli.", file=sys.stderr)
+        except subprocess.CalledProcessError as e:
+            print(f"Error running mmdc: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
