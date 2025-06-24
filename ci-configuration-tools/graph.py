@@ -15,6 +15,9 @@ def resolve_image_alias(image_alias, images):
     # Recursively resolve aliases to their final mapping
     if not isinstance(image_alias, str):
         return image_alias
+    if "{" in image_alias and "}" in image_alias:
+        # If alias contains curly brackets, treat as image, do not resolve further
+        return image_alias
     seen = set()
     while isinstance(images.get(image_alias), str):
         if image_alias in seen:
@@ -94,6 +97,13 @@ def main():
             lines.append(f'    {pool_node} --> {alias_node}["<pre>{alias}</pre>"]:::aliasNode')
             alias_nodes.append(alias_node)
             resolved = resolve_image_alias(alias, images)
+            # If the alias is an image (contains curly brackets), make the alias node an imageNode
+            if isinstance(alias, str) and "{" in alias and "}" in alias:
+                # Change the class of the alias node to imageNode
+                lines[-1] = f'    {pool_node} --> {alias_node}["<pre>{alias}</pre>"]:::imageNode'
+                print("", f"Alias '{alias}' is an image, not resolving further.")
+                # No further edges needed
+                continue
             if isinstance(resolved, dict):
                 for provider, path in resolved.items():
                     short_path = shorten_image_path(path) if isinstance(path, str) else path.get('name', '')
