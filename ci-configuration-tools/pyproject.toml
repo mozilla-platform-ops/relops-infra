@@ -6,7 +6,7 @@ authors = [{name = "Andrew Erickson",email = "aerickson@mozilla.com"}]
 license = {text = "MPL 2.0"}
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["pyyaml (>=6.0.2,<7.0.0)"]
 
 [tool.poetry]
 
