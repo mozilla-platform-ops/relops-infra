@@ -7,6 +7,7 @@ import argparse
 import subprocess
 import sys
 import os
+import json
 
 def load_yaml(path):
     with open(path) as f:
@@ -55,18 +56,37 @@ def extract_image_aliases(image_config):
         return results
     return []
 
+def load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
 def main():
     parser = argparse.ArgumentParser(description="Generate Mermaid diagram for worker pools and images.")
     parser.add_argument('-g', '--generate', action='store_true', help='Generate image using mmdc')
     parser.add_argument('-e', '--pool-exclude', type=str, default=None, help='Exclude pools whose pool_id matches this string')
     parser.add_argument('-p', '--path-to-fxci-config', type=str, default='.', help='Path to look for the yaml files in (default: current directory)')
+    parser.add_argument('-m', '--path-to-mozilla-repo', type=str, default='~/git/firefox', help='Path to look for the tasks files in (default: ~/git/firefox)')
     args = parser.parse_args()
 
-    pools_path = os.path.join(args.path_to_fxci_config, "worker-pools.yml")
-    images_path = os.path.join(args.path_to_fxci_config, "worker-images.yml")
+    pools_path = os.path.join(os.path.expanduser(args.path_to_fxci_config), "worker-pools.yml")
+    images_path = os.path.join(os.path.expanduser(args.path_to_fxci_config), "worker-images.yml")
+    tasks_path = os.path.join(os.path.expanduser(args.path_to_mozilla_repo), "tasks.json")
 
     pools = load_yaml(pools_path)
     images = load_yaml(images_path)
+    tasks = load_json(tasks_path)
+
+    for k,v in tasks.items():
+        # print the task name and it's workerType
+        # print(f"Task: {k}")
+        if isinstance(v, dict) and 'task' in v:
+            worker_type = v['task'].get('workerType')
+            if worker_type:
+                print(f"Task: {k}, Worker Type: {worker_type}")
+
+    # import pprint
+    # pprint.pprint(tasks)
+    sys.exit(0)
 
     pool_to_image = defaultdict(list)
     for pool in pools.get("pools", []):
@@ -138,7 +158,7 @@ def main():
                 "-i", "worker_pools_images.mmd",
                 "-o", dest_name,
                 # pdfFit trims the bottom of the doc too much, so we disable it
-                # "--pdfFit"  # Try to improve text rendering in PDF
+                "--pdfFit"  # Try to improve text rendering in PDF
             ], check=True)
             print(f"Image generated: {dest_name}")
             # print("If text is still not searchable, try generating SVG and converting to PDF with Inkscape or rsvg-convert.")
