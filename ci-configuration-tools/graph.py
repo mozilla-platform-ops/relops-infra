@@ -58,7 +58,7 @@ def extract_image_aliases(image_config):
 def main():
     parser = argparse.ArgumentParser(description="Generate Mermaid diagram for worker pools and images.")
     parser.add_argument('-g', '--generate', action='store_true', help='Generate image using mmdc')
-    parser.add_argument('--pool-exclude', type=str, default=None, help='Exclude pools whose pool_id matches this string')
+    parser.add_argument('-e', '--pool-exclude', type=str, default=None, help='Exclude pools whose pool_id matches this string')
     parser.add_argument('-p', '--path-to-fxci-config', type=str, default='.', help='Path to look for the yaml files in (default: current directory)')
     args = parser.parse_args()
 
