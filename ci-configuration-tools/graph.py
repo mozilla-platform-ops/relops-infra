@@ -9,6 +9,9 @@ import sys
 import os
 import json
 
+from summarize_tasks import extract_group
+
+
 def load_yaml(path):
     with open(path) as f:
         return yaml.safe_load(f)
@@ -76,17 +79,34 @@ def main():
     images = load_yaml(images_path)
     tasks = load_json(tasks_path)
 
-    for k,v in tasks.items():
-        # print the task name and it's workerType
-        # print(f"Task: {k}")
-        if isinstance(v, dict) and 'task' in v:
-            worker_type = v['task'].get('workerType')
-            if worker_type:
-                print(f"Task: {k}, Worker Type: {worker_type}")
+    # initial testing
+    #
+    # for k,v in tasks.items():
+    #     # print the task name and it's workerType
+    #     # print(f"Task: {k}")
+    #     if isinstance(v, dict) and 'task' in v:
+    #         worker_type = v['task'].get('workerType')
+    #         if worker_type:
+    #             print(f"Task: {k}, Worker Type: {worker_type}")
+
+    # need to map workerType to extracted_group
+    # worker_type_to_task_labels = defaultdict(list)
+    # for task_name, task_info in tasks.items():
+    #     if isinstance(task_info, dict) and 'task' in task_info:
+    #         worker_type = task_info['task'].get('workerType')
+    #         if worker_type:
+    #             group = extract_group(task_name)
+    #             # TODO: add count of tasks per group to label?
+    #             #   - don't have that data yet... would have to do pass above
+    #             label = group
+    #             worker_type_to_task_labels[worker_type].append(label)
+    #             print(f"Task: {task_name}, Group: {group}, Worker Type: {worker_type}")
+    #     else:
+    #         print(f"Task: {task_name} has no valid task info")
 
     # import pprint
     # pprint.pprint(tasks)
-    sys.exit(0)
+    # sys.exit(0)
 
     pool_to_image = defaultdict(list)
     for pool in pools.get("pools", []):
@@ -104,6 +124,7 @@ def main():
     lines = [
         '%%{init: {"theme": "dark", "themeVariables": {}, "flowchart": { "htmlLabels": true, "curve": "curve", "useMaxWidth": 500, "diagramPadding": 10 } } }%%',
         "graph TD",
+        "classDef taskNode fill:#f9f,stroke:#333,stroke-width:1px;",  # light purple
         "classDef poolNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
         "classDef aliasNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
         "classDef imageNode fill:#fff9b1,stroke:#333,stroke-width:1px;",  # light yellow
