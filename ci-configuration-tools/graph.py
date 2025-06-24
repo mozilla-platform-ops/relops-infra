@@ -6,6 +6,7 @@ from collections import defaultdict
 import argparse
 import subprocess
 import sys
+import os
 
 def load_yaml(path):
     with open(path) as f:
@@ -58,10 +59,14 @@ def main():
     parser = argparse.ArgumentParser(description="Generate Mermaid diagram for worker pools and images.")
     parser.add_argument('-g', '--generate', action='store_true', help='Generate image using mmdc')
     parser.add_argument('--pool-exclude', type=str, default=None, help='Exclude pools whose pool_id matches this string')
+    parser.add_argument('-p', '--path-to-fxci-config', type=str, default='.', help='Path to look for the yaml files in')
     args = parser.parse_args()
 
-    pools = load_yaml("worker-pools.yml")
-    images = load_yaml("worker-images.yml")
+    pools_path = os.path.join(args.path_to_fxci_config, "worker-pools.yml")
+    images_path = os.path.join(args.path_to_fxci_config, "worker-images.yml")
+
+    pools = load_yaml(pools_path)
+    images = load_yaml(images_path)
 
     pool_to_image = defaultdict(list)
     for pool in pools.get("pools", []):
@@ -132,7 +137,8 @@ def main():
                 "mmdc",
                 "-i", "worker_pools_images.mmd",
                 "-o", dest_name,
-                "--pdfFit"  # Try to improve text rendering in PDF
+                # pdfFit trims the bottom of the doc too much, so we disable it
+                # "--pdfFit"  # Try to improve text rendering in PDF
             ], check=True)
             print(f"Image generated: {dest_name}")
             # print("If text is still not searchable, try generating SVG and converting to PDF with Inkscape or rsvg-convert.")
