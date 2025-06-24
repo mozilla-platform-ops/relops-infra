@@ -14,13 +14,26 @@ def extract_group(task_name, debug=False):
 
     # todo: eliminate some things from split_name... locales, platforms?
     temp_split_name = []
-    drop_list = ['linux64', 'macosx64', 'win64', 'aarch64', 'x86_64', 'a55', 'macos', 'win32', 'linux2404', '1015', 'macosx1470', 'linux']
+    drop_list = ['linux64', 'macosx64', 'win64', 'aarch64', 'x86_64', 'a55', 'macos', 'win32', 'linux2404',
+    '1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11']
     release_drop_list = ['beta', 'nightly', 'release', 'esr', 'raw', 'opt', 'dbg']
+    two_or_three_char_drop_list = [
+        "ach", "af", "afl", "all", "an", "apk", "apt", "ar", "arm", "as", "ast", "av", "az", "be", "bg", "bn", "bo", "br", "brx", "bs",
+        "ca", "cak", "cft", "ckb", "cnn", "cs", "cy", "da", "de", "deb", "doc", "dsb", "el", "em", "en", "eo", "es", "et", "eu", "fa",
+        "fat", "ff", "fi", "fix", "fr", "fur", "fy", "ga", "gcc", "gd", "gdb", "gl", "gn", "gu", "he", "hi", "hr", "hsb", "hu", "hw",
+        "hy", "hye", "ia", "id", "ios", "is", "it", "ja", "jdk", "ka", "kab", "kk", "km", "kn", "ko", "lib", "lij", "lo", "lt", "ltg",
+        "lv", "mac", "mar", "meh", "mk", "ml", "mr", "ms", "msi", "mwu", "my", "nb", "ndk", "ne", "nl", "nn", "oc", "osx", "pa", "pl",
+        "pt", "rm", "ro", "rpm", "ru", "sat", "sc", "scn", "sco", "sdk", "si", "sk", "skr", "sl", "sm", "son", "sq", "sql", "sr", "sub",
+        "sv", "szl", "ta", "tab", "te", "tg", "th", "tl", "to", "tps", "tr", "trs", "try", "tts", "ui", "uk", "ur", "uz", "vi", "w64",
+        "win", "wo", "wpt", "x64", "x86", "xh", "zh",
+        "CA", "GB", "AR", "CL", "ES", "MX", "NL", "IE", "AM", "NP", "BR", "PT", "SE", "CN", "TW"
+    ]
+
     for item in split_name:
         if debug:
             print("- ", item, " ", len(item))
 
-        if len(item) == 2 or len(item) == 3:
+        if item in two_or_three_char_drop_list or item.upper() in two_or_three_char_drop_list:
             # drop 2 letter items... usally locales
             temp_split_name.append("*")
             if debug:
