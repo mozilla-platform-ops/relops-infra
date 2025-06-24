@@ -35,6 +35,22 @@ def shorten_image_path(path):
     # becomes 'docker-firefoxci-gcp-l1-googlecompute-2025-06-13t18-31-38z'
     return path.split('/')[-1]
 
+def extract_image_aliases(image_config):
+    """Recursively extract all image/alias strings from a nested image config."""
+    if isinstance(image_config, str):
+        return [image_config]
+    elif isinstance(image_config, dict):
+        results = []
+        for v in image_config.values():
+            results.extend(extract_image_aliases(v))
+        return results
+    elif isinstance(image_config, list):
+        results = []
+        for item in image_config:
+            results.extend(extract_image_aliases(item))
+        return results
+    return []
+
 def main():
     parser = argparse.ArgumentParser(description="Generate Mermaid diagram for worker pools and images.")
     parser.add_argument('-g', '--generate', action='store_true', help='Generate image using mmdc')
@@ -52,12 +68,10 @@ def main():
         config = pool.get("config", {})
         image = config.get("image")
         if image:
-            if isinstance(image, dict):
-                for v in image.values():
-                    if v:
-                        pool_to_image[pool_id].append(v)
-            else:
-                pool_to_image[pool_id].append(image)
+            # Use the new recursive extractor
+            for alias in extract_image_aliases(image):
+                if alias:
+                    pool_to_image[pool_id].append(alias)
 
     lines = [
         '%%{init: { "flowchart": { "htmlLabels": true, "curve": "curve", "useMaxWidth": 500, "diagramPadding": 10 } } }%%',
@@ -73,56 +87,29 @@ def main():
 
     for pool_id, image_aliases in pool_to_image.items():
         pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
-        lines.append(f'    {pool_node}["{pool_id}"]:::poolNode')
+        lines.append(f'    {pool_node}["<pre>{pool_id}</pre>"]:::poolNode')
         pool_nodes.append(pool_node)
         for alias in image_aliases:
-            if isinstance(alias, dict):
-                # e.g., {'by-chain-of-trust': ...}
-                for k, v in alias.items():
-                    if v:
-                        alias_str = f"{k}: {v}"
-                        alias_node = sanitize_node_id(f"{pool_node}_{k}".replace("-", "_").replace("/", "_"))
-                        lines.append(f'    {pool_node} --> {alias_node}["{alias_str}"]:::aliasNode')
-                        alias_nodes.append(alias_node)
-                        resolved = resolve_image_alias(v, images)
-                        if isinstance(resolved, dict):
-                            for provider, path in resolved.items():
-                                # Shorten path for display
-                                short_path = shorten_image_path(path) if isinstance(path, str) else path.get('name', '')
-                                path_str = f"{provider}: {short_path}"
-                                path_node = sanitize_node_id(f"{alias_node}_{provider}".replace("-", "_"))
-                                # Check for 'level3' in path_str to determine node class
-                                node_class = "l3imageNode" if "level3" in path_str else "imageNode"
-                                lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::{node_class}')
-                                image_nodes.append(path_node)
-                        elif isinstance(resolved, str):
-                            short_resolved = shorten_image_path(resolved)
-                            path_node = sanitize_node_id(f"{alias_node}_img")
-                            # Check for 'level3' in short_resolved to determine node class
-                            node_class = "l3imageNode" if "level3" in short_resolved else "imageNode"
-                            lines.append(f'    {alias_node} --> {path_node}["{short_resolved}"]:::{node_class}')
-                            image_nodes.append(path_node)
-            else:
-                alias_node = sanitize_node_id(alias.replace("-", "_").replace("/", "_"))
-                lines.append(f'    {pool_node} --> {alias_node}["{alias}"]:::aliasNode')
-                alias_nodes.append(alias_node)
-                resolved = resolve_image_alias(alias, images)
-                if isinstance(resolved, dict):
-                    for provider, path in resolved.items():
-                        short_path = shorten_image_path(path) if isinstance(path, str) else path.get('name', '')
-                        path_str = f"{provider}: {short_path}"
-                        path_node = sanitize_node_id(f"{alias_node}_{provider}".replace("-", "_"))
-                        # Check for 'level3' in path_str to determine node class
-                        node_class = "l3imageNode" if "level3" in path_str else "imageNode"
-                        lines.append(f'    {alias_node} --> {path_node}["{path_str}"]:::{node_class}')
-                        image_nodes.append(path_node)
-                elif isinstance(resolved, str):
-                    short_resolved = shorten_image_path(resolved)
-                    path_node = sanitize_node_id(f"{alias_node}_img")
-                    # Check for 'level3' in short_resolved to determine node class
-                    node_class = "l3imageNode" if "level3" in short_resolved else "imageNode"
-                    lines.append(f'    {alias_node} --> {path_node}["{short_resolved}"]:::{node_class}')
+            alias_node = sanitize_node_id(alias.replace("-", "_").replace("/", "_"))
+            lines.append(f'    {pool_node} --> {alias_node}["<pre>{alias}</pre>"]:::aliasNode')
+            alias_nodes.append(alias_node)
+            resolved = resolve_image_alias(alias, images)
+            if isinstance(resolved, dict):
+                for provider, path in resolved.items():
+                    short_path = shorten_image_path(path) if isinstance(path, str) else path.get('name', '')
+                    path_str = f"{provider}: {short_path}"
+                    # Use provider and short_path for node ID to deduplicate
+                    path_node = sanitize_node_id(f"{provider}_{short_path}".replace("-", "_"))
+                    node_class = "l3imageNode" if "level3" in path_str else "imageNode"
+                    lines.append(f'    {alias_node} --> {path_node}["<pre>{path_str}</pre>"]:::{node_class}')
                     image_nodes.append(path_node)
+            elif isinstance(resolved, str):
+                short_resolved = shorten_image_path(resolved)
+                # Use short_resolved for node ID to deduplicate
+                path_node = sanitize_node_id(short_resolved.replace("-", "_"))
+                node_class = "l3imageNode" if "level3" in short_resolved else "imageNode"
+                lines.append(f'    {alias_node} --> {path_node}["<pre>{short_resolved}</pre>"]:::{node_class}')
+                image_nodes.append(path_node)
 
     with open("worker_pools_images.mmd", "w") as f:
         f.write("\n".join(lines))
@@ -134,9 +121,11 @@ def main():
             subprocess.run([
                 "mmdc",
                 "-i", "worker_pools_images.mmd",
-                "-o", dest_name
+                "-o", dest_name,
+                "--pdfFit"  # Try to improve text rendering in PDF
             ], check=True)
             print(f"Image generated: {dest_name}")
+            # print("If text is still not searchable, try generating SVG and converting to PDF with Inkscape or rsvg-convert.")
         except FileNotFoundError:
             print("Error: mmdc not found. Please install @mermaid-js/mermaid-cli.", file=sys.stderr)
         except subprocess.CalledProcessError as e:
