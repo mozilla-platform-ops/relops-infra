@@ -8,9 +8,15 @@ import subprocess
 import sys
 import os
 import json
+import logging
+import pprint
+
 
 from summarize_tasks import extract_group
 
+# setup logging
+# TODO: configure log level via argparse args
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def load_yaml(path):
     with open(path) as f:
@@ -93,7 +99,7 @@ def main():
                     pool_to_image[pool_id].append(alias)
 
     lines = [
-        '%%{init: {"theme": "dark", "themeVariables": {}, "flowchart": { "htmlLabels": true, "curve": "curve", "useMaxWidth": 500, "diagramPadding": 10 } } }%%',
+        '%%{init: {  "maxTextSize": 99999999, "theme": "dark", "themeVariables": {}, "flowchart": { "htmlLabels": true, "curve": "curve", "useMaxWidth": 500, "diagramPadding": 10 } } }%%',
         "graph TD",
         "classDef taskNode fill:#f9f,stroke:#333,stroke-width:1px;",  # light purple
         "classDef poolNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
@@ -140,45 +146,104 @@ def main():
 
     # --- Add task nodes and edges ---
     # Build a mapping of pool_id to sanitized node id for quick lookup
+    # pool_id_to_node = {}
+    # pool_id_patterns = []
+    # for pool in pools.get("pools", []):
+    #     pool_id = pool.get("pool_id")
+    #     pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
+    #     pool_id_to_node[pool_id] = pool_node
+    #     # If pool_id contains {var}, build a regex pattern for matching
+    #     if "{" in pool_id and "}" in pool_id:
+    #         # Replace {var} with [^/]+ (matches anything except '/')
+    #         pattern = re.sub(r"\{[^}]+\}", r"[^/]+", pool_id)
+    #         pool_id_patterns.append((re.compile(f"^{pattern}$"), pool_node))
+
+    # unmatched_tasks = 0
+    # max_tasks = 10  # Limit for performance; adjust as needed
+
+    # for i, (task_label, task) in enumerate(tasks.items()):
+    #     if i >= max_tasks:
+    #         break  # Remove or adjust for full run
+    #     task_node = sanitize_node_id(task_label.replace("-", "_"))
+    #     lines.append(f'    {task_node}["<pre>{task_label}</pre>"]:::taskNode')
+    #     # Get pool key from task
+    #     prov = task.get("provisionerId") or (task.get("task", {}) or {}).get("provisionerId")
+    #     wtype = task.get("workerType") or (task.get("task", {}) or {}).get("workerType")
+    #     if not prov or not wtype:
+    #         unmatched_tasks += 1
+    #         continue
+    #     pool_key = f"{prov}/{wtype}"
+    #     # Try exact match
+    #     pool_node = pool_id_to_node.get(pool_key)
+    #     if not pool_node:
+    #         # Try pattern match
+    #         for pattern, node in pool_id_patterns:
+    #             if pattern.match(pool_key):
+    #                 pool_node = node
+    #                 break
+    #     if pool_node:
+    #         lines.append(f'    {task_node} --> {pool_node}')
+    #     else:
+    #         unmatched_tasks += 1
+
+    # if unmatched_tasks:
+    #     print(f"Warning: {unmatched_tasks} tasks could not be matched to a pool node.")
+
+    # --- Add summarized task group nodes and edges ---
+    group_to_pools = defaultdict(set)
     pool_id_to_node = {}
     pool_id_patterns = []
     for pool in pools.get("pools", []):
         pool_id = pool.get("pool_id")
         pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
         pool_id_to_node[pool_id] = pool_node
-        # If pool_id contains {var}, build a regex pattern for matching
         if "{" in pool_id and "}" in pool_id:
-            # Replace {var} with [^/]+ (matches anything except '/')
             pattern = re.sub(r"\{[^}]+\}", r"[^/]+", pool_id)
             pool_id_patterns.append((re.compile(f"^{pattern}$"), pool_node))
 
     unmatched_tasks = 0
-    max_tasks = 1000  # Limit for performance; adjust as needed
+    max_tasks = None  # No need to limit, since we're grouping
 
     for i, (task_label, task) in enumerate(tasks.items()):
-        if i >= max_tasks:
+        if max_tasks and i >= max_tasks:
             break  # Remove or adjust for full run
-        task_node = sanitize_node_id(task_label.replace("-", "_"))
-        lines.append(f'    {task_node}["<pre>{task_label}</pre>"]:::taskNode')
-        # Get pool key from task
+        # logging.debug(pprint.pformat(task))  # Debugging line to inspect task structure
+        group = extract_group(task_label)
         prov = task.get("provisionerId") or (task.get("task", {}) or {}).get("provisionerId")
         wtype = task.get("workerType") or (task.get("task", {}) or {}).get("workerType")
+        logging.debug(f"Processing task: {task_label}, group: {group}, provisioner: {prov}, workerType: {wtype}")  # Debugging line
         if not prov or not wtype:
             unmatched_tasks += 1
             continue
         pool_key = f"{prov}/{wtype}"
-        # Try exact match
         pool_node = pool_id_to_node.get(pool_key)
         if not pool_node:
-            # Try pattern match
+            # logging.debug(f"Pool key '{pool_key}' not found in pool_id_to_node, trying patterns...")  # Debugging line
             for pattern, node in pool_id_patterns:
                 if pattern.match(pool_key):
                     pool_node = node
                     break
         if pool_node:
-            lines.append(f'    {task_node} --> {pool_node}')
+            logging.debug(f"Matched task '{task_label}' to pool node '{pool_node}'")
+            group_to_pools[group].add(pool_node)
         else:
+            logging.debug(f"No matching pool node found for task '{task_label}' with pool key '{pool_key}'")
             unmatched_tasks += 1
+
+    # logging.debug(pprint.pformat(group_to_pools))  # Debugging line to inspect group_to_pools
+
+    # print("exiting early!!!")
+    # sys.exit(0)
+
+    task_edge_count = 0
+    for group, pool_nodes_set in group_to_pools.items():
+        group_node = sanitize_node_id(group.replace("-", "_"))
+        logging.debug(f"Creating group node for '{group}' with pool nodes: {pool_nodes_set}")  # Debugging line
+        lines.append(f'    {group_node}["<pre>{group}</pre>"]:::taskNode')
+        for pool_node in pool_nodes_set:
+            lines.append(f'    {group_node} --------> {pool_node}')
+            task_edge_count += 1
+    logging.debug(f"Total task edges created: {task_edge_count}")  # Debugging line
 
     if unmatched_tasks:
         print(f"Warning: {unmatched_tasks} tasks could not be matched to a pool node.")
@@ -189,11 +254,15 @@ def main():
 
     if args.generate:
         dest_name = "worker_pools_images.pdf"
+        this_dir = os.path.dirname(os.path.realpath(__file__))
+        mermaid_config_path = os.path.join(this_dir, "mermaid_config.json")
+
         try:
             subprocess.run([
                 "mmdc",
                 "-i", "worker_pools_images.mmd",
                 "-o", dest_name,
+                "-c", mermaid_config_path,
                 # pdfFit trims the bottom of the doc too much, so we disable it
                 "--pdfFit"  # Try to improve text rendering in PDF
             ], check=True)

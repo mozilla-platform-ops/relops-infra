@@ -4,10 +4,20 @@ import json
 import sys
 import argparse
 
+def extract_group(task_name, debug=False):
+    no_slash_task_name = re.sub(r"/[^/]+$", "", task_name)
+    split_name = no_slash_task_name.split("-")
+    max_elements = 1
+    # trim temp_split_name to max_elements
+    if len(split_name) > max_elements:
+        split_name = split_name[:max_elements]
+    result = "-".join(split_name).strip("-")
+    return result
+
 # example: toolchain-macosx64-clang-14-raw
 # result: toolchain-clang-14
 #         or toolchain-clang?
-def extract_group(task_name, debug=False):
+def extract_group_v1(task_name, debug=False):
     # remove /blah at end (usually opt or dbg)
     no_slash_task_name = re.sub(r"/[^/]+$", "", task_name)
     split_name = no_slash_task_name.split("-")
