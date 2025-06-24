@@ -80,7 +80,7 @@ def main():
         '%%{init: { "flowchart": { "htmlLabels": true, "curve": "curve", "useMaxWidth": 500, "diagramPadding": 10 } } }%%',
         "graph TD",
         "classDef poolNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
-        "classDef aliasNode fill:#d0e7ff,stroke:#333,stroke-width:1px,width:600px;",  # light blue
+        "classDef aliasNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
         "classDef imageNode fill:#fff9b1,stroke:#333,stroke-width:1px;",  # light yellow
         "classDef l3imageNode fill:#ffd6e0,stroke:#333,stroke-width:1px;",  # light pink
     ]
