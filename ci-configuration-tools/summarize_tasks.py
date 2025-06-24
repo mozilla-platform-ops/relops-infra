@@ -18,27 +18,35 @@ def extract_group(task_name, debug=False):
     release_drop_list = ['beta', 'nightly', 'release', 'esr', 'raw', 'opt', 'dbg']
     for item in split_name:
         if debug:
-            print("* ", item, " ", len(item))
+            print("- ", item, " ", len(item))
 
         if len(item) == 2 or len(item) == 3:
             # drop 2 letter items... usally locales
             temp_split_name.append("*")
+            if debug:
+                print(f"* added *")
         elif len(item) == 1:
             # drop shards...
             temp_split_name.append("*")
+            if debug:
+                print(f"* added *")
         elif item.startswith("fetch"):
             continue  # skip fetch tasks
         elif item in drop_list:
             # drop platform names
             temp_split_name.append("*")
+            if debug:
+                print(f"* added *")
         elif item in release_drop_list:
             # drop release names
             temp_split_name.append("*")
+            if debug:
+                print(f"* added *")
         else:
             # not dropped, so add to the list
             #
             if debug:
-                print(f"added")
+                print(f"* added")
             temp_split_name.append(item)
 
     max_elements = 4
