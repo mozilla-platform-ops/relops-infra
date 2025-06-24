@@ -241,7 +241,7 @@ def main():
         logging.debug(f"Creating group node for '{group}' with pool nodes: {pool_nodes_set}")  # Debugging line
         lines.append(f'    {group_node}["<pre>{group}</pre>"]:::taskNode')
         for pool_node in pool_nodes_set:
-            lines.append(f'    {group_node} --------> {pool_node}')
+            lines.append(f'    {group_node}------->|{group_node}|{pool_node}')
             task_edge_count += 1
     logging.debug(f"Total task edges created: {task_edge_count}")  # Debugging line
 
