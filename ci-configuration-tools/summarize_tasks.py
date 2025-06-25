@@ -4,9 +4,9 @@ import json
 import sys
 import argparse
 
-drop_list = ['linux64', 'macosx64', 'win64', 'aarch64', 'x86_64', 'a55', 'macos', 'win32', 'linux2404',
-'1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11', 'linux2204', 'linux1804', '64', 'android', '24h2']
-release_drop_list = ['beta', 'nightly', 'release', 'esr', 'raw', 'opt', 'dbg']
+drop_list = ['linux64', 'macosx64', 'win64', 'aarch64', 'x86_64', 'a55', 'macos', 'win32', 'linux2404', '7.0',
+'1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11', 'linux2204', 'linux1804', '64', 'android', '24h2', 'windows10']
+release_drop_list = ['beta', 'nightly', 'release', 'esr', 'raw', 'opt', 'dbg', 'shippable']
 two_or_three_char_drop_list = [
     "ach", "af", "afl", "all", "an", "apk", "apt", "ar", "arm", "as", "ast", "av", "az", "be", "bg", "bn", "bo", "br", "brx", "bs",
     "ca", "cak", "cft", "ckb", "cnn", "cs", "cy", "da", "de", "deb", "doc", "dsb", "el", "em", "en", "eo", "es", "et", "eu", "fa",
@@ -36,7 +36,7 @@ def extract_group(task_name, debug=False):
     element_counter = 0
 
     # trim temp_split_name to max_elements
-    if task_name.startswith("test"):
+    if task_name.startswith("test") or task_name.startswith("build"):
         max_elements = test_max_elements
         # remove elements we don't want
         for item in split_name:
