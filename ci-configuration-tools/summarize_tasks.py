@@ -5,7 +5,7 @@ import sys
 import argparse
 
 drop_list = ['linux64', 'macosx64', 'win64', 'aarch64', 'x86_64', 'a55', 'macos', 'win32', 'linux2404',
-'1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11']
+'1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11', 'linux2204']
 release_drop_list = ['beta', 'nightly', 'release', 'esr', 'raw', 'opt', 'dbg']
 two_or_three_char_drop_list = [
     "ach", "af", "afl", "all", "an", "apk", "apt", "ar", "arm", "as", "ast", "av", "az", "be", "bg", "bn", "bo", "br", "brx", "bs",
