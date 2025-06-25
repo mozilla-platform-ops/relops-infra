@@ -16,7 +16,7 @@ from summarize_tasks import extract_group
 
 # setup logging
 # TODO: configure log level via argparse args
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def load_yaml(path):
     with open(path) as f:
@@ -202,7 +202,9 @@ def main():
             pattern = re.sub(r"\{[^}]+\}", r"[^/]+", pool_id)
             pool_id_patterns.append((re.compile(f"^{pattern}$"), pool_node))
 
-    unmatched_tasks = 0
+    tasks_without_workertype_and_provisioner = 0
+    unmatched_tasks = {}
+    unmatched_pools = set()
     max_tasks = None  # No need to limit, since we're grouping
 
     for i, (task_label, task) in enumerate(tasks.items()):
@@ -214,7 +216,7 @@ def main():
         wtype = task.get("workerType") or (task.get("task", {}) or {}).get("workerType")
         logging.debug(f"Processing task: {task_label}, group: {group}, provisioner: {prov}, workerType: {wtype}")  # Debugging line
         if not prov or not wtype:
-            unmatched_tasks += 1
+            tasks_without_workertype_and_provisioner += 1
             continue
         pool_key = f"{prov}/{wtype}"
         pool_node = pool_id_to_node.get(pool_key)
@@ -227,8 +229,10 @@ def main():
             logging.debug(f"Matched task '{task_label}' to pool node '{pool_node}'")
             group_to_pools[group].add(pool_node)
         else:
-            logging.debug(f"No matching pool node found for task '{task_label}' with pool key '{pool_key}'")
-            unmatched_tasks += 1
+            logging.info(f"No matching pool node found for task '{task_label}' with pool key '{pool_key}'")
+            unmatched_tasks[task_label] = task
+            # record the unmatched pool in a separate variable
+            unmatched_pools.add(pool_key)
 
     # logging.debug(pprint.pformat(group_to_pools))  # Debugging line to inspect group_to_pools
 
@@ -248,7 +252,9 @@ def main():
     logging.debug(f"Total task edges created: {task_edge_count}")  # Debugging line
 
     if unmatched_tasks:
-        print(f"Warning: {unmatched_tasks} tasks could not be matched to a pool node.")
+        print(f"Warning: {len(unmatched_tasks)} tasks could not be matched to a pool node.")
+    if tasks_without_workertype_and_provisioner:
+        print(f"Warning: {tasks_without_workertype_and_provisioner} tasks are missing workerType and provisionerId.")
 
     with open("worker_pools_images.mmd", "w") as f:
         f.write("\n".join(lines))
