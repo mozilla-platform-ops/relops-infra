@@ -112,6 +112,7 @@ def main():
     alias_nodes = []
     image_nodes = []
 
+    # Create image nodes and edges
     for pool_id, image_aliases in pool_to_image.items():
         pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
         lines.append(f'    {pool_node}["<pre>{pool_id}</pre>"]:::poolNode')
@@ -145,52 +146,7 @@ def main():
                 lines.append(f'    {alias_node} --> {path_node}["<pre>{short_resolved}</pre>"]:::{node_class}')
                 image_nodes.append(path_node)
 
-    # --- Add task nodes and edges ---
-    # Build a mapping of pool_id to sanitized node id for quick lookup
-    # pool_id_to_node = {}
-    # pool_id_patterns = []
-    # for pool in pools.get("pools", []):
-    #     pool_id = pool.get("pool_id")
-    #     pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
-    #     pool_id_to_node[pool_id] = pool_node
-    #     # If pool_id contains {var}, build a regex pattern for matching
-    #     if "{" in pool_id and "}" in pool_id:
-    #         # Replace {var} with [^/]+ (matches anything except '/')
-    #         pattern = re.sub(r"\{[^}]+\}", r"[^/]+", pool_id)
-    #         pool_id_patterns.append((re.compile(f"^{pattern}$"), pool_node))
-
-    # unmatched_tasks = 0
-    # max_tasks = 10  # Limit for performance; adjust as needed
-
-    # for i, (task_label, task) in enumerate(tasks.items()):
-    #     if i >= max_tasks:
-    #         break  # Remove or adjust for full run
-    #     task_node = sanitize_node_id(task_label.replace("-", "_"))
-    #     lines.append(f'    {task_node}["<pre>{task_label}</pre>"]:::taskNode')
-    #     # Get pool key from task
-    #     prov = task.get("provisionerId") or (task.get("task", {}) or {}).get("provisionerId")
-    #     wtype = task.get("workerType") or (task.get("task", {}) or {}).get("workerType")
-    #     if not prov or not wtype:
-    #         unmatched_tasks += 1
-    #         continue
-    #     pool_key = f"{prov}/{wtype}"
-    #     # Try exact match
-    #     pool_node = pool_id_to_node.get(pool_key)
-    #     if not pool_node:
-    #         # Try pattern match
-    #         for pattern, node in pool_id_patterns:
-    #             if pattern.match(pool_key):
-    #                 pool_node = node
-    #                 break
-    #     if pool_node:
-    #         lines.append(f'    {task_node} --> {pool_node}')
-    #     else:
-    #         unmatched_tasks += 1
-
-    # if unmatched_tasks:
-    #     print(f"Warning: {unmatched_tasks} tasks could not be matched to a pool node.")
-
-    # --- Add summarized task group nodes and edges ---
+    # Add summarized task group nodes and edges
     group_to_pools = defaultdict(set)
     group_counts = defaultdict(int)  # <-- Add this line
     pool_id_to_node = {}
@@ -208,6 +164,7 @@ def main():
     unmatched_pools = set()
     max_tasks = None  # No need to limit, since we're grouping
 
+    # Group tasks by label prefix
     for i, (task_label, task) in enumerate(tasks.items()):
         if max_tasks and i >= max_tasks:
             break  # Remove or adjust for full run
@@ -239,6 +196,7 @@ def main():
             # add an entry to group_to_pools
             group_to_pools[group].add(hwpool_node)
 
+    # Create task nodes and edges
     task_edge_count = 0
     for group, pool_nodes_set in group_to_pools.items():
         group_node = sanitize_node_id(group.replace("-", "_"))
