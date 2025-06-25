@@ -103,6 +103,7 @@ def main():
         "graph TD",
         "classDef taskNode fill:#f9f,stroke:#333,stroke-width:1px;",  # light purple
         "classDef poolNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
+        "classDef hwPoolNode fill:#91c9aa,stroke:#333,stroke-width:1px;",  # dark green
         "classDef aliasNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
         "classDef imageNode fill:#fff9b1,stroke:#333,stroke-width:1px;",  # light yellow
         "classDef l3imageNode fill:#ffd6e0,stroke:#333,stroke-width:1px;",  # light pink
@@ -229,15 +230,14 @@ def main():
             logging.debug(f"Matched task '{task_label}' to pool node '{pool_node}'")
             group_to_pools[group].add(pool_node)
         else:
-            logging.info(f"No matching pool node found for task '{task_label}' with pool key '{pool_key}'")
-            unmatched_tasks[task_label] = task
-            # record the unmatched pool in a separate variable
-            unmatched_pools.add(pool_key)
+            logging.debug(f"No cloud pool matching {pool_key}, likely hardware pool.")
+            # logging.info(f"No matching pool node found for task '{task_label}' with pool key '{pool_key}'")
 
-    # logging.debug(pprint.pformat(group_to_pools))  # Debugging line to inspect group_to_pools
-
-    # print("exiting early!!!")
-    # sys.exit(0)
+            # these are likely hardware pools... so create a hwpoolnode
+            hwpool_node = sanitize_node_id(f"hwpool_{pool_key.replace('/', '_')}")
+            lines.append(f'    {hwpool_node}["<pre>{pool_key}</pre>"]:::hwPoolNode')
+            # add an entry to group_to_pools
+            group_to_pools[group].add(hwpool_node)
 
     task_edge_count = 0
     for group, pool_nodes_set in group_to_pools.items():
