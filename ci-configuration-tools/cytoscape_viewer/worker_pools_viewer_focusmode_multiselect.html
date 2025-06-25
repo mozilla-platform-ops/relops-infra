@@ -47,7 +47,7 @@
     <h2>Controls</h2>
     <label for="layout">Layout:</label>
     <select id="layout">
-      <option value="preset">Preset</option>
+      <option value="initial">Initial</option>
       <option value="cose">Cose</option>
       <option value="grid">Grid</option>
       <option value="circle">Circle</option>
@@ -136,6 +136,8 @@
           const group = classGroups[cls] || [];
           group.forEach((el, i) => {
             el.position = { x: i * xSpacing, y };
+            el.data = el.data || {};
+            el.data.originalPosition = { x: el.position.x, y: el.position.y };
           });
           y += ySpacing;
         }
@@ -213,9 +215,23 @@
         });
       });
 
+    function restoreInitialPositions() {
+      cy.nodes().forEach(node => {
+        const orig = node.data('originalPosition');
+        if (orig) {
+          node.position(orig);
+        }
+      });
+    }
+
     function runLayout() {
       const layoutName = document.getElementById('layout').value;
-      cy.layout({ name: layoutName, fit: true, padding: 50 }).run();
+      if (layoutName === 'initial') {
+        restoreInitialPositions();
+        cy.layout({ name: 'preset', fit: true, padding: 50 }).run();
+      } else {
+        cy.layout({ name: layoutName, fit: true, padding: 50 }).run();
+      }
     }
 
     function searchNode() {
