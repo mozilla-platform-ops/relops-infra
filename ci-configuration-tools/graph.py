@@ -1,56 +1,53 @@
 #!/usr/bin/env python3
+# filepath: /Users/aerickson/git/relops-infra/ci-configuration-tools/graph.py
 
 import yaml
 import re
 from collections import defaultdict
 import argparse
-import subprocess
 import sys
 import os
 import json
 import logging
-import pprint
-
 
 from summarize_tasks import extract_group
 
-# setup logging
-# TODO: configure log level via argparse args
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Node type to color mapping (mirroring Mermaid)
+NODE_COLORS = {
+    "taskNode": "#f9f",        # light purple
+    "poolNode": "#b6fcd5",     # light green
+    "hwPoolNode": "#91c9aa",   # dark green
+    "aliasNode": "#d0e7ff",    # light blue
+    "imageNode": "#fff9b1",    # light yellow
+    "l3imageNode": "#ffd6e0",  # light pink
+}
 
 def load_yaml(path):
     with open(path) as f:
         return yaml.safe_load(f)
 
 def resolve_image_alias(image_alias, images):
-    # Recursively resolve aliases to their final mapping
     if not isinstance(image_alias, str):
         return image_alias
     if "{" in image_alias and "}" in image_alias:
-        # If alias contains curly brackets, treat as image, do not resolve further
         return image_alias
     seen = set()
     while isinstance(images.get(image_alias), str):
         if image_alias in seen:
-            break  # Prevent infinite loops
+            break
         seen.add(image_alias)
         image_alias = images[image_alias]
     return images.get(image_alias, image_alias)
 
 def sanitize_node_id(s):
-    # Only allow alphanumeric and underscores in node IDs
     return re.sub(r'[^a-zA-Z0-9_]', '', s)
 
 def shorten_image_path(path):
-    # Remove known prefixes from image paths
     if not isinstance(path, str):
         return path
-    # Example: 'projects/taskcluster-imaging/global/images/docker-firefoxci-gcp-l1-googlecompute-2025-06-13t18-31-38z'
-    # becomes 'docker-firefoxci-gcp-l1-googlecompute-2025-06-13t18-31-38z'
     return path.split('/')[-1]
 
 def extract_image_aliases(image_config):
-    """Recursively extract all image/alias strings from a nested image config."""
     if isinstance(image_config, str):
         return [image_config]
     elif isinstance(image_config, dict):
@@ -70,8 +67,7 @@ def load_json(path):
         return json.load(f)
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate Mermaid diagram for worker pools and images.")
-    parser.add_argument('-g', '--generate', action='store_true', help='Generate image using mmdc')
+    parser = argparse.ArgumentParser(description="Generate Cytoscape JSON for worker pools and images.")
     parser.add_argument('-e', '--pool-exclude', type=str, default=None, help='Exclude pools whose pool_id matches this string')
     parser.add_argument('-p', '--path-to-fxci-config', type=str, default='.', help='Path to look for the yaml files in (default: current directory)')
     parser.add_argument('-m', '--path-to-mozilla-repo', type=str, default='~/git/firefox', help='Path to look for the tasks files in (default: ~/git/firefox)')
@@ -85,94 +81,101 @@ def main():
     images = load_yaml(images_path)
     tasks = load_json(tasks_path)
 
+    elements = []
+    node_ids = set()
+    edge_ids = set()
+
+    # Helper to add a node if not already present
+    def add_node(node_id, label, node_type, extra_data=None):
+        if node_id in node_ids:
+            return
+        node_ids.add(node_id)
+        data = {
+            "id": node_id,
+            "label": label,
+            "type": node_type,
+            "color": NODE_COLORS.get(node_type, "#ccc"),
+        }
+        if extra_data:
+            data.update(extra_data)
+        elements.append({"data": data})
+
+    # Helper to add an edge if not already present
+    def add_edge(source, target, edge_type, extra_data=None):
+        edge_id = f"{source}__{target}__{edge_type}"
+        if edge_id in edge_ids:
+            return
+        edge_ids.add(edge_id)
+        data = {
+            "id": edge_id,
+            "source": source,
+            "target": target,
+            "type": edge_type,
+        }
+        if extra_data:
+            data.update(extra_data)
+        elements.append({"data": data})
+
+    # --- POOLS, ALIASES, IMAGES ---
     pool_to_image = defaultdict(list)
+    pool_id_to_node = {}
+    pool_id_patterns = []
+
     for pool in pools.get("pools", []):
         pool_id = pool.get("pool_id")
         if args.pool_exclude and args.pool_exclude in pool_id:
-            continue  # Skip excluded pools
+            continue
+        pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
+        pool_id_to_node[pool_id] = pool_node
+        add_node(pool_node, pool_id, "poolNode", {"pool_id": pool_id, "config": pool.get("config", {})})
+        if "{" in pool_id and "}" in pool_id:
+            pattern = re.sub(r"\{[^}]+\}", r"[^/]+", pool_id)
+            pool_id_patterns.append((re.compile(f"^{pattern}$"), pool_node))
         config = pool.get("config", {})
         image = config.get("image")
         if image:
-            # Use the new recursive extractor
             for alias in extract_image_aliases(image):
                 if alias:
                     pool_to_image[pool_id].append(alias)
 
-    lines = [
-        '%%{init: {  "maxTextSize": 99999999, "theme": "dark", "themeVariables": {}, "flowchart": { "htmlLabels": true, "curve": "curve", "useMaxWidth": 500, "diagramPadding": 10 } } }%%',
-        "graph TD",
-        "classDef taskNode fill:#f9f,stroke:#333,stroke-width:1px;",  # light purple
-        "classDef poolNode fill:#b6fcd5,stroke:#333,stroke-width:1px;",  # light green
-        "classDef hwPoolNode fill:#91c9aa,stroke:#333,stroke-width:1px;",  # dark green
-        "classDef aliasNode fill:#d0e7ff,stroke:#333,stroke-width:1px;",  # light blue
-        "classDef imageNode fill:#fff9b1,stroke:#333,stroke-width:1px;",  # light yellow
-        "classDef l3imageNode fill:#ffd6e0,stroke:#333,stroke-width:1px;",  # light pink
-    ]
-    pool_nodes = []
-    alias_nodes = []
-    image_nodes = []
-
-    # Create image nodes and edges
+    # Aliases and resolved images
     for pool_id, image_aliases in pool_to_image.items():
-        pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
-        lines.append(f'    {pool_node}["<pre>{pool_id}</pre>"]:::poolNode')
-        pool_nodes.append(pool_node)
+        pool_node = pool_id_to_node[pool_id]
         for alias in image_aliases:
             alias_node = sanitize_node_id(alias.replace("-", "_").replace("/", "_"))
-            lines.append(f'    {pool_node} --> {alias_node}["<pre>{alias}</pre>"]:::aliasNode')
-            alias_nodes.append(alias_node)
+            add_node(alias_node, alias, "aliasNode", {"alias": alias})
+            add_edge(pool_node, alias_node, "pool-alias")
             resolved = resolve_image_alias(alias, images)
-            # If the alias is an image (contains curly brackets), make the alias node an imageNode
             if isinstance(alias, str) and "{" in alias and "}" in alias:
-                # Change the class of the alias node to imageNode
-                lines[-1] = f'    {pool_node} --> {alias_node}["<pre>{alias}</pre>"]:::imageNode'
-                print("", f"Alias '{alias}' is an image, not resolving further.")
-                # No further edges needed
+                # Alias is an image, treat as imageNode
+                elements[-2]["data"]["type"] = "imageNode"
+                elements[-2]["data"]["color"] = NODE_COLORS["imageNode"]
                 continue
             if isinstance(resolved, dict):
                 for provider, path in resolved.items():
                     short_path = shorten_image_path(path) if isinstance(path, str) else path.get('name', '')
                     path_str = f"{provider}: {short_path}"
-                    # Use provider and short_path for node ID to deduplicate
                     path_node = sanitize_node_id(f"{provider}_{short_path}".replace("-", "_"))
                     node_class = "l3imageNode" if "level3" in path_str else "imageNode"
-                    lines.append(f'    {alias_node} --> {path_node}["<pre>{path_str}</pre>"]:::{node_class}')
-                    image_nodes.append(path_node)
+                    add_node(path_node, path_str, node_class, {"provider": provider, "path": path})
+                    add_edge(alias_node, path_node, "alias-image")
             elif isinstance(resolved, str):
                 short_resolved = shorten_image_path(resolved)
-                # Use short_resolved for node ID to deduplicate
                 path_node = sanitize_node_id(short_resolved.replace("-", "_"))
                 node_class = "l3imageNode" if "level3" in short_resolved else "imageNode"
-                lines.append(f'    {alias_node} --> {path_node}["<pre>{short_resolved}</pre>"]:::{node_class}')
-                image_nodes.append(path_node)
+                add_node(path_node, short_resolved, node_class, {"path": resolved})
+                add_edge(alias_node, path_node, "alias-image")
 
-    # Add summarized task group nodes and edges
+    # --- TASK GROUPS ---
     group_to_pools = defaultdict(set)
-    group_counts = defaultdict(int)  # <-- Add this line
-    pool_id_to_node = {}
-    pool_id_patterns = []
-    for pool in pools.get("pools", []):
-        pool_id = pool.get("pool_id")
-        pool_node = sanitize_node_id(pool_id.replace("-", "_").replace("/", "_"))
-        pool_id_to_node[pool_id] = pool_node
-        if "{" in pool_id and "}" in pool_id:
-            pattern = re.sub(r"\{[^}]+\}", r"[^/]+", pool_id)
-            pool_id_patterns.append((re.compile(f"^{pattern}$"), pool_node))
-
+    group_counts = defaultdict(int)
     tasks_without_workertype_and_provisioner = 0
-    unmatched_tasks = {}
-    unmatched_pools = set()
-    max_tasks = None  # No need to limit, since we're grouping
 
-    # Group tasks by label prefix
     for i, (task_label, task) in enumerate(tasks.items()):
-        if max_tasks and i >= max_tasks:
-            break  # Remove or adjust for full run
         group = extract_group(task_label)
-        group_counts[group] += 1  # <-- Add this line
+        group_counts[group] += 1
         prov = task.get("provisionerId") or (task.get("task", {}) or {}).get("provisionerId")
         wtype = task.get("workerType") or (task.get("task", {}) or {}).get("workerType")
-        logging.debug(f"Processing task: {task_label}, group: {group}, provisioner: {prov}, workerType: {wtype}")  # Debugging line
         if not prov or not wtype:
             tasks_without_workertype_and_provisioner += 1
             continue
@@ -184,60 +187,28 @@ def main():
                     pool_node = node
                     break
         if pool_node:
-            logging.debug(f"Matched task '{task_label}' to pool node '{pool_node}'")
             group_to_pools[group].add(pool_node)
         else:
-            logging.debug(f"No cloud pool matching {pool_key}, likely hardware pool.")
-            # logging.info(f"No matching pool node found for task '{task_label}' with pool key '{pool_key}'")
-
-            # these are likely hardware pools... so create a hwpoolnode
+            # Hardware pool
             hwpool_node = sanitize_node_id(f"hwpool_{pool_key.replace('/', '_')}")
-            lines.append(f'    {hwpool_node}["<pre>{pool_key}</pre>"]:::hwPoolNode')
-            # add an entry to group_to_pools
+            add_node(hwpool_node, pool_key, "hwPoolNode", {"pool_key": pool_key})
             group_to_pools[group].add(hwpool_node)
 
-    # Create task nodes and edges
-    task_edge_count = 0
+    # Add group nodes and edges
     for group, pool_nodes_set in group_to_pools.items():
         group_node = sanitize_node_id(group.replace("-", "_"))
         count = group_counts[group]
-        group_sanitized = group.replace('*', r'\*')
-        logging.debug(f"Creating group node for '{group}' with pool nodes: {pool_nodes_set}")  # Debugging line
-        lines.append(f'    {group_node}["<pre>{group} ({count})</pre>"]:::taskNode')  # <-- Update this line
+        add_node(group_node, f"{group} ({count})", "taskNode", {"group": group, "count": count})
         for pool_node in pool_nodes_set:
-            lines.append(f'    {group_node}------->|"{group_sanitized}"|{pool_node}')
-            task_edge_count += 1
-    logging.debug(f"Total task edges created: {task_edge_count}")  # Debugging line
+            add_edge(group_node, pool_node, "group-pool", {"group": group})
 
-    if unmatched_tasks:
-        print(f"Warning: {len(unmatched_tasks)} tasks could not be matched to a pool node.")
+    # Write output
+    with open("worker_pools_images.cyto.json", "w") as f:
+        json.dump({"elements": elements}, f, indent=2)
+    print("Cytoscape JSON written to worker_pools_images.cyto.json")
+
     if tasks_without_workertype_and_provisioner:
         print(f"Warning: {tasks_without_workertype_and_provisioner} tasks are missing workerType and provisionerId.")
-
-    with open("worker_pools_images.mmd", "w") as f:
-        f.write("\n".join(lines))
-    print("Mermaid diagram written to worker_pools_images.mmd")
-
-    if args.generate:
-        dest_name = "worker_pools_images.pdf"
-        this_dir = os.path.dirname(os.path.realpath(__file__))
-        mermaid_config_path = os.path.join(this_dir, "mermaid_config.json")
-
-        try:
-            subprocess.run([
-                "mmdc",
-                "-i", "worker_pools_images.mmd",
-                "-o", dest_name,
-                "-c", mermaid_config_path,
-                # pdfFit trims the bottom of the doc too much, so we disable it
-                "--pdfFit"  # Try to improve text rendering in PDF
-            ], check=True)
-            print(f"Image generated: {dest_name}")
-            # print("If text is still not searchable, try generating SVG and converting to PDF with Inkscape or rsvg-convert.")
-        except FileNotFoundError:
-            print("Error: mmdc not found. Please install @mermaid-js/mermaid-cli.", file=sys.stderr)
-        except subprocess.CalledProcessError as e:
-            print(f"Error running mmdc: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
