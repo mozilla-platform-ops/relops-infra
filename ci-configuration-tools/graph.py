@@ -191,6 +191,7 @@ def main():
 
     # --- Add summarized task group nodes and edges ---
     group_to_pools = defaultdict(set)
+    group_counts = defaultdict(int)  # <-- Add this line
     pool_id_to_node = {}
     pool_id_patterns = []
     for pool in pools.get("pools", []):
@@ -207,8 +208,8 @@ def main():
     for i, (task_label, task) in enumerate(tasks.items()):
         if max_tasks and i >= max_tasks:
             break  # Remove or adjust for full run
-        # logging.debug(pprint.pformat(task))  # Debugging line to inspect task structure
         group = extract_group(task_label)
+        group_counts[group] += 1  # <-- Add this line
         prov = task.get("provisionerId") or (task.get("task", {}) or {}).get("provisionerId")
         wtype = task.get("workerType") or (task.get("task", {}) or {}).get("workerType")
         logging.debug(f"Processing task: {task_label}, group: {group}, provisioner: {prov}, workerType: {wtype}")  # Debugging line
@@ -218,7 +219,6 @@ def main():
         pool_key = f"{prov}/{wtype}"
         pool_node = pool_id_to_node.get(pool_key)
         if not pool_node:
-            # logging.debug(f"Pool key '{pool_key}' not found in pool_id_to_node, trying patterns...")  # Debugging line
             for pattern, node in pool_id_patterns:
                 if pattern.match(pool_key):
                     pool_node = node
@@ -238,8 +238,9 @@ def main():
     task_edge_count = 0
     for group, pool_nodes_set in group_to_pools.items():
         group_node = sanitize_node_id(group.replace("-", "_"))
+        count = group_counts[group]
         logging.debug(f"Creating group node for '{group}' with pool nodes: {pool_nodes_set}")  # Debugging line
-        lines.append(f'    {group_node}["<pre>{group}*</pre>"]:::taskNode')
+        lines.append(f'    {group_node}["<pre>{group}* ({count})</pre>"]:::taskNode')  # <-- Update this line
         for pool_node in pool_nodes_set:
             lines.append(f'    {group_node}------->|{group_node}*|{pool_node}')
             task_edge_count += 1
