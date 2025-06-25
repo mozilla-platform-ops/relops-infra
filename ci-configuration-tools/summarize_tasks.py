@@ -5,7 +5,7 @@ import sys
 import argparse
 
 drop_list = ['linux64', 'macosx64', 'win64', 'aarch64', 'x86_64', 'a55', 'macos', 'win32', 'linux2404',
-'1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11', 'linux2204']
+'1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11', 'linux2204', 'linux1804', '64', 'android', '24h2']
 release_drop_list = ['beta', 'nightly', 'release', 'esr', 'raw', 'opt', 'dbg']
 two_or_three_char_drop_list = [
     "ach", "af", "afl", "all", "an", "apk", "apt", "ar", "arm", "as", "ast", "av", "az", "be", "bg", "bn", "bo", "br", "brx", "bs",
@@ -26,9 +26,9 @@ two_or_three_char_drop_list = [
 # ideas:
 #   - have a list of test types? (aka include list vs exclude list)
 def extract_group(task_name, debug=False):
-    # slashes are usually /opt, /dbg and we don't care about them.
-    no_slash_task_name = re.sub(r"/[^/]+$", "", task_name)
-    split_name = no_slash_task_name.split("-")
+    # replace / with - in task_name
+    task_name = task_name.replace("/", "-")
+    split_name = task_name.split("-")
 
     result_str = ''
     max_elements = 1
@@ -44,13 +44,14 @@ def extract_group(task_name, debug=False):
             if element_counter >= max_elements:
                 break
 
-            if item in drop_list or item in two_or_three_char_drop_list:
+            if item in drop_list or item in two_or_three_char_drop_list or item in release_drop_list:
                 result_str += "*-"
                 # don't increment element_counter... these are not really elements
             else:
                 result_str += item + "-"
                 element_counter += 1
         result_str = result_str.strip("-")
+        result_str = collapse_wildcards(result_str)
         result_str += "*"
     else:
         # do trimming
@@ -93,6 +94,16 @@ def extract_group_v2(task_name, debug=False):
         split_name = split_name[:max_elements]
     result = "-".join(split_name).strip("-")
     return result
+
+# collapse wildcards
+def collapse_wildcards(task_name, debug=False):
+    original_task_name = task_name
+    # replace '*-*' with '*'
+    while '*-*' in task_name:
+        task_name = re.sub(r"\*-\*", r"*", task_name)
+    if debug:
+        print(f"collapse_wildcards({original_task_name}) = {task_name}")
+    return task_name
 
 # example: toolchain-macosx64-clang-14-raw
 # result: toolchain-clang-14
@@ -161,6 +172,8 @@ def main():
         "test-baz-qux/1222",
         "prod-foo-bar",
         "prod-baz-qux",
+        "test-windows11-64-24h2/opt-mochitest-devtools-chrome-spi-nw-5-cf",
+        "test-windows11-64-24h2/opt-web-platform-tests-webgpu-backlog-2-cf",
     ]
 
     for test_string in test_strings:

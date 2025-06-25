@@ -239,10 +239,11 @@ def main():
     for group, pool_nodes_set in group_to_pools.items():
         group_node = sanitize_node_id(group.replace("-", "_"))
         count = group_counts[group]
+        group_sanitized = group.replace("*", "\*")
         logging.debug(f"Creating group node for '{group}' with pool nodes: {pool_nodes_set}")  # Debugging line
         lines.append(f'    {group_node}["<pre>{group} ({count})</pre>"]:::taskNode')  # <-- Update this line
         for pool_node in pool_nodes_set:
-            lines.append(f'    {group_node}------->|{group}|{pool_node}')
+            lines.append(f'    {group_node}------->|"{group_sanitized}"|{pool_node}')
             task_edge_count += 1
     logging.debug(f"Total task edges created: {task_edge_count}")  # Debugging line
 
