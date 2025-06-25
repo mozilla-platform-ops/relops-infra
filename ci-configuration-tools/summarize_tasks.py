@@ -4,7 +4,28 @@ import json
 import sys
 import argparse
 
+# a bit more complex
+# - if test*, return 2 elements
+# - else, return 1 element
 def extract_group(task_name, debug=False):
+    no_slash_task_name = re.sub(r"/[^/]+$", "", task_name)
+    split_name = no_slash_task_name.split("-")
+
+    max_elements = 1
+    test_max_elements = 2
+
+    # trim temp_split_name to max_elements
+    if task_name.startswith("test"):
+        max_elements = test_max_elements
+
+    # do trimming
+    if len(split_name) > max_elements:
+        split_name = split_name[:max_elements]
+    result = "-".join(split_name).strip("-")
+    return result
+
+# basic, just returns first element
+def extract_group_v2(task_name, debug=False):
     no_slash_task_name = re.sub(r"/[^/]+$", "", task_name)
     split_name = no_slash_task_name.split("-")
     max_elements = 1
