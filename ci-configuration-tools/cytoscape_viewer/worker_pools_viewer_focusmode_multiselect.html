@@ -1,10 +1,10 @@
-
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
   <title>Worker Pools Graph Viewer (Class Styling + Filters)</title>
   <script src="https://unpkg.com/cytoscape@3.25.0/dist/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-tidytree/dist/cytoscape-tidytree.js"></script>
   <style>
     body {
       margin: 0;
@@ -47,11 +47,20 @@
     <h2>Controls</h2>
     <label for="layout">Layout:</label>
     <select id="layout">
+      <option value="preset">Preset</option>
       <option value="cose">Cose</option>
       <option value="grid">Grid</option>
       <option value="circle">Circle</option>
       <option value="breadthfirst">Breadthfirst</option>
       <option value="concentric">Concentric</option>
+      <option value="random">Random</option>
+      <option value="tidytree">Tidytree</option>
+      <!-- <option value="cose-bilkent">Cose-Bilkent</option>
+      <option value="cola">Cola</option>
+      <option value="euler">Euler</option>
+      <option value="spread">Spread</option>
+      <option value="dagre">Dagre</option>
+      <option value="klay">Klay</option> -->
     </select>
     <button onclick="runLayout()">Apply Layout</button>
 
@@ -75,6 +84,10 @@
   </div>
   <div id="cy"></div>
 
+  <script>
+    // Register tidytree extension
+    cytoscape.use( require('tidytree'));
+  </script>
   <script>
 
     var cy;
@@ -108,7 +121,7 @@
         const classGroups = {};
         let xSpacing = 150;
         let ySpacing = 100;
-        let classOrder = ['taskNode', 'poolNode', 'aliasNode', 'imageNode', 'l3imageNode', 'hwPoolNode'];
+        let classOrder = ['taskNode', 'poolNode', 'hwPoolNode', 'aliasNode', 'imageNode', 'l3imageNode'];
 
         elements.forEach((el) => {
           if (el.data && el.data.id && el.classes) {
@@ -219,6 +232,13 @@
         cy.center(match);
       }
     }
+
+    // Enable pressing Enter in the search field to trigger search
+    document.getElementById('search').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        searchNode();
+      }
+    });
 
     function fitGraph() {
       if (cy) cy.fit();
