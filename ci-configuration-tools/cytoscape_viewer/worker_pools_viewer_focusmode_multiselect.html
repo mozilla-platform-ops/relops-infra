@@ -1,0 +1,235 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Worker Pools Graph Viewer (Class Styling + Filters)</title>
+  <script src="https://unpkg.com/cytoscape@3.25.0/dist/cytoscape.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #sidebar {
+      width: 250px;
+      background: #f4f4f4;
+      border-right: 1px solid #ccc;
+      padding: 15px;
+      box-sizing: border-box;
+      overflow-y: auto;
+    }
+    #cy {
+      flex-grow: 1;
+      height: 100%;
+    }
+    select, input[type="text"], button {
+      width: 100%;
+      margin: 8px 0;
+      padding: 5px;
+      box-sizing: border-box;
+    }
+    h2 {
+      margin-top: 0;
+    }
+    .legend-group {
+      margin: 10px 0;
+    }
+    label {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h2>Controls</h2>
+    <label for="layout">Layout:</label>
+    <select id="layout">
+      <option value="cose">Cose</option>
+      <option value="grid">Grid</option>
+      <option value="circle">Circle</option>
+      <option value="breadthfirst">Breadthfirst</option>
+      <option value="concentric">Concentric</option>
+    </select>
+    <button onclick="runLayout()">Apply Layout</button>
+
+    <label for="search">Search Node:</label>
+    <input type="text" id="search" placeholder="Enter label or ID">
+    <button onclick="searchNode()">Search</button>
+    <button onclick="fitGraph()">Fit View</button>
+    <button onclick="clearHighlights()">Clear Highlights</button>
+<button onclick="showOnlyLinked()">Show Only Linked</button>
+<button onclick="showAll()">Show All Nodes</button>
+
+    <div class="legend-group">
+      <h3>Node Type Filter</h3>
+      <label><input type="checkbox" class="typeFilter" value="taskNode" checked> taskNode</label>
+      <label><input type="checkbox" class="typeFilter" value="poolNode" checked> poolNode</label>
+      <label><input type="checkbox" class="typeFilter" value="hwPoolNode" checked> hwPoolNode</label>
+      <label><input type="checkbox" class="typeFilter" value="aliasNode" checked> aliasNode</label>
+      <label><input type="checkbox" class="typeFilter" value="imageNode" checked> imageNode</label>
+      <label><input type="checkbox" class="typeFilter" value="l3imageNode" checked> l3imageNode</label>
+    </div>
+  </div>
+  <div id="cy"></div>
+
+  <script>
+
+    var cy;
+
+    function showOnlyLinked() {
+      const selected = cy.nodes(':selected');
+      if (!selected || selected.length === 0) return;
+
+      const combined = selected.reduce((acc, node) => {
+        return acc.union(node.closedNeighborhood());
+      }, cy.collection());
+
+      cy.elements().forEach(el => {
+        el.style('display', combined.contains(el) ? 'element' : 'none');
+      });
+    }
+
+    function showAll() {
+      if (!cy) return;
+      cy.elements().forEach(el => el.style('display', 'element'));
+    }
+
+    var cy;
+
+    fetch('worker_pools_images.cyto.json')
+      .then(response => response.json())
+      .then(raw => {
+        const elements = raw.elements || raw;
+        
+        // Assign Y-row positions by class using preset layout
+        const classGroups = {};
+        let xSpacing = 150;
+        let ySpacing = 100;
+        let classOrder = ['taskNode', 'poolNode', 'aliasNode', 'imageNode', 'l3imageNode', 'hwPoolNode'];
+
+        elements.forEach((el) => {
+          if (el.data && el.data.id && el.classes) {
+            const cls = el.classes || 'unknown';
+            if (!classGroups[cls]) classGroups[cls] = [];
+            classGroups[cls].push(el);
+          }
+        });
+
+        let y = 0;
+        for (const cls of classOrder) {
+          const group = classGroups[cls] || [];
+          group.forEach((el, i) => {
+            el.position = { x: i * xSpacing, y };
+          });
+          y += ySpacing;
+        }
+
+        // Create Cytoscape with preset positions
+        cy = cytoscape({
+
+          container: document.getElementById('cy'),
+          elements: elements,
+          style: [
+            {
+              selector: 'node',
+              style: {
+                'label': function(ele) { return ele.data('label') || ele.id(); },
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'shape': 'roundrectangle',
+                'width': 'label',
+                'padding': '10px',
+                'border-width': 1,
+                'border-color': '#333',
+                'color': '#000',
+                'background-color': '#ccc'
+              }
+            },
+            { selector: '.taskNode', style: { 'background-color': '#f9f' } },
+            { selector: '.poolNode', style: { 'background-color': '#b6fcd5' } },
+            { selector: '.hwPoolNode', style: { 'background-color': '#91c9aa' } },
+            { selector: '.aliasNode', style: { 'background-color': '#d0e7ff' } },
+            { selector: '.imageNode', style: { 'background-color': '#fff9b1' } },
+            { selector: '.l3imageNode', style: { 'background-color': '#ffd6e0' } },
+            {
+              selector: 'edge',
+              style: {
+                'width': 1,
+                'line-color': '#ccc',
+                'target-arrow-color': '#ccc',
+                'target-arrow-shape': 'triangle'
+              }
+            },
+            {
+              selector: '.highlighted',
+              style: {
+                'background-color': '#f00',
+                'line-color': '#f00',
+                'target-arrow-color': '#f00',
+                'transition-property': 'background-color, line-color, target-arrow-color',
+                'transition-duration': '0.5s'
+              }
+            }
+          ],
+          layout: {
+            name: 'preset',
+            fit: true,
+            padding: 50
+          }
+        });
+
+        cy.on('tap', 'node', function(evt) {
+          var node = evt.target;
+          var neighborhood = node.closedNeighborhood();
+          cy.elements().removeClass('highlighted');
+          neighborhood.addClass('highlighted');
+        });
+
+        // Filter nodes by type
+        document.querySelectorAll('.typeFilter').forEach(checkbox => {
+          checkbox.addEventListener('change', () => {
+            const activeTypes = Array.from(document.querySelectorAll('.typeFilter:checked'))
+              .map(cb => cb.value);
+            cy.nodes().forEach(n => {
+              n.style('display', activeTypes.includes(n.data('type')) ? 'element' : 'none');
+            });
+          });
+        });
+      });
+
+    function runLayout() {
+      const layoutName = document.getElementById('layout').value;
+      cy.layout({ name: layoutName, fit: true, padding: 50 }).run();
+    }
+
+    function searchNode() {
+      const term = document.getElementById('search').value.toLowerCase();
+      if (!term || !cy) return;
+      cy.elements().removeClass('highlighted');
+      const match = cy.nodes().filter(node =>
+        node.data('label').toLowerCase().includes(term) ||
+        node.id().toLowerCase().includes(term)
+      );
+      if (match.length > 0) {
+        match.select();
+        match.addClass('highlighted');
+        cy.center(match);
+      }
+    }
+
+    function fitGraph() {
+      if (cy) cy.fit();
+    }
+
+    function clearHighlights() {
+      if (cy) {
+        cy.elements().removeClass('highlighted');
+        cy.elements().unselect();
+      }
+    }
+  </script>
+</body>
+</html>
