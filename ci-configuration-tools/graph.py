@@ -98,7 +98,7 @@ def main():
         }
         if extra_data:
             data.update(extra_data)
-        elements.append({"data": data})
+        elements.append({"data": data, "classes": node_type})
 
     # Helper to add an edge if not already present
     def add_edge(source, target, edge_type, extra_data=None):
