@@ -4,9 +4,13 @@
   <meta charset="utf-8">
   <title>Worker Pools Graph Viewer (Class Styling + Filters)</title>
   <script src="https://unpkg.com/cytoscape@3.25.0/dist/cytoscape.min.js"></script>
-  <script src="https://unpkg.com/cytoscape-cise@2.0.0/cytoscape-cise.js"></script>
   <script src="https://unpkg.com/cytoscape-tidytree@0.2.0/dist/cytoscape-tidytree.min.js"></script>
-  <style>
+  <!-- cytoscape cise -->
+  <script src="https://unpkg.com/layout-base/layout-base.js"></script>
+  <script src="https://unpkg.com/avsdf-base/avsdf-base.js"></script>
+  <script src="https://unpkg.com/cose-base/cose-base.js"></script>
+  <script src="https://unpkg.com/cytoscape-cise/cytoscape-cise.js"></script>
+<style>
     body {
       margin: 0;
       font-family: sans-serif;
@@ -56,6 +60,7 @@
       <option value="concentric">Concentric</option>
       <option value="random">Random</option>
       <option value="tidytree">Tidytree</option>
+      <option value="cise">Cise</option>
       <!-- <option value="cose-bilkent">Cose-Bilkent</option>
       <option value="cola">Cola</option>
       <option value="euler">Euler</option>
@@ -85,10 +90,6 @@
   </div>
   <div id="cy"></div>
 
-  <script>
-    // Register tidytree extension
-    cytoscape.use( require('tidytree'));
-  </script>
   <script>
 
     var cy;
