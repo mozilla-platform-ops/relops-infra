@@ -174,6 +174,7 @@ def main():
         "prod-baz-qux",
         "test-windows11-64-24h2/opt-mochitest-devtools-chrome-spi-nw-5-cf",
         "test-windows11-64-24h2/opt-web-platform-tests-webgpu-backlog-2-cf",
+        "build-components-nightly-compose-tabstray",
     ]
 
     for test_string in test_strings:
