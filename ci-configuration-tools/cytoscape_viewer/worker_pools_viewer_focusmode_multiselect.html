@@ -106,12 +106,46 @@
       const selected = cy.nodes(':selected');
       if (!selected || selected.length === 0) return;
 
-      const combined = selected.reduce((acc, node) => {
-        return acc.union(node.closedNeighborhood());
-      }, cy.collection());
+      // Define the hierarchy order for downward traversal
+      const classOrder = ['taskNode', 'poolNode', 'hwPoolNode', 'aliasNode', 'imageNode', 'l3imageNode'];
+      const classIndex = cls => classOrder.indexOf(cls);
 
+      // Helper to get class of a node
+      function getNodeClass(node) {
+        for (const cls of classOrder) {
+          if (node.hasClass(cls)) return cls;
+        }
+        return null;
+      }
+
+      // BFS downward through the hierarchy
+      let toVisit = selected.toArray();
+      let visited = new Set();
+      let result = cy.collection();
+
+      while (toVisit.length > 0) {
+        const node = toVisit.shift();
+        if (visited.has(node.id())) continue;
+        visited.add(node.id());
+        result = result.union(node);
+
+        const nodeClass = getNodeClass(node);
+        const nodeClassIdx = classIndex(nodeClass);
+
+        // Only traverse edges to nodes of a lower class in the hierarchy
+        node.outgoers('edge').forEach(edge => {
+          const target = edge.target();
+          const targetClass = getNodeClass(target);
+          if (targetClass && classIndex(targetClass) > nodeClassIdx) {
+            toVisit.push(target);
+            result = result.union(edge);
+          }
+        });
+      }
+
+      // Show only the result set
       cy.elements().forEach(el => {
-        el.style('display', combined.contains(el) ? 'element' : 'none');
+        el.style('display', result.contains(el) ? 'element' : 'none');
       });
     }
 
@@ -156,13 +190,20 @@
         });
 
         let y = 0;
-        for (const cls of classOrder) {
-          const group = classGroups[cls] || [];
-          group.forEach((el, i) => {
-            el.position = { x: i * xSpacing, y };
-            el.data = el.data || {};
-            el.data.originalPosition = { x: el.position.x, y: el.position.y };
-          });
+        for (const level of hierarchy) {
+          let classesAtLevel = Array.isArray(level) ? level : [level];
+          // Find the largest group size for this level to help with centering if needed
+          let maxGroupSize = Math.max(...classesAtLevel.map(cls => (classGroups[cls] || []).length));
+          let xOffset = 0;
+          for (const cls of classesAtLevel) {
+            const group = classGroups[cls] || [];
+            group.forEach((el, i) => {
+              el.position = { x: xOffset + i * xSpacing, y };
+              el.data = el.data || {};
+              el.data.originalPosition = { x: el.position.x, y: el.position.y };
+            });
+            xOffset += group.length * xSpacing;
+          }
           y += ySpacing;
         }
 
