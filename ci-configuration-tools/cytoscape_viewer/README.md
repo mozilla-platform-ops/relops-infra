@@ -1,25 +1,25 @@
-# taskcluster cytoscape viewer
+# Taskcluster Cytoscape Viewer
 
-Visualizes Taskcluster tasks, worker pools, image aliases, and images.
+Visualizes Firefox Taskcluster tasks, worker pools, image aliases, and images using Cytoscope.js (https://js.cytoscape.org/).
 
 Task data is from Firefox's Taskgraph. All other data is from fxci-config.
 
-## why
+## Why
 
 Taskgraph is complicated and we frequently get questions like 'What tasks run on these systems?' and 'What pools use these images?'.
 
 This tool aims at helping people find those answers themselves.
 
-## how to run
+## How To Run
 
-### unix
+### Unix
 
 ```bash
 ./serve.sh
 # surf to http://localhost:8080/worker_pools_viewer_focusmode_multiselect.html
 ```
 
-### windows
+### Windows
 
 Untested. Please report back.
 
@@ -29,9 +29,11 @@ serve.ps1
 # surf to http://localhost:8080/worker_pools_viewer_focusmode_multiselect.html
 ```
 
-## usage
+## Usage
 
-TODO... click around and explore for now. Send me feedback.
+You scroll around the display area by clicking and dragging. Zooming also works.
+
+Click around and explore for now. Send me feedback.
 
 ### Color Guide
 
@@ -42,7 +44,7 @@ Light Blue: image alias
 Light Yellow: l1 image
 Light Pink: l3 image
 
-### Example 1: Find out where perftest-*-summarizer* tasks run.
+### Example 1: Find out where `perftest-*-summarizer*` tasks run.
 
 1. Type `summarizer` into search. Press return.
 2. Click the `Show only linked` button.
