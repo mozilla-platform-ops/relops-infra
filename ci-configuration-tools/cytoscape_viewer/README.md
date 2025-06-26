@@ -53,3 +53,9 @@ Light Pink: l3 image
 1. Type `summarizer` into search. Press return.
 2. Click the `Show only linked` button.
 3. Make it easier to view by Layout>Tidytree then click `Apply Layout`.
+
+### Example 2: Find out which pools and tasks use the `docker-worker-gcp-u14-04-2025-06-16` (docker-worker) image.
+
+1. Type `fxci-level1-gcp: docker-worker-gcp-u14-04-2025-06-16` into search. Press return.
+2. Click the `Show only linked` button.
+3. Make it easier to view by Layout>Tidytree then click `Apply Layout`.
