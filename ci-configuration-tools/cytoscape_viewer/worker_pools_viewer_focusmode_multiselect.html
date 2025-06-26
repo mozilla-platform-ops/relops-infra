@@ -225,6 +225,7 @@
           var neighborhood = node.closedNeighborhood();
           cy.elements().removeClass('highlighted');
           neighborhood.addClass('highlighted');
+        }); 
 
         // Also update sidebar on selection changes (e.g. via ctrl+click)
         cy.on('select unselect', 'node', function() {
