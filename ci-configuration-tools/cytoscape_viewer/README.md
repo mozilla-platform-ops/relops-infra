@@ -16,7 +16,7 @@ This tool aims at helping people find those answers themselves.
 
 ```bash
 ./serve.sh
-# surf to http://localhost:8080
+# surf to http://localhost:8080/worker_pools_viewer_focusmode_multiselect.html
 ```
 
 ### windows
@@ -26,7 +26,7 @@ Untested. Please report back.
 ```bash
 # in powershell
 serve.ps1
-# surf to http://localhost:8080
+# surf to http://localhost:8080/worker_pools_viewer_focusmode_multiselect.html
 ```
 
 ## usage
