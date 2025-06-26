@@ -78,6 +78,12 @@
 <button onclick="showOnlyLinked()">Show Only Linked</button>
 <button onclick="showAll()">Show All Nodes</button>
 
+    <div id="selected-info" style="margin: 10px 0; padding: 8px; background: #e9e9e9; border-radius: 4px;">
+      <strong>Selected Nodes:</strong>
+      <div id="selected-count">0</div>
+      <ul id="selected-list" style="margin:0; padding-left: 18px;"></ul>
+    </div>
+
     <div class="legend-group">
       <h3>Node Type Filter</h3>
       <label><input type="checkbox" class="typeFilter" value="taskNode" checked> taskNode</label>
@@ -113,6 +119,21 @@
     }
 
     var cy;
+
+    // Utility to update selected node info in sidebar
+    function updateSelectedInfo() {
+      if (!cy) return;
+      const selected = cy.nodes(':selected');
+      document.getElementById('selected-count').textContent = selected.length;
+      const list = document.getElementById('selected-list');
+      list.innerHTML = '';
+      selected.forEach(n => {
+        const label = n.data('label') || n.id();
+        const li = document.createElement('li');
+        li.textContent = label;
+        list.appendChild(li);
+      });
+    }
 
     fetch('worker_pools_images.cyto.json')
       .then(response => response.json())
@@ -203,6 +224,10 @@
           var neighborhood = node.closedNeighborhood();
           cy.elements().removeClass('highlighted');
           neighborhood.addClass('highlighted');
+
+        // Also update sidebar on selection changes (e.g. via ctrl+click)
+        cy.on('select unselect', 'node', function() {
+          updateSelectedInfo();
         });
 
         // Filter nodes by type
@@ -266,6 +291,7 @@
       if (cy) {
         cy.elements().removeClass('highlighted');
         cy.elements().unselect();
+        updateSelectedInfo();
       }
     }
   </script>
