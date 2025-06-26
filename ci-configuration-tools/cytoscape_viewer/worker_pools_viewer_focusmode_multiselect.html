@@ -123,7 +123,6 @@
       const selected = cy.nodes(':selected');
       if (!selected || selected.length === 0) return;
 
-      // Helper to get class of a node
       function getNodeClass(node) {
         for (const cls in classLevelMap) {
           if (node.hasClass(cls)) return cls;
@@ -131,35 +130,45 @@
         return null;
       }
 
-      // BFS downward through the hierarchy
-      let toVisit = selected.toArray();
+      function getNodeLevel(node) {
+        const cls = getNodeClass(node);
+        return classLevelMap[cls];
+      }
+
       let visited = new Set();
       let result = cy.collection();
 
-      while (toVisit.length > 0) {
-        const node = toVisit.shift();
-        if (visited.has(node.id())) continue;
-        visited.add(node.id());
-        result = result.union(node);
+      // For each selected node, do a ±n level wave expansion
+      selected.forEach(startNode => {
+        const baseLevel = getNodeLevel(startNode);
+        if (baseLevel === undefined) return;
+        visited.add(startNode.id());
+        result = result.union(startNode);
 
-        const nodeClass = getNodeClass(node);
-        const nodeClassLevel = classLevelMap[nodeClass];
+        let wave = 1;
+        let currentFrontier = [startNode];
+        let foundAny = true;
+        while (foundAny) {
+          foundAny = false;
+          let nextFrontier = [];
+          currentFrontier.forEach(node => {
+            node.connectedEdges().forEach(edge => {
+              let other = edge.source().id() === node.id() ? edge.target() : edge.source();
+              if (visited.has(other.id())) return;
+              const otherLevel = getNodeLevel(other);
+              if (otherLevel === baseLevel + wave || otherLevel === baseLevel - wave) {
+                result = result.union(other).union(edge);
+                nextFrontier.push(other);
+                visited.add(other.id());
+                foundAny = true;
+              }
+            });
+          });
+          currentFrontier = nextFrontier;
+          wave++;
+        }
+      });
 
-        // Only traverse edges to nodes of a lower class in the hierarchy
-        node.outgoers('edge').forEach(edge => {
-          const target = edge.target();
-          const targetClass = getNodeClass(target);
-          if (
-            targetClass &&
-            classLevelMap[targetClass] > nodeClassLevel
-          ) {
-            toVisit.push(target);
-            result = result.union(edge);
-          }
-        });
-      }
-
-      // Show only the result set
       cy.elements().forEach(el => {
         el.style('display', result.contains(el) ? 'element' : 'none');
       });
