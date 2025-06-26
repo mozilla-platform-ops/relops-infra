@@ -97,8 +97,10 @@
   <div id="cy"></div>
 
   <script>
-
     var cy;
+
+    let classOrder = ['taskNode', 'poolNode', 'hwPoolNode', 'aliasNode', 'imageNode', 'l3imageNode'];
+    let hierarchy = ['taskNode', ['poolNode', 'hwPoolNode'], 'aliasNode', ['imageNode', 'l3imageNode']];
 
     function showOnlyLinked() {
       const selected = cy.nodes(':selected');
@@ -144,7 +146,6 @@
         const classGroups = {};
         let xSpacing = 150;
         let ySpacing = 100;
-        let classOrder = ['taskNode', 'poolNode', 'hwPoolNode', 'aliasNode', 'imageNode', 'l3imageNode'];
 
         elements.forEach((el) => {
           if (el.data && el.data.id && el.classes) {
