@@ -5,7 +5,8 @@ import sys
 import argparse
 
 drop_list = ['linux64', 'macosx64', 'win64', 'aarch64', 'x86_64', 'a55', 'macos', 'win32', 'linux2404', '7.0',
-'1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11', 'linux2204', 'linux1804', '64', 'android', '24h2', 'windows10']
+'1015', 'macosx1470', 'linux', 'ub20', 'ub18', 'ub24', 'macosx', 'windows11', 'linux2204', 'linux1804', '64', 'android', '24h2',
+'macosx1500', 'macosx1015', 'windows10', 'p5', 'p6', 's24', 'a55', '2009']
 release_drop_list = ['beta', 'nightly', 'release', 'esr', 'raw', 'opt', 'dbg', 'shippable']
 two_or_three_char_drop_list = [
     "ach", "af", "afl", "all", "an", "apk", "apt", "ar", "arm", "as", "ast", "av", "az", "be", "bg", "bn", "bo", "br", "brx", "bs",
@@ -36,7 +37,7 @@ def extract_group(task_name, debug=False):
     element_counter = 0
 
     # trim temp_split_name to max_elements
-    if task_name.startswith("test") or task_name.startswith("build"):
+    if task_name.startswith("test") or task_name.startswith("build") or task_name.startswith("perftest"):
         max_elements = test_max_elements
         # remove elements we don't want
         for item in split_name:
@@ -101,6 +102,8 @@ def collapse_wildcards(task_name, debug=False):
     # replace '*-*' with '*'
     while '*-*' in task_name:
         task_name = re.sub(r"\*-\*", r"*", task_name)
+    while '**' in task_name:
+        task_name = re.sub(r"\*\*", r"*", task_name)
     if debug:
         print(f"collapse_wildcards({original_task_name}) = {task_name}")
     return task_name
@@ -175,6 +178,7 @@ def main():
         "test-windows11-64-24h2/opt-mochitest-devtools-chrome-spi-nw-5-cf",
         "test-windows11-64-24h2/opt-web-platform-tests-webgpu-backlog-2-cf",
         "build-components-nightly-compose-tabstray",
+        "test-macosx1500-aarch64-shippable/opt-browsertime-benchmark-chrome-jetstream2",
     ]
 
     for test_string in test_strings:
