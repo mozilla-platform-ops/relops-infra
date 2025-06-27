@@ -57,6 +57,15 @@
       min-width: unset;
       margin: 2px 0;
     }
+
+    .inline-pre {
+      font-family: "Courier New", Courier, monospace;
+      background: #f5f5f5;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-size: 0.98em;
+      white-space: pre;
+    }
   </style>
 </head>
 
@@ -398,11 +407,12 @@
               const pre = document.createElement('pre');
               pre.style.margin = '0';
               pre.style.whiteSpace = 'pre-wrap';
+              pre.className = 'inline-pre';
               pre.textContent = JSON.stringify(value, null, 2);
-              li.textContent = key + ': ';
+              li.innerHTML = '<strong>' + key + ':</strong> ';
               li.appendChild(pre);
             } else {
-              li.textContent = `${key}: ${value}`;
+              li.innerHTML = `<strong>${key}:</strong> <span class="inline-pre">${value}</span>`;
             }
             metaList.appendChild(li);
           }
