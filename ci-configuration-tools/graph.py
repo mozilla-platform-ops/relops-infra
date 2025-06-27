@@ -13,6 +13,7 @@ import platform
 import socket
 import getpass
 import subprocess
+import pprint
 from datetime import datetime
 
 from summarize_tasks import extract_group
@@ -248,6 +249,15 @@ def main():
 
     metadata = {
         "created_at": datetime.now().isoformat(),
+        "task_count": len(tasks),
+        "task_group_count": len(group_counts),
+        "worker_pool_count": len([p for p in pools.get("pools", []) if not (args.pool_exclude and args.pool_exclude in p.get("pool_id", ""))]),
+        "image_alias_count": len(set(alias for aliases in pool_to_image.values() for alias in aliases)),
+        "python_version": platform.python_version(),
+        "hostname": socket.gethostname(),
+        "username": getpass.getuser(),
+        "command_line": " ".join(sys.argv),
+        "pool_exclude": args.pool_exclude,
         "input_files": {
             "worker_pools_yml": {
                 "path": pools_path,
@@ -262,33 +272,33 @@ def main():
                 "mtime": get_mtime(tasks_path),
             },
         },
-        "fxci_git_sha": get_git_sha(os.path.expanduser(args.path_to_fxci_config)),
-        "fxci_git_remote": get_git_remote(os.path.expanduser(args.path_to_fxci_config)),
-        "mozilla_repo_git_sha": get_git_sha(os.path.expanduser(args.path_to_mozilla_repo)),
-        "mozilla_repo_git_remote": get_git_remote(os.path.expanduser(args.path_to_mozilla_repo)),
-        "task_count": len(tasks),
-        "task_group_count": len(group_counts),
-        "worker_pool_count": len([p for p in pools.get("pools", []) if not (args.pool_exclude and args.pool_exclude in p.get("pool_id", ""))]),
-        "image_alias_count": len(set(alias for aliases in pool_to_image.values() for alias in aliases)),
-        "python_version": platform.python_version(),
-        "hostname": socket.gethostname(),
-        "username": getpass.getuser(),
-        "command_line": " ".join(sys.argv),
-        "pool_exclude": args.pool_exclude,
-        "script_version": get_git_sha(os.path.expanduser(args.path_to_fxci_config)),
+        "repo_git": {
+            "sha": get_git_sha(os.getcwd()),
+            "remote": get_git_remote(os.getcwd()),
+        },
+        "fxci_repo_git": {
+            "sha": get_git_sha(os.path.expanduser(args.path_to_fxci_config)),
+            "remote": get_git_remote(os.path.expanduser(args.path_to_fxci_config)),
+        },
+        "mozilla_repo_git": {
+            "sha": get_git_sha(os.path.expanduser(args.path_to_mozilla_repo)),
+            "remote": get_git_remote(os.path.expanduser(args.path_to_mozilla_repo)),
+        },
     }
 
     # Show warnings
     if tasks_without_workertype_and_provisioner:
         print(f"Warning: {tasks_without_workertype_and_provisioner} tasks are missing workerType and provisionerId.")
 
+    # Show the metadata
+    print("Metadata:")
+    pprint.pprint(metadata, indent=2, sort_dicts=False)
+    print("")
+
     # Write output
     with open("worker_pools_images.cyto.json", "w") as f:
         json.dump({"elements": elements, "metadata": metadata}, f, indent=2)
     print("Cytoscape JSON written to worker_pools_images.cyto.json")
-
-    # Show the metadata indented
-    print(json.dumps(metadata, indent=2))
 
 if __name__ == "__main__":
     main()
