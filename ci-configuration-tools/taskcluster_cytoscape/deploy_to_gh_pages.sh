@@ -13,7 +13,7 @@ cp worker_pools_images.cyto.json $GH_PAGES_REPO_PATH
 # copy worker_pools_viewer_focusmode_multiselect.html to GH_PAGES_REPO_PATH
 # cp cytoscape_viewer/worker_pools_viewer_focusmode_multiselect.html $GH_PAGES_REPO_PATH
 # copy to easier path
-cp cytoscape_viewer/worker_pools_viewer_focusmode_multiselect.html $GH_PAGES_REPO_PATH/viewer.html
+cp cytoscape_viewer/viewer.html $GH_PAGES_REPO_PATH
 
 
 cd $GH_PAGES_REPO_PATH
