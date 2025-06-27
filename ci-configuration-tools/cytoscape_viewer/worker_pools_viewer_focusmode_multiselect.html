@@ -213,9 +213,9 @@
         // Estimate width for each node based on label length
         elements.forEach(el => {
           if (el.data && (el.data.label || el.data.id)) {
-            // Estimate: 8px per character + 4px padding (very tight)
+            // Estimate: 8px per character + 20px padding
             const label = el.data.label || el.data.id;
-            el.data.width = Math.max(40, label.length * 8 + 4); // min width 40
+            el.data.width = Math.max(40, label.length * 8 + 20); // min width 40
             el.data.height = 36; // or adjust as needed
           }
         });
