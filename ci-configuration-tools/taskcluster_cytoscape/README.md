@@ -21,6 +21,7 @@ See the README.md inside the `cytoscape_viewer` directory.
 
 1. Deeplinking of search query and 'show only linked' params.
 2. Clicking on a search result will center view on it.
+3. Clicking search will run 'clear highlights' first. Currently accumulates.
 
 ### Graph
 
