@@ -60,10 +60,11 @@
       <button class="small-layout-btn" onclick="applyLayout('grid')">Grid</button>
     </div>
 
+    <button onclick="fitGraph()">Fit View</button>
+
     <label for="search">Search Node:</label>
     <input type="text" id="search" placeholder="Enter label or ID">
     <button onclick="searchNode()">Search</button>
-    <button onclick="fitGraph()">Fit View</button>
     <button onclick="clearHighlights()">Clear Highlights</button>
 <button onclick="showOnlyLinked()">Show Only Linked</button>
 <button onclick="showAll()">Show All Nodes</button>
@@ -82,6 +83,10 @@
       <label><input type="checkbox" class="typeFilter" value="aliasNode" checked> aliasNode</label>
       <label><input type="checkbox" class="typeFilter" value="imageNode" checked> imageNode</label>
       <label><input type="checkbox" class="typeFilter" value="l3imageNode" checked> l3imageNode</label>
+      <div style="padding-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px;"></div>
+        <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(false)">Disable All</button>
+        <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(true)">Enable All</button>
+      </div>
     </div>
   </div>
   <div id="cy"></div>
@@ -204,7 +209,17 @@
       .then(response => response.json())
       .then(raw => {
         const elements = raw.elements || raw;
-        
+
+        // Estimate width for each node based on label length
+        elements.forEach(el => {
+          if (el.data && (el.data.label || el.data.id)) {
+            // Estimate: 8px per character + 4px padding (very tight)
+            const label = el.data.label || el.data.id;
+            el.data.width = Math.max(40, label.length * 8 + 4); // min width 40
+            el.data.height = 36; // or adjust as needed
+          }
+        });
+
         // Assign Y-row positions by class using preset layout
         const classGroups = {};
         let xSpacing = 150;
@@ -238,7 +253,6 @@
 
         // Create Cytoscape with preset positions
         cy = cytoscape({
-
           container: document.getElementById('cy'),
           elements: elements,
           style: [
@@ -249,12 +263,13 @@
                 'text-valign': 'center',
                 'text-halign': 'center',
                 'shape': 'roundrectangle',
-                'width': 'label',
-                'padding': '10px',
+                'width': 'data(width)',
+                'height': 'data(height)',
                 'border-width': 1,
                 'border-color': '#333',
                 'color': '#000',
-                'background-color': '#ccc'
+                'background-color': '#ccc',
+                'padding': '2px'
               }
             },
             { selector: '.taskNode', style: { 'background-color': '#dda0dd' } },
@@ -365,6 +380,18 @@
         updateSelectedInfo();
       }
     }
-  </script>
+
+    // Add this function to handle enable/disable all
+    function toggleTypeFilters(enable) {
+      document.querySelectorAll('.typeFilter').forEach(cb => {
+        cb.checked = enable;
+      });
+      // Trigger change event to update graph
+      const event = new Event('change');
+      document.querySelectorAll('.typeFilter').forEach(cb => {
+        cb.dispatchEvent(event);
+      });
+    }
+</script>
 </body>
 </html>
