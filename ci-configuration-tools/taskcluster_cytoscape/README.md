@@ -14,3 +14,14 @@ This software consists of a Python script to generate a Cytoscape.js JSON file a
 ## Viewing
 
 See the README.md inside the `cytoscape_viewer` directory.
+
+## TODOs
+
+### Viewer
+
+1. Deeplinking of search query and 'show only linked' params.
+2. Clicking on a search result will center view on it.
+
+### Graph
+
+TBD
