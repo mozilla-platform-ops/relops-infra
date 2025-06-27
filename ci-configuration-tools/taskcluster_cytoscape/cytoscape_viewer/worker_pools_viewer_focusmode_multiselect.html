@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="utf-8">
-  <title>Worker Pools Graph Viewer (Class Styling + Filters)</title>
+  <title>Taskcluster Cytoscape Viewer</title>
   <script src="https://unpkg.com/cytoscape@3.25.0/dist/cytoscape.min.js"></script>
   <script src="https://unpkg.com/cytoscape-tidytree@0.2.0/dist/cytoscape-tidytree.min.js"></script>
   <style>
@@ -60,6 +60,7 @@
 
     label {
       display: block;
+      padding-bottom: 2px;
     }
 
     .inline-pre {
@@ -85,6 +86,10 @@
         <button class="small-layout-btn" onclick="applyLayout('grid')">Grid</button>
       </div>
       <button onclick="fitGraph()">Fit View</button>
+      <div style="margin-top: 8px;">
+        <label>Debug:</label>
+        <button onclick="showMetadataWindow()">Metadata</button>
+      </div>
     </div>
 
     <div class="legend-group" style="min-width: 180px;">
@@ -116,10 +121,6 @@
       <strong>Selected Nodes:</strong>
       <div id="selected-count">0</div>
       <ul id="selected-list" style="margin:0; padding-left: 18px;"></ul>
-    </div>
-
-    <div>
-      <button onclick="showMetadataWindow()">Show Metadata</button>
     </div>
   </div>
 
