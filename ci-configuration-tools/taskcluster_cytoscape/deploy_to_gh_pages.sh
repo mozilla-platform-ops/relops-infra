@@ -15,10 +15,13 @@ cp worker_pools_images.cyto.json $GH_PAGES_REPO_PATH
 # copy to easier path
 cp cytoscape_viewer/viewer.html $GH_PAGES_REPO_PATH
 
+# copy readme
+cp cytoscape_viewer/README.md $GH_PAGES_REPO_PATH
+
 
 cd $GH_PAGES_REPO_PATH
 # commit changes
-git add worker_pools_images.cyto.json viewer.html
+git add worker_pools_images.cyto.json viewer.html README.md
 # check if there are changes before committing
 if [ -z "$(git status --porcelain)" ]; then
   echo "No changes to commit."
