@@ -20,7 +20,7 @@ We lack task data for other repositories that submit tasks to fxci. For example,
 
 ```bash
 ./serve.sh
-# surf to http://localhost:8080/worker_pools_viewer_focusmode_multiselect.html
+# surf to http://localhost:8080/viewer.html
 ```
 
 ### Windows
@@ -30,7 +30,7 @@ Untested. Please report back.
 ```bash
 # in powershell
 serve.ps1
-# surf to http://localhost:8080/worker_pools_viewer_focusmode_multiselect.html
+# surf to http://localhost:8080/viewer.html
 ```
 
 ## Usage
