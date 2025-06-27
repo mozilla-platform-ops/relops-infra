@@ -10,44 +10,37 @@
     body {
       margin: 0;
       font-family: sans-serif;
-      display: flex;
       height: 100vh;
+      display: flex;
+      flex-direction: column;
       overflow: hidden;
     }
 
-    #sidebar {
-      width: 250px;
-      background: #f4f4f4;
-      border-right: 1px solid #ccc;
-      padding: 15px;
-      box-sizing: border-box;
-      overflow-y: auto;
-    }
-
     #cy {
-      flex-grow: 1;
-      height: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
     }
 
-    select,
-    input[type="text"],
-    button {
-      width: 100%;
-      margin: 8px 0;
-      padding: 5px;
+    #bottombar {
+      flex: 0 0 auto;
+      background: #f4f4f4;
+      border-top: 1px solid #ccc;
+      padding: 12px 18px 8px 18px;
       box-sizing: border-box;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 18px 32px;
+      z-index: 10;
     }
 
-    h2 {
-      margin-top: 0;
+    #bottombar>* {
+      margin-bottom: 4px;
     }
 
     .legend-group {
-      margin: 10px 0;
-    }
-
-    label {
-      display: block;
+      margin: 0 18px 0 0;
     }
 
     .small-layout-btn {
@@ -56,6 +49,17 @@
       width: 48%;
       min-width: unset;
       margin: 2px 0;
+    }
+
+    #selected-info {
+      background: #e9e9e9;
+      border-radius: 4px;
+      padding: 8px;
+      margin: 0 18px 0 0;
+    }
+
+    label {
+      display: block;
     }
 
     .inline-pre {
@@ -70,50 +74,54 @@
 </head>
 
 <body>
-  <div id="sidebar">
-    <h2>Controls</h2>
-    <label>Layout:</label>
-    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
-      <button class="small-layout-btn" onclick="applyLayout('initial')">Initial</button>
-      <button class="small-layout-btn" onclick="applyLayout('tidytree')">Tidytree</button>
-      <button class="small-layout-btn" onclick="applyLayout('cose')">Cose</button>
-      <button class="small-layout-btn" onclick="applyLayout('grid')">Grid</button>
+  <div id="cy"></div>
+  <div id="bottombar">
+    <div>
+      <label>Layout:</label>
+      <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
+        <button class="small-layout-btn" onclick="applyLayout('initial')">Initial</button>
+        <button class="small-layout-btn" onclick="applyLayout('tidytree')">Tidytree</button>
+        <button class="small-layout-btn" onclick="applyLayout('cose')">Cose</button>
+        <button class="small-layout-btn" onclick="applyLayout('grid')">Grid</button>
+      </div>
+      <button onclick="fitGraph()">Fit View</button>
     </div>
 
-    <button onclick="fitGraph()">Fit View</button>
+    <div class="legend-group" style="min-width: 180px;">
 
-    <label for="search">Search Node:</label>
-    <input type="text" id="search" placeholder="Enter label or ID">
-    <button onclick="searchNode()">Search</button>
-    <button onclick="clearHighlights()">Clear Highlights</button>
-    <button onclick="showOnlyLinked()">Show Only Linked</button>
-    <button onclick="showAll()">Show All Nodes</button>
-
-    <div id="selected-info" style="margin: 10px 0; padding: 8px; background: #e9e9e9; border-radius: 4px;">
-      <strong>Selected Nodes:</strong>
-      <div id="selected-count">0</div>
-      <ul id="selected-list" style="margin:0; padding-left: 18px;"></ul>
-    </div>
-
-    <div class="legend-group">
-      <h3>Node Type Filter</h3>
+      <label>Node Type Filter:</label>
       <label><input type="checkbox" class="typeFilter" value="taskNode" checked> taskNode</label>
       <label><input type="checkbox" class="typeFilter" value="poolNode" checked> poolNode</label>
       <label><input type="checkbox" class="typeFilter" value="hwPoolNode" checked> hwPoolNode</label>
       <label><input type="checkbox" class="typeFilter" value="aliasNode" checked> aliasNode</label>
       <label><input type="checkbox" class="typeFilter" value="imageNode" checked> imageNode</label>
       <label><input type="checkbox" class="typeFilter" value="l3imageNode" checked> l3imageNode</label>
-      <div style="padding-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px;"></div>
-      <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(false)">Disable
-        All</button>
-      <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(true)">Enable
-        All</button>
+      <div style="padding-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px;">
+        <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(false)">Disable All</button>
+        <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(true)">Enable All</button>
+      </div>
     </div>
-    <button onclick="showMetadataWindow()">Show Metadata</button>
-  </div>
-  </div>
 
-  <div id="cy"></div>
+    <div>
+      <label for="search">Search Node:</label>
+      <input type="text" id="search" placeholder="Enter label or ID">
+      <button onclick="searchNode()">Search</button>
+      <button onclick="clearHighlights()">Clear Highlights</button>
+      <div style="margin-top: 8px;">
+        <button onclick="showOnlyLinked()">Show Only Linked</button>
+        <button onclick="showAll()">Show All Nodes</button>
+      </div>
+    </div>
+    <div id="selected-info">
+      <strong>Selected Nodes:</strong>
+      <div id="selected-count">0</div>
+      <ul id="selected-list" style="margin:0; padding-left: 18px;"></ul>
+    </div>
+
+    <div>
+      <button onclick="showMetadataWindow()">Show Metadata</button>
+    </div>
+  </div>
 
   <div id="metadata-window"
     style="display:none; position:fixed; top:60px; right:40px; width:680px; background:#fff; border:1px solid #888; border-radius:8px; box-shadow:0 2px 12px #0002; z-index:1000; padding:16px;">
