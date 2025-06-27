@@ -121,7 +121,7 @@ def main():
             data.update(extra_data)
         elements.append({"data": data})
 
-    # --- POOLS, ALIASES, IMAGES ---
+    # Pools, Aliases, and Images
     pool_to_image = defaultdict(list)
     pool_id_to_node = {}
     pool_id_patterns = []
@@ -171,7 +171,7 @@ def main():
                 add_node(path_node, short_resolved, node_class, {"path": resolved})
                 add_edge(alias_node, path_node, "alias-image")
 
-    # --- TASK GROUPS ---
+    # Task Groups
     group_to_pools = defaultdict(set)
     group_counts = defaultdict(int)
     tasks_without_workertype_and_provisioner = 0
@@ -207,7 +207,7 @@ def main():
         for pool_node in pool_nodes_set:
             add_edge(group_node, pool_node, "group-pool", {"group": group})
 
-    # --- Add metadata ---
+    # Add metadata
     def get_git_sha(path):
         try:
             sha = subprocess.check_output(
