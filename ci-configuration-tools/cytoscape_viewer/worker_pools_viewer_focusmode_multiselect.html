@@ -107,7 +107,7 @@
   <div id="cy"></div>
 
   <div id="metadata-window"
-    style="display:none; position:fixed; top:60px; right:40px; width:340px; background:#fff; border:1px solid #888; border-radius:8px; box-shadow:0 2px 12px #0002; z-index:1000; padding:16px;">
+    style="display:none; position:fixed; top:60px; right:40px; width:680px; background:#fff; border:1px solid #888; border-radius:8px; box-shadow:0 2px 12px #0002; z-index:1000; padding:16px;">
     <div id="metadata-header" style="cursor:move; font-weight:bold; margin-bottom:8px;">
       Graph Metadata
       <button onclick="hideMetadataWindow()" style="float:right;">✕</button>
@@ -393,11 +393,17 @@
           const metaList = document.getElementById('metadata-list-window');
           metaList.innerHTML = '';
           for (const [key, value] of Object.entries(raw.metadata)) {
-            const val = (typeof value === 'object' && value !== null)
-              ? JSON.stringify(value)
-              : value;
             const li = document.createElement('li');
-            li.textContent = `${key}: ${val}`;
+            if (typeof value === 'object' && value !== null) {
+              const pre = document.createElement('pre');
+              pre.style.margin = '0';
+              pre.style.whiteSpace = 'pre-wrap';
+              pre.textContent = JSON.stringify(value, null, 2);
+              li.textContent = key + ': ';
+              li.appendChild(pre);
+            } else {
+              li.textContent = `${key}: ${value}`;
+            }
             metaList.appendChild(li);
           }
         }
