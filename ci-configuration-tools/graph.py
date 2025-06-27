@@ -267,6 +267,7 @@ def main():
         "mozilla_repo_git_sha": get_git_sha(os.path.expanduser(args.path_to_mozilla_repo)),
         "mozilla_repo_git_remote": get_git_remote(os.path.expanduser(args.path_to_mozilla_repo)),
         "task_count": len(tasks),
+        "task_group_count": len(group_counts),
         "worker_pool_count": len([p for p in pools.get("pools", []) if not (args.pool_exclude and args.pool_exclude in p.get("pool_id", ""))]),
         "image_alias_count": len(set(alias for aliases in pool_to_image.values() for alias in aliases)),
         "python_version": platform.python_version(),
