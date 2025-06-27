@@ -14,7 +14,7 @@ import socket
 import getpass
 import subprocess
 import pprint
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from summarize_tasks import extract_group
 
@@ -71,6 +71,51 @@ def extract_image_aliases(image_config):
 def load_json(path):
     with open(path) as f:
         return json.load(f)
+
+def human_readable_age(dt):
+    if not dt:
+        return "unknown"
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
+    # Make 'now' timezone-aware if dt is
+    if dt.tzinfo is not None and dt.tzinfo.utcoffset(dt) is not None:
+        now = datetime.now(dt.tzinfo)
+    else:
+        now = datetime.now()
+    delta = now - dt
+    seconds = delta.total_seconds()
+    if seconds < 60:
+        return f"{int(seconds)} seconds ago"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        return f"{minutes:.0f} minutes ago"
+    elif seconds < 86400:
+        hours = seconds / 3600
+        return f"{hours:.1f} hours ago"
+    elif seconds < 604800:
+        days = seconds / 86400
+        return f"{days:.1f} days ago"
+    elif seconds < 2419200:
+        weeks = seconds / 604800
+        return f"{weeks:.1f} weeks ago"
+    else:
+        months = seconds / 2419200
+        return f"{months:.1f} months ago"
+
+def get_git_commit_date(path):
+    try:
+        abspath = os.path.abspath(path)
+        basedir = os.path.dirname(abspath)
+        filename = os.path.basename(abspath)
+        out = subprocess.check_output(
+            ["git", "-C", basedir, "log", "-1", "--format=%cI", "--", filename],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+        if out:
+            return out
+    except Exception:
+        pass
+    return None
 
 def main():
     parser = argparse.ArgumentParser(description="Generate Cytoscape JSON for worker pools and images.")
@@ -262,10 +307,12 @@ def main():
             "worker_pools_yml": {
                 "path": pools_path,
                 "mtime": get_mtime(pools_path),
+                "commit_date": get_git_commit_date(pools_path),
             },
             "worker_images_yml": {
                 "path": images_path,
                 "mtime": get_mtime(images_path),
+                "commit_date": get_git_commit_date(images_path),
             },
             "tasks_json": {
                 "path": tasks_path,
@@ -289,6 +336,19 @@ def main():
     # Show warnings
     if tasks_without_workertype_and_provisioner:
         print(f"Warning: {tasks_without_workertype_and_provisioner} tasks are missing workerType and provisionerId.")
+
+    # Show file ages
+    print("Input file ages:")
+    for key, info in metadata["input_files"].items():
+        if key == "tasks_json":
+            mtime = info.get("mtime")
+            age = human_readable_age(mtime)
+            print(f"  {key}: {age} (last modified)")
+        else:
+            commit_date = info.get("commit_date")
+            age = human_readable_age(commit_date)
+            print(f"  {key}: {age} (last git commit)")
+    print("")
 
     # Show the metadata
     print("Metadata:")
