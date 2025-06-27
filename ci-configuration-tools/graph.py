@@ -9,6 +9,11 @@ import sys
 import os
 import json
 import logging
+import platform
+import socket
+import getpass
+import subprocess
+from datetime import datetime
 
 from summarize_tasks import extract_group
 
@@ -202,9 +207,79 @@ def main():
         for pool_node in pool_nodes_set:
             add_edge(group_node, pool_node, "group-pool", {"group": group})
 
+    # --- Add metadata ---
+    def get_git_sha(path):
+        try:
+            sha = subprocess.check_output(
+                ["git", "-C", path, "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+            ).decode().strip()
+            dirty = subprocess.call(
+                ["git", "-C", path, "diff-index", "--quiet", "HEAD", "--"]
+            )
+            if dirty != 0:
+                sha += "-dirty"
+            return sha
+        except Exception:
+            return None
+
+    def get_git_remote(path):
+        try:
+            # Get current branch
+            branch = subprocess.check_output(
+                ["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"], stderr=subprocess.DEVNULL
+            ).decode().strip()
+            # Get remote name for branch
+            remote_name = subprocess.check_output(
+                ["git", "-C", path, "config", f"branch.{branch}.remote"], stderr=subprocess.DEVNULL
+            ).decode().strip()
+            # Get remote URL
+            remote_url = subprocess.check_output(
+                ["git", "-C", path, "remote", "get-url", remote_name], stderr=subprocess.DEVNULL
+            ).decode().strip()
+            return {"branch": branch, "remote": remote_name, "url": remote_url}
+        except Exception:
+            return None
+
+    def get_mtime(path):
+        try:
+            return datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+        except Exception:
+            return None
+
+    metadata = {
+        "created_at": datetime.now().isoformat(),
+        "input_files": {
+            "worker_pools_yml": {
+                "path": pools_path,
+                "mtime": get_mtime(pools_path),
+            },
+            "worker_images_yml": {
+                "path": images_path,
+                "mtime": get_mtime(images_path),
+            },
+            "tasks_json": {
+                "path": tasks_path,
+                "mtime": get_mtime(tasks_path),
+            },
+        },
+        "fxci_git_sha": get_git_sha(os.path.dirname(os.path.abspath(__file__))),
+        "fxci_git_remote": get_git_remote(os.path.dirname(os.path.abspath(__file__))),
+        "mozilla_repo_git_sha": get_git_sha(os.path.expanduser(args.path_to_mozilla_repo)),
+        "mozilla_repo_git_remote": get_git_remote(os.path.expanduser(args.path_to_mozilla_repo)),
+        "task_count": len(tasks),
+        "worker_pool_count": len([p for p in pools.get("pools", []) if not (args.pool_exclude and args.pool_exclude in p.get("pool_id", ""))]),
+        "image_alias_count": len(set(alias for aliases in pool_to_image.values() for alias in aliases)),
+        "python_version": platform.python_version(),
+        "hostname": socket.gethostname(),
+        "username": getpass.getuser(),
+        "command_line": " ".join(sys.argv),
+        "pool_exclude": args.pool_exclude,
+        "script_version": get_git_sha(os.path.dirname(os.path.abspath(__file__))),
+    }
+
     # Write output
     with open("worker_pools_images.cyto.json", "w") as f:
-        json.dump({"elements": elements}, f, indent=2)
+        json.dump({"elements": elements, "metadata": metadata}, f, indent=2)
     print("Cytoscape JSON written to worker_pools_images.cyto.json")
 
     if tasks_without_workertype_and_provisioner:
