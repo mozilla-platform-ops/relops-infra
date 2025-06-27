@@ -262,8 +262,8 @@ def main():
                 "mtime": get_mtime(tasks_path),
             },
         },
-        "fxci_git_sha": get_git_sha(os.path.dirname(os.path.abspath(__file__))),
-        "fxci_git_remote": get_git_remote(os.path.dirname(os.path.abspath(__file__))),
+        "fxci_git_sha": get_git_sha(os.path.expanduser(args.path_to_fxci_config)),
+        "fxci_git_remote": get_git_remote(os.path.expanduser(args.path_to_fxci_config)),
         "mozilla_repo_git_sha": get_git_sha(os.path.expanduser(args.path_to_mozilla_repo)),
         "mozilla_repo_git_remote": get_git_remote(os.path.expanduser(args.path_to_mozilla_repo)),
         "task_count": len(tasks),
@@ -274,16 +274,20 @@ def main():
         "username": getpass.getuser(),
         "command_line": " ".join(sys.argv),
         "pool_exclude": args.pool_exclude,
-        "script_version": get_git_sha(os.path.dirname(os.path.abspath(__file__))),
+        "script_version": get_git_sha(os.path.expanduser(args.path_to_fxci_config)),
     }
+
+    # Show warnings
+    if tasks_without_workertype_and_provisioner:
+        print(f"Warning: {tasks_without_workertype_and_provisioner} tasks are missing workerType and provisionerId.")
 
     # Write output
     with open("worker_pools_images.cyto.json", "w") as f:
         json.dump({"elements": elements, "metadata": metadata}, f, indent=2)
     print("Cytoscape JSON written to worker_pools_images.cyto.json")
 
-    if tasks_without_workertype_and_provisioner:
-        print(f"Warning: {tasks_without_workertype_and_provisioner} tasks are missing workerType and provisionerId.")
+    # Show the metadata indented
+    print(json.dumps(metadata, indent=2))
 
 if __name__ == "__main__":
     main()
