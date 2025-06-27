@@ -1,11 +1,12 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <meta charset="utf-8">
   <title>Worker Pools Graph Viewer (Class Styling + Filters)</title>
   <script src="https://unpkg.com/cytoscape@3.25.0/dist/cytoscape.min.js"></script>
   <script src="https://unpkg.com/cytoscape-tidytree@0.2.0/dist/cytoscape-tidytree.min.js"></script>
-<style>
+  <style>
     body {
       margin: 0;
       font-family: sans-serif;
@@ -13,6 +14,7 @@
       height: 100vh;
       overflow: hidden;
     }
+
     #sidebar {
       width: 250px;
       background: #f4f4f4;
@@ -21,25 +23,33 @@
       box-sizing: border-box;
       overflow-y: auto;
     }
+
     #cy {
       flex-grow: 1;
       height: 100%;
     }
-    select, input[type="text"], button {
+
+    select,
+    input[type="text"],
+    button {
       width: 100%;
       margin: 8px 0;
       padding: 5px;
       box-sizing: border-box;
     }
+
     h2 {
       margin-top: 0;
     }
+
     .legend-group {
       margin: 10px 0;
     }
+
     label {
       display: block;
     }
+
     .small-layout-btn {
       font-size: 0.8em;
       padding: 3px 6px;
@@ -49,6 +59,7 @@
     }
   </style>
 </head>
+
 <body>
   <div id="sidebar">
     <h2>Controls</h2>
@@ -66,8 +77,9 @@
     <input type="text" id="search" placeholder="Enter label or ID">
     <button onclick="searchNode()">Search</button>
     <button onclick="clearHighlights()">Clear Highlights</button>
-<button onclick="showOnlyLinked()">Show Only Linked</button>
-<button onclick="showAll()">Show All Nodes</button>
+    <button onclick="showOnlyLinked()">Show Only Linked</button>
+    <button onclick="showAll()">Show All Nodes</button>
+    <button onclick="showMetadataWindow()">Show Metadata</button>
 
     <div id="selected-info" style="margin: 10px 0; padding: 8px; background: #e9e9e9; border-radius: 4px;">
       <strong>Selected Nodes:</strong>
@@ -84,12 +96,25 @@
       <label><input type="checkbox" class="typeFilter" value="imageNode" checked> imageNode</label>
       <label><input type="checkbox" class="typeFilter" value="l3imageNode" checked> l3imageNode</label>
       <div style="padding-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px;"></div>
-        <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(false)">Disable All</button>
-        <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(true)">Enable All</button>
-      </div>
+      <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(false)">Disable
+        All</button>
+      <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(true)">Enable
+        All</button>
     </div>
   </div>
+  </div>
+
   <div id="cy"></div>
+
+  <div id="metadata-window"
+    style="display:none; position:fixed; top:60px; right:40px; width:340px; background:#fff; border:1px solid #888; border-radius:8px; box-shadow:0 2px 12px #0002; z-index:1000; padding:16px;">
+    <div id="metadata-header" style="cursor:move; font-weight:bold; margin-bottom:8px;">
+      Graph Metadata
+      <button onclick="hideMetadataWindow()" style="float:right;">✕</button>
+    </div>
+    <ul id="metadata-list-window"
+      style="margin:0; padding-left:18px; font-size:0.95em; max-height:300px; overflow-y:auto;"></ul>
+  </div>
 
   <script>
     var cy;
@@ -205,6 +230,41 @@
       });
     }
 
+    function toggleMetadata() {
+      const list = document.getElementById('metadata-list');
+      list.style.display = (list.style.display === 'none' || !list.style.display) ? 'block' : 'none';
+    }
+
+    function showMetadataWindow() {
+      document.getElementById('metadata-window').style.display = 'block';
+    }
+    function hideMetadataWindow() {
+      document.getElementById('metadata-window').style.display = 'none';
+    }
+
+    // Make the window draggable
+    (function () {
+      const win = document.getElementById('metadata-window');
+      const header = document.getElementById('metadata-header');
+      let offsetX = 0, offsetY = 0, isDown = false;
+
+      header.onmousedown = function (e) {
+        isDown = true;
+        offsetX = win.offsetLeft - e.clientX;
+        offsetY = win.offsetTop - e.clientY;
+        document.onmousemove = function (e) {
+          if (!isDown) return;
+          win.style.left = (e.clientX + offsetX) + 'px';
+          win.style.top = (e.clientY + offsetY) + 'px';
+        };
+        document.onmouseup = function () {
+          isDown = false;
+          document.onmousemove = null;
+          document.onmouseup = null;
+        };
+      };
+    })();
+
     fetch('worker_pools_images.cyto.json')
       .then(response => response.json())
       .then(raw => {
@@ -259,7 +319,7 @@
             {
               selector: 'node',
               style: {
-                'label': function(ele) { return ele.data('label') || ele.id(); },
+                'label': function (ele) { return ele.data('label') || ele.id(); },
                 'text-valign': 'center',
                 'text-halign': 'center',
                 'shape': 'roundrectangle',
@@ -305,7 +365,7 @@
           }
         });
 
-        cy.on('tap', 'node', function(evt) {
+        cy.on('tap', 'node', function (evt) {
           var node = evt.target;
           var neighborhood = node.closedNeighborhood();
           cy.elements().removeClass('highlighted');
@@ -313,7 +373,7 @@
         });
 
         // Also update sidebar on selection changes (e.g. via ctrl+click)
-        cy.on('select unselect', 'node', function() {
+        cy.on('select unselect', 'node', function () {
           updateSelectedInfo();
         });
 
@@ -327,6 +387,20 @@
             });
           });
         });
+
+        // Surface metadata in the floating window
+        if (raw.metadata) {
+          const metaList = document.getElementById('metadata-list-window');
+          metaList.innerHTML = '';
+          for (const [key, value] of Object.entries(raw.metadata)) {
+            const val = (typeof value === 'object' && value !== null)
+              ? JSON.stringify(value)
+              : value;
+            const li = document.createElement('li');
+            li.textContent = `${key}: ${val}`;
+            metaList.appendChild(li);
+          }
+        }
       });
 
     function restoreInitialPositions() {
@@ -363,7 +437,7 @@
     }
 
     // Enable pressing Enter in the search field to trigger search
-    document.getElementById('search').addEventListener('keydown', function(e) {
+    document.getElementById('search').addEventListener('keydown', function (e) {
       if (e.key === 'Enter') {
         searchNode();
       }
@@ -392,6 +466,7 @@
         cb.dispatchEvent(event);
       });
     }
-</script>
+  </script>
 </body>
+
 </html>
