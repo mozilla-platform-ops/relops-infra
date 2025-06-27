@@ -40,30 +40,25 @@
     label {
       display: block;
     }
+    .small-layout-btn {
+      font-size: 0.8em;
+      padding: 3px 6px;
+      width: 48%;
+      min-width: unset;
+      margin: 2px 0;
+    }
   </style>
 </head>
 <body>
   <div id="sidebar">
     <h2>Controls</h2>
-    <label for="layout">Layout:</label>
-    <select id="layout">
-      <option value="initial">Initial</option>
-      <option value="tidytree">Tidytree</option>
-      <option value="cose">Cose</option>
-      <option value="grid">Grid</option>
-      <option value="circle">Circle</option>
-      <option value="breadthfirst">Breadthfirst</option>
-      <option value="concentric">Concentric</option>
-      <option value="random">Random</option>
-      <!-- <option value="cise">Cise</option> -->
-      <!-- <option value="cose-bilkent">Cose-Bilkent</option>
-      <option value="cola">Cola</option>
-      <option value="euler">Euler</option>
-      <option value="spread">Spread</option>
-      <option value="dagre">Dagre</option>
-      <option value="klay">Klay</option> -->
-    </select>
-    <button onclick="runLayout()">Apply Layout</button>
+    <label>Layout:</label>
+    <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
+      <button class="small-layout-btn" onclick="applyLayout('initial')">Initial</button>
+      <button class="small-layout-btn" onclick="applyLayout('tidytree')">Tidytree</button>
+      <button class="small-layout-btn" onclick="applyLayout('cose')">Cose</button>
+      <button class="small-layout-btn" onclick="applyLayout('grid')">Grid</button>
+    </div>
 
     <label for="search">Search Node:</label>
     <input type="text" id="search" placeholder="Enter label or ID">
@@ -328,8 +323,7 @@
       });
     }
 
-    function runLayout() {
-      const layoutName = document.getElementById('layout').value;
+    function applyLayout(layoutName) {
       if (layoutName === 'initial') {
         restoreInitialPositions();
         cy.layout({ name: 'preset', fit: true, padding: 50 }).run();
