@@ -16,7 +16,7 @@ We lack task data for other repositories that submit tasks to fxci. For example,
 
 ## How To Run on Web
 
-Currently deployed to: https://aerickson.github.io/gh_pages_test/viewer.html
+Currently deployed to: [https://aerickson.github.io/gh_pages_test/viewer.html](https://aerickson.github.io/gh_pages_test/viewer.html)
 
 ## How To Run Locally
 
