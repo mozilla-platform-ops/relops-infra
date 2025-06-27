@@ -117,10 +117,10 @@
         <button onclick="showAll()">Show All Nodes</button>
       </div>
     </div>
-    <div id="selected-info">
-      <strong>Selected Nodes:</strong>
+    <div id="selected-info" style="flex: 1 0 auto; min-width: 200px; max-width: 1000px;">
+      <label>Selected Nodes:</label>
       <div id="selected-count">0</div>
-      <ul id="selected-list" style="margin:0; padding-left: 18px;"></ul>
+      <ul id="selected-list" style="margin:0; padding-left: 18px; max-height: 120px; overflow-y: auto;"></ul>
     </div>
   </div>
 
@@ -441,7 +441,24 @@
       if (layoutName === 'initial') {
         restoreInitialPositions();
         cy.layout({ name: 'preset', fit: true, padding: 50 }).run();
-      } else {
+      }
+      else if (layoutName === 'tidytree') {
+        options = {
+          name: 'tidytree',
+          fit: true,
+          padding: 50,
+          spacingFactor: 1.2,
+          animate: false,
+        };
+        cy.layout(options).run();
+      }
+      else if (layoutName === 'cose') {
+        cy.layout({ name: 'cose', fit: true, padding: 50 }).run();
+      }
+      else if (layoutName === 'grid') {
+        cy.layout({ name: 'grid', fit: true, padding: 50 }).run();
+      }
+      else {
         cy.layout({ name: layoutName, fit: true, padding: 50 }).run();
       }
     }
