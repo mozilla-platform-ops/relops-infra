@@ -171,7 +171,21 @@
 
     function showAll() {
       if (!cy) return;
-      cy.elements().forEach(el => el.style('display', 'element'));
+      // Get active types from checkboxes
+      const activeTypes = Array.from(document.querySelectorAll('.typeFilter:checked'))
+        .map(cb => cb.value);
+
+      // Show/hide nodes based on type filter
+      cy.nodes().forEach(n => {
+        n.style('display', activeTypes.includes(n.data('type')) ? 'element' : 'none');
+      });
+
+      // Show/hide edges: only show if both source and target are visible
+      cy.edges().forEach(e => {
+        const srcVisible = e.source().style('display') !== 'none';
+        const tgtVisible = e.target().style('display') !== 'none';
+        e.style('display', (srcVisible && tgtVisible) ? 'element' : 'none');
+      });
     }
 
     var cy;
