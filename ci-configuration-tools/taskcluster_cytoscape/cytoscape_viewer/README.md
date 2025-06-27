@@ -14,7 +14,11 @@ This tool aims at helping people find those answers themselves.
 
 We lack task data for other repositories that submit tasks to fxci. For example, the translations GPU workers don't have any tasks in the dataset. Similarly, the VPN workers don't have any tasks.
 
-## How To Run
+## How To Run on Web
+
+Currently deployed to: https://aerickson.github.io/gh_pages_test/viewer.html
+
+## How To Run Locally
 
 ### Unix
 
