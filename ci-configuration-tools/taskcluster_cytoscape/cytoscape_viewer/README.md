@@ -12,7 +12,8 @@ This tool aims at helping people find those answers themselves.
 
 ## Caveats
 
-We lack task data for other repositories that submit tasks to fxci. For example, the translations GPU workers don't have any tasks in the dataset. Similarly, the VPN workers don't have any tasks.
+- We lack task data for other repositories that submit tasks to fxci. For example, the translations GPU workers don't have any tasks in the dataset. Similarly, the VPN workers don't have any tasks.
+- Known Firefox DOM rendering bug (https://bugzilla.mozilla.org/show_bug.cgi?id=1974854). Chrome doesn't have this issue.
 
 ## How To Run on Web
 
