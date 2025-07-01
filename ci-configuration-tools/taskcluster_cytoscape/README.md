@@ -2,7 +2,11 @@
 
 ## Overview
 
-This software consists of a Python script to generate a Cytoscape.js JSON file and the associated HTML viewer for the JSON file.
+Visualizes Firefox Taskcluster tasks, worker pools, image aliases, and images using [Cytoscope.js](https://js.cytoscape.org/).
+
+Task data is from [Firefox](https://github.com/mozilla-firefox/firefox)'s Taskgraph. All other data is from [fxci-config](http://github.com/mozilla-releng/fxci-config).
+
+This software consists of a Python script to generate a Cytoscape.js JSON file (`graph.py`) and the associated HTML viewer for the JSON file (see the `cytoscape_viewer/` directory).
 
 ## Generation of JSON
 
