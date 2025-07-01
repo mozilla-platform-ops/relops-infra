@@ -58,8 +58,8 @@ def extract_group(task_name, debug=False):
         if len(split_name) > max_elements:
             split_name = split_name[:max_elements]
         result_str = "-".join(split_name).strip("-")
-        # add the star
         result_str = result_str + "*"
+    # remove ** and *-* from result_str
     result_str = collapse_wildcards(result_str)
     if debug:
         print(f"extract_group({task_name}) = {result_str}")
@@ -104,6 +104,9 @@ def collapse_wildcards(task_name, debug=False):
         task_name = re.sub(r"\*-\*", r"*", task_name)
     while '**' in task_name:
         task_name = re.sub(r"\*\*", r"*", task_name)
+    while task_name.endswith('-*'):
+        # ending -* should be *
+        task_name = re.sub(r"-\*$", r"*", task_name)
     if debug:
         print(f"collapse_wildcards({original_task_name}) = {task_name}")
     return task_name
