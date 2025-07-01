@@ -14,6 +14,7 @@ This tool aims at helping people find those answers themselves.
 
 - We lack task data for other repositories that submit tasks to fxci. For example, the translations GPU workers don't have any tasks in the dataset. Similarly, the VPN workers don't have any tasks.
 - Known Firefox DOM rendering bug (https://bugzilla.mozilla.org/show_bug.cgi?id=1974854). Chrome doesn't have this issue.
+- Hardware pools without tasks won't be visible. Consider scanning fxci taskcluster? Could be useful to be able to identify them.
 
 ## How To Run on Web
 
