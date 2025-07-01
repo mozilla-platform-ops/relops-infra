@@ -29,4 +29,5 @@ See the README.md inside the `cytoscape_viewer` directory.
 
 ### Graph
 
-TBD
+1. Manage repos (don't take paths to them, do shallow clones)
+2. Taskgraph generation in firefox repo (also strip out leading garbage warning lines that can make it into file)
