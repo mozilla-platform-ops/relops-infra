@@ -30,4 +30,5 @@ See the README.md inside the `cytoscape_viewer` directory.
 ### Graph
 
 1. Manage repos (don't take paths to them, do shallow clones)
-2. Taskgraph generation in firefox repo (also strip out leading garbage warning lines that can make it into file)
+2. Fetch tasks.json from tc index task:
+    - https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public%2Ftask-graph.json

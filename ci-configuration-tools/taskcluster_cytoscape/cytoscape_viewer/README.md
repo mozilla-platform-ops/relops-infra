@@ -41,7 +41,9 @@ serve.ps1
 
 ## Usage
 
-You scroll around the display area by clicking and dragging. Zooming also works.
+You scroll around the display area by clicking and dragging.
+
+Zooming also works (two finger scrolling on Mac). Make sure to hover over the elements you want to zoom in on (it zooms exactly on the cursor location).
 
 Click around and explore for now. Send me feedback.
 
