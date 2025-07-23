@@ -2,14 +2,16 @@
 autoinstall:
   version: 1
   identity:
-    hostname: unassigned-hostname
-  locale: en_US
+    hostname: relops-fresh-2404
+    username: relops
+    password: "$6$G29yTFPmKatpmJwM$wcdnju6H56JVxQUxbN1TpRPptC49UBOWTmg/kJ8ShPy6JHsXHN82beR8kfcBPtH6tu/229zGP.etD6iuhUbyn1"
+  locale: en_US  # default is en_US.UTF-8
   keyboard:
     layout: us
-  timezone: UTC
-  ntp:
-    servers:
-      - infoblox1.private.mdc1.mozilla.com
+  # defaults to UTC now?
+  # linter complains about both of these:
+  # timezone: UTC
+  # timezone: "Etc/UTC"
   network:
     version: 2
     ethernets:
@@ -26,6 +28,12 @@ autoinstall:
   storage:
     layout:
       name: lvm
+  ssh:
+    allow-pw: true
+    install-server: true
+    authorized-keys:
+      # for default user in identity section
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCrkwk85HgoCsR0P9GIxSyE9mKoPoNA4wIuPGz8cOq0KuTEyJiNZB2Fnr/UrCX9b91pP7YgsTrK28jBON7LL573UJePDoTPc5xBWXtEkLyQM4LazhzOSANDAa8kAy+6UdlNw7SQp6aw2Xa2ep+HmFHJHQ1TIj0dl+WO3PTia435FgFV6uvH1KiFZswmtYx82vrmmV37hmRXaBzzVfEVlEZzn+w4nca7q1iiRViD6JQQU9p9BOssPshT8QvlbwA6uBd0LvA0lvrBRPkS+xvCVnKPIHv54lSHYD/sqGyQPB0FtW/Ij9e8FWdj7fj+wkvKD/mFeUEhtQFYTRrPAub1UHX/LeXkNBzxnqOvuex+x1TKm3JoE0dJt2mEuLv3whwDnROqrUl6IkfxW6P+eNvmFwNRoZh8qeyUvK9lXkXh4SAow58AIa3f5u+qr/1wOQjNvNhrZDFXXqqswyoaxP3LFtKn5Tin7EaAR4wecx3fihlNLDz6niofzRCF6Xpn6M5AL+g7KwCp/rYLDhqKojX86T5oITcutgEi45r9oSk3RSXBn8AkGq0I9BlVKbkx0vwOAoAsCU1UTXp59q1UglQZoNQ5gRKWPl6EB+ryJZtbUcfJxsQygdURIDbOk0A7I+YbcLcIKYVXfrflfitd5k90MFVcI1vXfBZWTTnXmcm7jV0uPQ== Relops common RSA key
   packages:
     - openssh-server
     - apt-transport-https
@@ -47,16 +55,10 @@ autoinstall:
     - wget --no-proxy -O /target/root/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
     - chmod 600 /target/root/.ssh/authorized_keys
     - mkdir -m 700 /target/home/relops/.ssh
+    # TODO: needed for relops user?
     - wget --no-proxy -O /target/home/relops/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
     - chmod 600 /target/home/relops/.ssh/authorized_keys
     - echo "PermitRootLogin yes" >> /target/etc/ssh/sshd_config
     - chroot /target ufw allow ssh
-  users:
-    - name: relops
-      ssh_authorized_keys:
-        - http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
-      sudo: ALL=(ALL) NOPASSWD:ALL
-      shell: /bin/bash
-      password: "$6$G29yTFPmKatpmJwM$wcdnju6H56JVxQUxbN1TpRPptC49UBOWTmg/kJ8ShPy6JHsXHN82beR8kfcBPtH6tu/229zGP.etD6iuhUbyn1"
   updates: security
 
