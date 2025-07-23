@@ -1,0 +1,61 @@
+#cloud-config
+autoinstall:
+  version: 1
+  identity:
+    hostname: unassigned-hostname
+    username: relops
+    password: "$6$G29yTFPmKatpmJwM$wcdnju6H56JVxQUxbN1TpRPptC49UBOWTmg/kJ8ShPy6JHsXHN82beR8kfcBPtH6tu/229zGP.etD6iuhUbyn1"  # hashed
+  locale: en_US
+  keyboard:
+    layout: us
+  timezone: UTC
+  ntp:
+    servers:
+      - infoblox1.private.mdc1.mozilla.com
+  network:
+    version: 2
+    ethernets:
+      eno1:
+        dhcp4: true
+  apt:
+    primary:
+      - arches: [default]
+        uri: http://archive.ubuntu.com/ubuntu
+    security:
+      - arches: [default]
+        uri: http://security.ubuntu.com/ubuntu
+    preserve_sources_list: false
+  storage:
+    layout:
+      name: lvm
+  packages:
+    - openssh-server
+    - apt-transport-https
+    - build-essential
+    - ca-certificates
+    - curl
+    - software-properties-common
+    - zstd
+    - gnupg-agent
+    - python3
+    - python3-pip
+    - ntpdate
+    - iptables-persistent
+    - jq
+    - dkms
+    - puppet
+  late-commands:
+    - mkdir -m 700 /target/root/.ssh
+    - wget --no-proxy -O /target/root/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
+    - chmod 600 /target/root/.ssh/authorized_keys
+    - mkdir -m 700 /target/home/relops/.ssh
+    - wget --no-proxy -O /target/home/relops/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
+    - chmod 600 /target/home/relops/.ssh/authorized_keys
+    - echo "PermitRootLogin yes" >> /target/etc/ssh/sshd_config
+    - chroot /target ufw allow ssh
+  user-data:
+    disable_root: false
+    ssh_authorized_keys:
+      - http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
+  updates: security
+
