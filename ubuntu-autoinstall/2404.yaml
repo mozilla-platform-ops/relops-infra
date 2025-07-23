@@ -53,9 +53,12 @@ autoinstall:
     - chmod 600 /target/home/relops/.ssh/authorized_keys
     - echo "PermitRootLogin yes" >> /target/etc/ssh/sshd_config
     - chroot /target ufw allow ssh
-  user-data:
-    disable_root: false
-    ssh_authorized_keys:
-      - http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
+  users:
+    - name: relops
+      ssh_authorized_keys:
+        - http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
+      sudo: ALL=(ALL) NOPASSWD:ALL
+      shell: /bin/bash
+      password: "$6$G29yTFPmKatpmJwM$wcdnju6H56JVxQUxbN1TpRPptC49UBOWTmg/kJ8ShPy6JHsXHN82beR8kfcBPtH6tu/229zGP.etD6iuhUbyn1"
   updates: security
 
