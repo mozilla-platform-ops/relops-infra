@@ -3,8 +3,6 @@ autoinstall:
   version: 1
   identity:
     hostname: unassigned-hostname
-    username: relops
-    password: "$6$G29yTFPmKatpmJwM$wcdnju6H56JVxQUxbN1TpRPptC49UBOWTmg/kJ8ShPy6JHsXHN82beR8kfcBPtH6tu/229zGP.etD6iuhUbyn1"  # hashed
   locale: en_US
   keyboard:
     layout: us
