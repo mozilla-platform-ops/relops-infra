@@ -1,0 +1,118 @@
+# minimal 1804 preseed
+
+d-i debian-installer/theme string dark
+
+#d-i localechooser/languagelist  select  en
+#d-i debian-installer/language   string  en
+
+d-i debian-installer/locale string en_US
+d-i console-setup/ask_detect boolean false
+d-i keyboard-configuration/layout   select  English (US)
+d-i netcfg/choose_interface select  eno1: Mellanox Technologies MT27520 Family [ConnectX-3 Pro]
+d-i netcfg/enable   boolean true
+d-i netcfg/no_interfaces    error
+d-i netcfg/target_network_config    select  nm_config
+d-i netcfg/use_autoconfig   boolean true
+
+d-i netcfg/get_hostname string unassigned-hostname
+d-i netcfg/get_domain string unassigned-domain
+
+d-i base-installer/excludes string laptop-detect
+d-i netcfg/wireless_wep string
+
+d-i hw-detect/load_firmware boolean true
+d-i mirror/country string manual
+d-i mirror/protocol select http
+d-i mirror/http/hostname string archive.ubuntu.com
+d-i mirror/http/directory string /ubuntu
+
+d-i passwd/root-login boolean true
+d-i passwd/root-password password anotherworld
+d-i passwd/root-password-again password anotherworld
+#d-i passwd/root-password-crypted password [$6$BJk3WJeF9KaAvZ97$zJa5d/vAOOFzA2aOWQ77BQdpM4aT5YfkNY9m1Ex5FkT8Gjx5xaWp7NUEf.s.hn/mop129WBsnIYJ6XiZ8y05v]
+
+d-i passwd/user-fullname string Ubuntu User
+d-i passwd/username string relops
+d-i passwd/user-password password relops
+d-i passwd/user-password-again password relops
+#d-i passwd/user-password-crypted password [$6$eVqB/4Glydf/p5HQ$REbdHZOi4cWx80DsLF8imTmlrzU8mbClidgFvFRJfaYhhchQ2y.2F3uxOqaYCnlUwr40U.d.6ez9Eu6LSEGmM.]
+d-i user-setup/allow-password-weak boolean true
+#d-i passwd/user-default-groups string audio cdrom video
+d-i user-setup/encrypt-home boolean false
+
+d-i clock-setup/utc boolean true
+clock-setup clock-setup/utc-auto    boolean true
+d-i     time/zone       select  UTC
+tzsetup-udeb    time/zone       select  UTC
+tzsetup-udeb    tzsetup/country/US      select  UTC
+
+d-i clock-setup/ntp boolean true
+d-i clock-setup/ntp-server string infoblox1.private.mdc1.mozilla.com
+
+d-i partman-auto/disk string /dev/nvme0n1
+d-i partman-auto/method string lvm
+partman-auto    partman-auto/init_automatically_partition   select
+partman-base    partman/active_partition    select
+partman-auto    partman-auto/select_disk    select  /var/lib/partman/devices/=dev=nvme0n1
+
+d-i partman-lvm/device_remove_lvm boolean true
+d-i partman-md/device_remove_md boolean true
+d-i partman-lvm/confirm boolean true
+d-i partman-lvm/confirm_nooverwrite boolean true
+
+d-i partman-auto-lvm/guided_size string max
+d-i partman-auto/choose_recipe select atomic
+
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+
+d-i apt-setup/restricted boolean true
+d-i apt-setup/universe boolean true
+d-i apt-setup/backports boolean true
+#d-i apt-setup/use_mirror boolean false
+d-i apt-setup/services-select multiselect security
+d-i apt-setup/security_host string security.ubuntu.com
+d-i apt-setup/security_path string /ubuntu
+
+tasksel tasksel/first multiselect ubuntu-desktop
+
+d-i pkgsel/include string \
+    openssh-server \
+    apt-transport-https \
+    build-essential \
+    ca-certificates \
+    curl \
+    software-properties-common \
+    zstd \
+    gnupg-agent \
+    python \
+    python-pip \
+    ntpdate \
+    iptables-persistent \
+    jq \
+    dkms \
+    puppet
+
+d-i pkgsel/upgrade select none
+
+d-i pkgsel/update-policy select unattended-upgrades
+
+d-i grub-installer/only_debian boolean true
+
+d-i grub-installer/with_other_os boolean true
+
+d-i finish-install/keep-consoles boolean true
+
+d-i preseed/late_command string \
+in-target sh -c "mkdir -m 700 /root/.ssh" ; \
+in-target sh -c "wget --no-proxy -O /root/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys" ; \
+in-target sh -c "chmod 600 /root/.ssh/authorized_keys" ; \
+in-target sh -c "mkdir -m 700 /home/relops/.ssh" ; \
+in-target sh -c "wget --no-proxy -O /home/relops/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys" ; \
+in-target sh -c "chmod 600 /home/relops/.ssh/authorized_keys" ; \
+in-target sh -c "ufw allow ssh" ; \
+in-target sed -i 's/.*PermitRootLogin .*/PermitRootLogin yes/' /etc/ssh/sshd_config ;
+
+d-i finish-install/reboot_in_progress note
