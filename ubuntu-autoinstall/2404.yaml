@@ -51,14 +51,7 @@ autoinstall:
     - dkms
     - puppet
   late-commands:
-    - mkdir -m 700 /target/root/.ssh
-    - wget --no-proxy -O /target/root/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
-    - chmod 600 /target/root/.ssh/authorized_keys
-    - mkdir -m 700 /target/home/relops/.ssh
-    # TODO: needed for relops user?
-    - wget --no-proxy -O /target/home/relops/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
-    - chmod 600 /target/home/relops/.ssh/authorized_keys
-    - echo "PermitRootLogin yes" >> /target/etc/ssh/sshd_config
-    - chroot /target ufw allow ssh
+    # set the hostname (not done automatically in 24.04)
+    - getent hosts $(ip -o -4 address show scope global | head -n 1 | awk '{print $4}' | awk -F '/' '{print $1}') | awk '{print $2}' | awk -F '.' '{print $1}' > /target/etc/hostname
+    # relops user password and authorized key are set above
   updates: security
-
