@@ -66,5 +66,8 @@ autoinstall:
       sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$HOSTNAME_FQDN\t$HOSTNAME_SHORT/" /target/etc/hosts
     # relops user password and authorized key are set above
     # copy relops authorized keys to root's authorized keys (avoids having to configure nopasswd sudoers)
-    - cp /target/home/relops/.ssh/authorized_keys /target/root/.ssh/authorized_keys
+    - >
+      curtin in-target --target=/target -- mkdir -m 700 /root/.ssh
+      curtin in-target --target=/target -- cp /home/relops/.ssh/authorized_keys /root/.ssh/authorized_keys
+      curtin in-target --target=/target -- chmod 600 /root/.ssh/authorized_keys
   updates: security
