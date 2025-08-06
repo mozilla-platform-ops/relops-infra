@@ -33,7 +33,11 @@ autoinstall:
     allow-pw: true
     install-server: true
     authorized-keys:
-      # for default user in identity section
+      # is used by autoinstall for default user in identity section
+      #
+      # id_rsa_relops_2020-05-07.pub:
+      #   - in relops 1p, see `Relops Common Keys 2020-05-07`
+      #     - https://start.1password.com/open/i?a=NBK7D7DZW5BBBFYVCOK55GXMOE&v=ioli2lam7ekxzqw27oejuds6cu&i=tyu4bkqrhadtkvreeyjv7otf2a&h=mozilla.1password.com
       - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCrkwk85HgoCsR0P9GIxSyE9mKoPoNA4wIuPGz8cOq0KuTEyJiNZB2Fnr/UrCX9b91pP7YgsTrK28jBON7LL573UJePDoTPc5xBWXtEkLyQM4LazhzOSANDAa8kAy+6UdlNw7SQp6aw2Xa2ep+HmFHJHQ1TIj0dl+WO3PTia435FgFV6uvH1KiFZswmtYx82vrmmV37hmRXaBzzVfEVlEZzn+w4nca7q1iiRViD6JQQU9p9BOssPshT8QvlbwA6uBd0LvA0lvrBRPkS+xvCVnKPIHv54lSHYD/sqGyQPB0FtW/Ij9e8FWdj7fj+wkvKD/mFeUEhtQFYTRrPAub1UHX/LeXkNBzxnqOvuex+x1TKm3JoE0dJt2mEuLv3whwDnROqrUl6IkfxW6P+eNvmFwNRoZh8qeyUvK9lXkXh4SAow58AIa3f5u+qr/1wOQjNvNhrZDFXXqqswyoaxP3LFtKn5Tin7EaAR4wecx3fihlNLDz6niofzRCF6Xpn6M5AL+g7KwCp/rYLDhqKojX86T5oITcutgEi45r9oSk3RSXBn8AkGq0I9BlVKbkx0vwOAoAsCU1UTXp59q1UglQZoNQ5gRKWPl6EB+ryJZtbUcfJxsQygdURIDbOk0A7I+YbcLcIKYVXfrflfitd5k90MFVcI1vXfBZWTTnXmcm7jV0uPQ== Relops common RSA key
   packages:
     - openssh-server
