@@ -2,7 +2,7 @@
 autoinstall:
   version: 1
   identity:
-    hostname: relops-fresh-2404
+    hostname: newhost
     username: relops
     password: "$6$G29yTFPmKatpmJwM$wcdnju6H56JVxQUxbN1TpRPptC49UBOWTmg/kJ8ShPy6JHsXHN82beR8kfcBPtH6tu/229zGP.etD6iuhUbyn1"
   locale: en_US  # default is en_US.UTF-8
@@ -51,7 +51,8 @@ autoinstall:
     - dkms
     - puppet
   late-commands:
-    # set the hostname and add an entry in /etc/hosts (not done automatically in 24.04)
+    # set the hostname (and add an entry in /etc/hosts) using the reverse dns lookup
+    #   (not done automatically in 24.04).
     - >
       HOST_IP=$(ip -o -4 addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n 1);
       HOSTNAME_FQDN=$(getent hosts "$HOST_IP" | awk '{print $2}');
