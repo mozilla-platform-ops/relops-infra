@@ -67,7 +67,7 @@ def main():
     # double check that the user is ready to proceed
     if not args.force:
         print(f"This will set PXE boot and reboot node '{args.node}' on '{args.host}'.")
-        confirm = input("Are you sure you want to proceed? (y/n) ")
+        confirm = input("Are you sure you want to proceed? (y/N) ")
 
         if confirm.lower() != "y":
             print("Operation cancelled.")
