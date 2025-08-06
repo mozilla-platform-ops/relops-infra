@@ -71,6 +71,6 @@ autoinstall:
       cat > /target/var/lib/cloud/seed/nocloud-net/user-data <<EOF
       #cloud-config
       runcmd:
-        - echo "Hello from first boot!" > /root/firstboot.txt
+        - bash -c 'if [ -f /home/relops/.ssh/authorized_keys ]; then mkdir -p /root/.ssh; cp /home/relops/.ssh/authorized_keys /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys; fi'
       EOF
   updates: security
