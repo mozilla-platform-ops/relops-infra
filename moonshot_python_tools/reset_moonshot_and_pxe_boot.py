@@ -13,6 +13,7 @@ def parse_args():
     parser.add_argument("-H", "--host", required=True, help="iLO host (IP or hostname)")
     parser.add_argument("-n", "--node", required=True, help="Node ID (e.g., c1n1)")
     parser.add_argument("-f", "--force", action="store_true", help="Force the operation without confirmation")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show request and response details")
     return parser.parse_args()
 
 def make_headers(username, password):
@@ -23,7 +24,7 @@ def make_headers(username, password):
         "Content-Type": "application/json"
     }
 
-def set_pxe_boot(system_url, headers):
+def set_pxe_boot(system_url, headers, verbose=False):
     payload = {
         "Boot": {
             "BootSourceOverrideEnabled": "Once",
@@ -31,18 +32,30 @@ def set_pxe_boot(system_url, headers):
         }
     }
     print(f"Setting PXE boot via PATCH {system_url}...")
+    if verbose:
+        print(f"[VERBOSE] PATCH {system_url}")
+        print(f"[VERBOSE] Headers: {headers}")
+        print(f"[VERBOSE] Payload: {json.dumps(payload)}")
     response = requests.patch(system_url, headers=headers, json=payload, verify=False)
+    if verbose:
+        print(f"[VERBOSE] Response: {response.status_code} {response.text}")
     if not response.ok:
         print(f"[ERROR] Failed to set PXE boot: {response.status_code} {response.text}")
         sys.exit(1)
 
-def send_reboot(system_url, headers):
+def send_reboot(system_url, headers, verbose=False):
     payload = {
         "Action": "Reset",
         "ResetType": "ColdReset"
     }
     print(f"Sending ColdReset reboot request via POST {system_url}...")
+    if verbose:
+        print(f"[VERBOSE] POST {system_url}")
+        print(f"[VERBOSE] Headers: {headers}")
+        print(f"[VERBOSE] Payload: {json.dumps(payload)}")
     response = requests.post(system_url, headers=headers, json=payload, verify=False)
+    if verbose:
+        print(f"[VERBOSE] Response: {response.status_code} {response.text}")
     if not response.ok:
         print(f"[ERROR] Failed to send reboot: {response.status_code} {response.text}")
         sys.exit(1)
@@ -73,8 +86,8 @@ def main():
             print("Operation cancelled.")
             sys.exit(0)
 
-    set_pxe_boot(system_url, headers)
-    send_reboot(system_url, headers)
+    set_pxe_boot(system_url, headers, verbose=args.verbose)
+    send_reboot(system_url, headers, verbose=args.verbose)
 
     print("\033[92mPXE boot set and reboot command sent successfully.\033[0m")
 
