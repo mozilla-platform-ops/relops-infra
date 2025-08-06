@@ -2,6 +2,7 @@
 autoinstall:
   version: 1
   identity:
+    # hostname will be overwritten in the late-commands section.
     hostname: newhost
     username: relops
     password: "$6$G29yTFPmKatpmJwM$wcdnju6H56JVxQUxbN1TpRPptC49UBOWTmg/kJ8ShPy6JHsXHN82beR8kfcBPtH6tu/229zGP.etD6iuhUbyn1"
