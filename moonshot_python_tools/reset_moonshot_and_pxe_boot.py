@@ -11,8 +11,6 @@ def parse_args():
         description="Set PXE boot and reboot a Moonshot node via iLO Redfish API"
     )
     parser.add_argument("-H", "--host", required=True, help="iLO host (IP or hostname)")
-    # parser.add_argument("-u", "--username", required=True, help="iLO username")
-    # parser.add_argument("-p", "--password", required=True, help="iLO password")
     parser.add_argument("-n", "--node", required=True, help="Node ID (e.g., c1n1)")
     parser.add_argument("-f", "--force", action="store_true", help="Force the operation without confirmation")
     return parser.parse_args()
