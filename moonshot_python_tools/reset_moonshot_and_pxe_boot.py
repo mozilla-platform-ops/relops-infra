@@ -11,8 +11,9 @@ def parse_args():
         description="Set PXE boot and reboot a Moonshot node via iLO Redfish API"
     )
     parser.add_argument("-H", "--host", required=True, help="iLO host (IP or hostname)")
-    parser.add_argument("-u", "--username", required=True, help="iLO username")
-    parser.add_argument("-p", "--password", required=True, help="iLO password")
+    # parser.add_argument("-u", "--username", required=True, help="iLO username")
+    # parser.add_argument("-p", "--password", required=True, help="iLO password")
+    parser.add_argument("-f", "--force", action="store_true", help="Force the operation without confirmation")
     parser.add_argument("-n", "--node", required=True, help="Node ID (e.g., c1n1)")
     return parser.parse_args()
 
@@ -51,7 +52,28 @@ def send_reboot(system_url, headers):
 def main():
     args = parse_args()
     system_url = f"https://{args.host}/rest/v1/Systems/{args.node}"
+
+    # load username and password from ~/.moonshot_ilo
+    try:
+        with open("/Users/aerickson/.moonshot_ilo", "r") as f:
+            lines = f.readlines()
+            args.username = lines[0].strip()
+            args.password = lines[1].strip()
+    except Exception as e:
+        print(f"[ERROR] Failed to load credentials: {e}")
+        print("Please create a file at ~/.moonshot_ilo with your iLO username and password, one per line.")
+        sys.exit(1)
+
     headers = make_headers(args.username, args.password)
+
+    # double check that the user is ready to proceed
+    if not args.force:
+        print(f"This will set PXE boot and reboot node '{args.node}' on '{args.host}'.")
+        confirm = input("Are you sure you want to proceed? (y/n) ")
+
+        if confirm.lower() != "y":
+            print("Operation cancelled.")
+            sys.exit(0)
 
     set_pxe_boot(system_url, headers)
     send_reboot(system_url, headers)
