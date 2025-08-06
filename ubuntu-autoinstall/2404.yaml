@@ -51,7 +51,12 @@ autoinstall:
     - dkms
     - puppet
   late-commands:
-    # set the hostname (not done automatically in 24.04)
-    - getent hosts $(ip -o -4 address show scope global | head -n 1 | awk '{print $4}' | awk -F '/' '{print $1}') | awk '{print $2}' | awk -F '.' '{print $1}' > /target/etc/hostname
+    # set the hostname and add an entry in /etc/hosts (not done automatically in 24.04)
+    - >
+      HOST_IP=$(ip -o -4 addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n 1);
+      HOSTNAME_FQDN=$(getent hosts "$HOST_IP" | awk '{print $2}');
+      HOSTNAME_SHORT="${HOSTNAME_FQDN%%.*}";
+      echo "$HOSTNAME_SHORT" > /target/etc/hostname;
+      sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$HOSTNAME_FQDN\t$HOSTNAME_SHORT/" /target/etc/hosts
     # relops user password and authorized key are set above
   updates: security
