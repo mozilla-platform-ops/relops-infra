@@ -44,7 +44,6 @@ def set_pxe_boot(system_url, headers, verbose=False):
         sys.exit(1)
 
 def send_reboot(system_url, headers, verbose=False):
-    # TODO: try something other than ColdReset?
     payload = {
         "Action": "Reset",
         "ResetType": "ColdReset"
