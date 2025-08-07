@@ -10,7 +10,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Set PXE boot and reboot a Moonshot node via iLO Redfish API"
     )
-    parser.add_argument("-H", "--host", required=True, help="iLO host (IP or hostname)")
+    parser.add_argument("-H", "--host", required=True, help="iLO host (an integer can be specified that will expand to moon-chassis-X.inband.releng.mdc1.mozilla.com)")
     parser.add_argument("-n", "--node", required=True, help="Node ID (e.g., c1n1)")
     parser.add_argument("-f", "--force", action="store_true", help="Force the operation without confirmation")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show request and response details")
@@ -44,6 +44,7 @@ def set_pxe_boot(system_url, headers, verbose=False):
         sys.exit(1)
 
 def send_reboot(system_url, headers, verbose=False):
+    # TODO: try something other than ColdReset?
     payload = {
         "Action": "Reset",
         "ResetType": "ColdReset"
@@ -62,6 +63,13 @@ def send_reboot(system_url, headers, verbose=False):
 
 def main():
     args = parse_args()
+
+    # if args.host is an int, then expand to full hostname
+    if args.host.isdigit():
+        old_host = args.host
+        args.host = f"moon-chassis-{args.host}.inband.releng.mdc1.mozilla.com"
+        print(f"Expanding host {old_host} to full hostname {args.host}...")
+
     system_url = f"https://{args.host}/rest/v1/Systems/{args.node}"
 
     # load username and password from ~/.moonshot_ilo
@@ -79,7 +87,8 @@ def main():
 
     # double check that the user is ready to proceed
     if not args.force:
-        print(f"This will set PXE boot and reboot node '{args.node}' on '{args.host}'.")
+        print(f"This will set PXE boot and reboot node:")
+        print(f"  {args.node} @ {args.host}")
         confirm = input("Are you sure you want to proceed? (y/N) ")
 
         if confirm.lower() != "y":
