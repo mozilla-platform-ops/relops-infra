@@ -2,7 +2,8 @@
 autoinstall:
   version: 1
   identity:
-    hostname: relops-fresh-2404
+    # hostname will be overwritten in the late-commands section.
+    hostname: newhost
     username: relops
     password: "$6$G29yTFPmKatpmJwM$wcdnju6H56JVxQUxbN1TpRPptC49UBOWTmg/kJ8ShPy6JHsXHN82beR8kfcBPtH6tu/229zGP.etD6iuhUbyn1"
   locale: en_US  # default is en_US.UTF-8
@@ -32,7 +33,11 @@ autoinstall:
     allow-pw: true
     install-server: true
     authorized-keys:
-      # for default user in identity section
+      # is used by autoinstall for default user in identity section
+      #
+      # id_rsa_relops_2020-05-07.pub:
+      #   - in relops 1p, see `Relops Common Keys 2020-05-07`
+      #     - https://start.1password.com/open/i?a=NBK7D7DZW5BBBFYVCOK55GXMOE&v=ioli2lam7ekxzqw27oejuds6cu&i=tyu4bkqrhadtkvreeyjv7otf2a&h=mozilla.1password.com
       - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCrkwk85HgoCsR0P9GIxSyE9mKoPoNA4wIuPGz8cOq0KuTEyJiNZB2Fnr/UrCX9b91pP7YgsTrK28jBON7LL573UJePDoTPc5xBWXtEkLyQM4LazhzOSANDAa8kAy+6UdlNw7SQp6aw2Xa2ep+HmFHJHQ1TIj0dl+WO3PTia435FgFV6uvH1KiFZswmtYx82vrmmV37hmRXaBzzVfEVlEZzn+w4nca7q1iiRViD6JQQU9p9BOssPshT8QvlbwA6uBd0LvA0lvrBRPkS+xvCVnKPIHv54lSHYD/sqGyQPB0FtW/Ij9e8FWdj7fj+wkvKD/mFeUEhtQFYTRrPAub1UHX/LeXkNBzxnqOvuex+x1TKm3JoE0dJt2mEuLv3whwDnROqrUl6IkfxW6P+eNvmFwNRoZh8qeyUvK9lXkXh4SAow58AIa3f5u+qr/1wOQjNvNhrZDFXXqqswyoaxP3LFtKn5Tin7EaAR4wecx3fihlNLDz6niofzRCF6Xpn6M5AL+g7KwCp/rYLDhqKojX86T5oITcutgEi45r9oSk3RSXBn8AkGq0I9BlVKbkx0vwOAoAsCU1UTXp59q1UglQZoNQ5gRKWPl6EB+ryJZtbUcfJxsQygdURIDbOk0A7I+YbcLcIKYVXfrflfitd5k90MFVcI1vXfBZWTTnXmcm7jV0uPQ== Relops common RSA key
   packages:
     - openssh-server
@@ -51,14 +56,21 @@ autoinstall:
     - dkms
     - puppet
   late-commands:
-    - mkdir -m 700 /target/root/.ssh
-    - wget --no-proxy -O /target/root/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
-    - chmod 600 /target/root/.ssh/authorized_keys
-    - mkdir -m 700 /target/home/relops/.ssh
-    # TODO: needed for relops user?
-    - wget --no-proxy -O /target/home/relops/.ssh/authorized_keys http://data.srv.releng.mdc1.mozilla.com/repos/kickstart/authorized_keys
-    - chmod 600 /target/home/relops/.ssh/authorized_keys
-    - echo "PermitRootLogin yes" >> /target/etc/ssh/sshd_config
-    - chroot /target ufw allow ssh
+    # set the hostname (and add an entry in /etc/hosts) using the reverse dns lookup
+    #   (not done automatically in 24.04).
+    - >
+      HOST_IP=$(ip -o -4 addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -n 1);
+      HOSTNAME_FQDN=$(getent hosts "$HOST_IP" | awk '{print $2}');
+      HOSTNAME_SHORT="${HOSTNAME_FQDN%%.*}";
+      echo "$HOSTNAME_SHORT" > /target/etc/hostname;
+      sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$HOSTNAME_FQDN\t$HOSTNAME_SHORT/" /target/etc/hosts
+    # relops user password and authorized key are set above
+    #
+    # copy relops authorized keys to root's authorized keys (avoids having to configure nopasswd sudoers)
+    - |
+      cat > /target/var/lib/cloud/seed/nocloud-net/user-data <<EOF
+      #cloud-config
+      runcmd:
+        - bash -c 'if [ -f /home/relops/.ssh/authorized_keys ]; then mkdir -p /root/.ssh; cp /home/relops/.ssh/authorized_keys /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys; fi'
+      EOF
   updates: security
-
