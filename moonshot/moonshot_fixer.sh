@@ -3,12 +3,33 @@
 set -e
 set -x
 
-HOST=$1
-
-if [ -z "$HOST" ]; then
-  echo "Usage: $0 <host>"
+if [ -z "$1" ]; then
+  echo "Usage: $0 <moonshot host number>"
   exit 1
 fi
+HOST=t-linux64-ms-$1.test.releng.mdc1.mozilla.com
+
+# show host and get user to confirm it's correct
+echo "Host: $HOST"
+read -p "Is this correct? (y/n) " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+  echo "Aborting."
+  exit 1
+fi
+echo "User has confirmed. Continuing..."
+
+echo "Checking disk usage on host..."
+# check that the disk is full...
+# look at df output for `vg-root`'s percentage field
+OUTPUT=$(ssh "$HOST" df -h | grep vg-root)
+# extract the percentage used
+PERCENT_USED=$(echo "$OUTPUT" | awk '{print $5}' | tr -d '%')
+if [ "$PERCENT_USED" -lt 70 ]; then
+  echo "Disk usage is below 70%, no need to clean up."
+  exit 0
+fi
+echo "Disk usage is above 70% ($PERCENT_USED%), proceeding with cleanup..."
 
 # TODO: prevent generic-worker from running once enough disk is free?
 # - `pkill run-puppet.sh`? no, reboots host
