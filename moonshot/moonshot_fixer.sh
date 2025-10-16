@@ -31,10 +31,11 @@ if [ "$PERCENT_USED" -lt 70 ]; then
 fi
 echo "Disk usage is above 70% ($PERCENT_USED%), proceeding with cleanup..."
 
-# TODO: prevent generic-worker from running once enough disk is free?
+# prevent generic-worker from running once enough disk is free?
 # - `pkill run-puppet.sh`? no, reboots host
 # ssh "$HOST" sudo pkill run-puppet.sh
 ssh "$HOST" sudo pkill run-start-worker-wrapper.sh || true
+# TOOD: this still doesn't prevent host from rebooting, find code in puppet and disable appropriately
 
 # store the script in a variable
 SCRIPT=$(cat <<'EOF'
