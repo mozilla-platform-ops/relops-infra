@@ -43,7 +43,10 @@ set -x
 set -e
 
 echo "Cleaning up build caches..."
-sudo rm -rf /home/ctlbld/.mozbuild /home/cltbld/caches /home/cltbld/file-caches.json
+sudo rm -rf /home/ctlbld/.mozbuild \
+            /home/cltbld/caches \
+            /home/cltbld/file-caches.json \
+            /home/cltbld/directory-caches.json
 
 echo "Cleaning up apt/deb..."
 sudo apt-get autoremove -y
