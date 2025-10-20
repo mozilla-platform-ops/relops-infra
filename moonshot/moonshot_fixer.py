@@ -21,6 +21,14 @@ if reply != 'y':
     sys.exit(1)
 print("User has confirmed. Continuing...")
 
+# do a ping check, 5 second timeout
+try:
+    subprocess.check_output(["ping", "-c", "1", host], timeout=5)
+    print("Ping check successful.")
+except subprocess.CalledProcessError:
+    print("Ping check failed.")
+    sys.exit(1)
+
 # if forced, skip the disk check
 if args.force:
     print("Skipping disk usage check due to --force flag.")
