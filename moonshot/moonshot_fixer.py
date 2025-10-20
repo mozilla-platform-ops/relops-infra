@@ -59,6 +59,9 @@ else:
 subprocess.run([
     "ssh", host, "sudo pkill run-start-worker-wrapper.sh"
 ], check=False)
+subprocess.run([
+    "ssh", host, "sudo pkill generic-worker"
+], check=False)
 
 # Remote cleanup script
 remote_script = '''
