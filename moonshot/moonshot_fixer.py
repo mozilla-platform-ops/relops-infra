@@ -56,6 +56,7 @@ else:
     print(f"Disk usage is above 70% ({percent_used}%), proceeding with cleanup...")
 
 # Prevent generic-worker from running
+print("Killing generic-worker processes...")
 subprocess.run([
     "ssh", host, "sudo pkill run-start-worker-wrapper.sh"
 ], check=False)
