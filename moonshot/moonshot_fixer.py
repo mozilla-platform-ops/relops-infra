@@ -55,10 +55,14 @@ else:
         sys.exit(0)
     print(f"Disk usage is above 70% ({percent_used}%), proceeding with cleanup...")
 
+# TODO: just quarantine and wait for idle... ugh, should have just used safe-runner...
 # Prevent generic-worker from running
 print("Killing generic-worker processes...")
 subprocess.run([
     "ssh", host, "sudo pkill run-start-worker-wrapper.sh"
+], check=False)
+subprocess.run([
+    "ssh", host, "sudo pkill run-start-worker.sh"
 ], check=False)
 subprocess.run([
     "ssh", host, "sudo pkill generic-worker"
