@@ -24,11 +24,12 @@ See the README.md inside the `cytoscape_viewer` directory.
 ### Viewer
 
 1. Deeplinking of search query and 'show only linked' params.
-2. Clicking on a search result will center view on it.
-3. Clicking search will run 'clear highlights' first. Currently accumulates.
+1. Clicking on a search result will center view on it.
+1. Clicking search will run 'clear highlights' first. Currently accumulates.
 
 ### Graph
 
+1. For step 'Generation of JSON', for tasks.json, just fetch from 'https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public%2Ftask-graph.json'.
 1. Manage repos (don't take paths to them, do shallow clones)
-2. Fetch tasks.json from tc index task:
+1. Fetch tasks.json from tc index task:
     - https://firefox-ci-tc.services.mozilla.com/api/index/v1/task/gecko.v2.mozilla-central.latest.taskgraph.decision/artifacts/public%2Ftask-graph.json
