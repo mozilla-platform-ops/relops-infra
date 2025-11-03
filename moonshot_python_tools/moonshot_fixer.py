@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import time
 import sys
 import subprocess
 import argparse
@@ -58,11 +59,13 @@ else:
 # TODO: just quarantine and wait for idle... ugh, should have just used safe-runner...
 # Prevent generic-worker from running
 print("Killing generic-worker processes...")
+# if g-w is killed before this is, the host will reboot immediately
 subprocess.run([
-    "ssh", host, "sudo pkill run-start-worker-wrapper.sh"
+    "ssh", host, "sudo pkill -f run-start-worker.sh"
 ], check=False)
+time.sleep(1)
 subprocess.run([
-    "ssh", host, "sudo pkill run-start-worker.sh"
+    "ssh", host, "sudo pkill -f run-start-worker-wrapper.sh"
 ], check=False)
 subprocess.run([
     "ssh", host, "sudo pkill generic-worker"
