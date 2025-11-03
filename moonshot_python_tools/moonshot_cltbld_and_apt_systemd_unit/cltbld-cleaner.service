@@ -1,5 +1,5 @@
 # place at /etc/systemd/system/cltbld-cleaner.service
-# 
+#
 # sudo systemctl daemon-reload
 # sudo systemctl enable cltbld-cleaner.service
 # sudo systemctl start cltbld-cleaner.service
@@ -18,8 +18,8 @@ Type=oneshot
 User=root
 StandardOutput=journal
 StandardError=journal
-# allow up to 10m runtime (TODO: verify this is enough)
-TimeoutStartSec=600
+# allow up to 30m runtime (TODO: verify this is enough)
+TimeoutStartSec=1800
 ExecStart=/usr/sbin/cltbld-and-apt-cleaner.sh
 
 [Install]
