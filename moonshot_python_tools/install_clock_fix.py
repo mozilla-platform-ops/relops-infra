@@ -106,7 +106,7 @@ def verify_installation(host, user, verbose=False):
     """Verify the service installation"""
     print("\nVerifying installation...")
     try:
-        result = run_ssh_command(host, user, "sudo systemctl status ntp-sync-once.service", verbose)
+        result = check_ssh_command(host, user, "sudo systemctl status ntp-sync-once.service", verbose)
         print("✓ Service status verified")
         if verbose:
             print(result.stdout)
