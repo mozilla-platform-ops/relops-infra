@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 import pprint
+import pendulum
 import subprocess
 
 def parse_args():
@@ -116,6 +117,7 @@ def verify_installation(host, user, verbose=False):
 
 def main():
     args = parse_args()
+    exit_flag = False
 
     if '.' not in args.host:
         old_host = args.host
@@ -125,15 +127,41 @@ def main():
     # Confirm with user unless --force is specified
     if not args.force:
         print(f"This will install and enable the ntp-sync-once.service on:")
+        print("")
         print(f"  Host: {args.host}")
-        print(f"  User: {args.user}")
         confirm = input("\nAre you sure you want to proceed? (y/N) ")
-        
+
         if confirm.lower() != "y":
             print("Operation cancelled.")
             sys.exit(0)
 
     print(f"\nProceeding with installation on {args.host}...\n")
+
+    # check RTC clock
+    print("Checking RTC clock source...")
+    result = run_ssh_command(args.host, args.user, "sudo hwclock --show", args.verbose)
+    # example output: 1970-01-09 01:56:15.623531+0000
+
+    # Parse the hwclock output and check if it's before 1 year ago
+    hwclock_output = result.stdout.strip()
+    # example output: 1970-01-09 01:56:15.623531+0000
+
+    try:
+        # Parse the datetime string
+        rtc_time = pendulum.parse(hwclock_output)
+        
+        # Get the time from 1 year ago
+        one_year_ago = pendulum.now('UTC').subtract(years=1)
+        
+        if rtc_time < one_year_ago:
+            print(f"⚠ Warning: RTC clock is more than 1 year old: {rtc_time.to_datetime_string()}")
+        else:
+            print(f"✓ RTC clock looks reasonable: {rtc_time.to_datetime_string()}")
+            if not args.force:
+                print("Clock seems good. No installation needed. Use --force to proceed anyway.")
+                exit_flag = True
+    except Exception as e:
+        print(f"⚠ Warning: Could not parse RTC time: {e}")
 
     # check if already installed
     print("Checking for existing installation...")
@@ -146,6 +174,9 @@ def main():
             sys.exit(0)
     else:
         print("No existing installation found. Proceeding...")
+
+    if exit_flag:
+        sys.exit(0)
 
     # Perform installation steps
     install_unit_file(args.host, args.user, args.verbose)
