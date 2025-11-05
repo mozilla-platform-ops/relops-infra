@@ -83,7 +83,7 @@ WantedBy=multi-user.target
 """
     
     print(f"Installing ntp-sync-once.service on {host}...")
-    
+
     # Create the unit file using echo to avoid file transfer
     escaped_content = unit_content.replace("$", "\\$").replace("`", "\\`").replace('"', '\\"')
     command = f'sudo bash -c "echo \\"{escaped_content}\\" > /etc/systemd/system/ntp-sync-once.service"'
@@ -125,6 +125,7 @@ def verify_installation(host, user, verbose=False):
 def main():
     args = parse_args()
     exit_flag = False
+    failure_reasons = []
 
     if '.' not in args.host:
         old_host = args.host
@@ -155,6 +156,8 @@ def main():
         print(f"{YELLOW}  ⚠ Warning: System clock is off by more than 5 minutes ({diff} minutes){CLEAR}")
     else:
         print(f"{GREEN}  ✓ System clock is within acceptable range ({diff} minutes difference){CLEAR}")
+        exit_flag = True
+        failure_reasons.append("system clock is already correct")
 
     # check RTC clock
     print("Checking RTC clock source...")
@@ -179,8 +182,9 @@ def main():
             if not args.force:
                 print("Clock seems good. No installation needed. Use --force to proceed anyway.")
                 exit_flag = True
+                failure_reasons.append("RTC clock looks reasonable")
     except Exception as e:
-        print(f"⚠ Warning: Could not parse RTC time: {e}")
+        print(f"{YELLOW}⚠ Warning: Could not parse RTC time: {e}{CLEAR}")
 
     # check if already installed
     print("Checking for existing installation...")
@@ -189,12 +193,16 @@ def main():
     if result.returncode == 0 or result.returncode == 3:
         print(f"{RED}  Warning: ntp-sync-once.service is already installed on this host.{CLEAR}")
         if not args.force:
-            print("Use --force to reinstall.")
-            sys.exit(0)
+            exit_flag = True
+            failure_reasons.append("service already installed")
     else:
         print(f"{GREEN}  No existing installation found. Proceeding...{CLEAR}")
 
     if exit_flag:
+        print(f"\n{RED}Installation aborted due to the following reason(s):{CLEAR}")
+        for reason in failure_reasons:
+            print(f"  - {reason}")
+        print(f"{RED}Use --force to continue anyways.{CLEAR}")
         sys.exit(0)
 
     print("")
