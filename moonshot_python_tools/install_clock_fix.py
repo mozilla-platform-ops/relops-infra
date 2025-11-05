@@ -89,37 +89,37 @@ WantedBy=multi-user.target
     command = f'sudo bash -c "echo \\"{escaped_content}\\" > /etc/systemd/system/ntp-sync-once.service"'
     
     run_ssh_command(host, user, command, verbose)
-    print("✓ Unit file installed")
+    print(f"{GREEN}  ✓ Unit file installed{CLEAR}")
 
 def reload_systemd(host, user, verbose=False):
     """Reload systemd daemon"""
     print("Reloading systemd daemon...")
     run_ssh_command(host, user, "sudo systemctl daemon-reload", verbose)
-    print("✓ Systemd daemon reloaded")
+    print(f"{GREEN}  ✓ Systemd daemon reloaded{CLEAR}")
 
 def enable_service(host, user, verbose=False):
     """Enable the service"""
     print("Enabling ntp-sync-once.service...")
     run_ssh_command(host, user, "sudo systemctl enable ntp-sync-once.service", verbose)
-    print("✓ Service enabled")
+    print(f"{GREEN}  ✓ Service enabled{CLEAR}")
 
 def start_service(host, user, verbose=False):
     """Start the service"""
     print("Starting ntp-sync-once.service...")
     run_ssh_command(host, user, "sudo systemctl start ntp-sync-once.service", verbose)
-    print("✓ Service started")
+    print(f"{GREEN}  ✓ Service started{CLEAR}")
 
 def verify_installation(host, user, verbose=False):
     """Verify the service installation"""
     print("\nVerifying installation...")
     try:
         result = check_ssh_command(host, user, "sudo systemctl status ntp-sync-once.service", verbose)
-        print("✓ Service status verified")
+        print(f"{GREEN}  ✓ Service status verified{CLEAR}")
         if verbose:
             print(result.stdout)
         return True
     except:
-        print("⚠ Warning: Could not verify service status (this may be normal for one-shot services)")
+        print(f"{YELLOW}⚠ Warning: Could not verify service status (this may be normal for one-shot services){CLEAR}")
         return False
 
 def main():
