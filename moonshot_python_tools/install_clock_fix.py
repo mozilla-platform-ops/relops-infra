@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+import pprint
 import subprocess
 
 def parse_args():
@@ -36,6 +37,27 @@ def run_ssh_command(host, user, command, verbose=False):
         print(f"[ERROR] Command failed with exit code {e.returncode}")
         print(f"[ERROR] stderr: {e.stderr}")
         sys.exit(1)
+
+def check_ssh_command(host, user, command, verbose=False):
+    """Execute a command on the remote host via SSH without exiting on failure"""
+    ssh_cmd = ["ssh", f"{user}@{host}", command]
+    
+    if verbose:
+        print(f"[VERBOSE] Running: {' '.join(ssh_cmd)}")
+    
+    result = subprocess.run(
+        ssh_cmd,
+        capture_output=True,
+        text=True,
+        check=False  # Don't raise exception on non-zero exit
+    )
+    
+    if verbose and result.stdout:
+        print(f"[VERBOSE] Output: {result.stdout}")
+    if verbose and result.stderr:
+        print(f"[VERBOSE] stderr: {result.stderr}")
+    
+    return result
 
 def install_unit_file(host, user, verbose=False):
     """Install the ntp-sync-once.service unit file"""
@@ -113,6 +135,21 @@ def main():
 
     print(f"\nProceeding with installation on {args.host}...\n")
 
+    # check if already installed
+    print("Checking for existing installation...")
+    result = check_ssh_command(args.host, args.user, "sudo systemctl status ntp-sync-once.service", args.verbose)
+    # pprint.pprint(result)
+    if result.returncode == 0 or result.returncode == 3:
+        print("\033[93mWarning: ntp-sync-once.service is already installed on this host.\033[0m")
+        if not args.force:
+            print("Use --force to reinstall.")
+            sys.exit(0)
+    else:
+        print("No existing installation found. Proceeding...")
+
+
+    sys.exit(0)
+
     # Perform installation steps
     install_unit_file(args.host, args.user, args.verbose)
     reload_systemd(args.host, args.user, args.verbose)
@@ -127,6 +164,7 @@ def main():
         # include datestamp and host
         log_file.write(f"{subprocess.getoutput('date')} - {args.host}\n")
         # log_file.write(f"Installed ntp-sync-once.service on {args.host} as {args.user}\n")
+    print(f"Logged installation to install_clock_fix.log")
 
     print("\n\033[92mNTP sync service installed and started successfully.\033[0m")
 
