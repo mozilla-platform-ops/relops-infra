@@ -147,9 +147,6 @@ def main():
     else:
         print("No existing installation found. Proceeding...")
 
-
-    sys.exit(0)
-
     # Perform installation steps
     install_unit_file(args.host, args.user, args.verbose)
     reload_systemd(args.host, args.user, args.verbose)
