@@ -144,6 +144,18 @@ def main():
 
     print(f"\nProceeding with installation on {args.host}...\n")
 
+    # check system clock, see if it's within 5 minutes of this clock
+    print("Checking system clock...")
+    result = run_ssh_command(args.host, args.user, "date -u +'%Y-%m-%d %H:%M:%S'", args.verbose)
+    remote_time_str = result.stdout.strip()
+    remote_time = pendulum.parse(remote_time_str, tz='UTC')
+    local_time = pendulum.now('UTC')
+    diff = abs((local_time - remote_time).in_minutes())
+    if diff > 5:
+        print(f"{YELLOW}  ⚠ Warning: System clock is off by more than 5 minutes ({diff} minutes){CLEAR}")
+    else:
+        print(f"{GREEN}  ✓ System clock is within acceptable range ({diff} minutes difference){CLEAR}")
+
     # check RTC clock
     print("Checking RTC clock source...")
     result = run_ssh_command(args.host, args.user, "sudo hwclock --show", args.verbose)
@@ -180,10 +192,12 @@ def main():
             print("Use --force to reinstall.")
             sys.exit(0)
     else:
-        print(f"{GREEN}No existing installation found. Proceeding...{CLEAR}")
+        print(f"{GREEN}  No existing installation found. Proceeding...{CLEAR}")
 
     if exit_flag:
         sys.exit(0)
+
+    print("")
 
     # Perform installation steps
     install_unit_file(args.host, args.user, args.verbose)
