@@ -7,6 +7,13 @@ import pprint
 import pendulum
 import subprocess
 
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+RED = "\033[91m"
+BOLD = "\033[1m"
+CLEAR = "\033[0m"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Install NTP sync one-shot systemd service on a remote host"
@@ -128,7 +135,7 @@ def main():
     if not args.force:
         print(f"This will install and enable the ntp-sync-once.service on:")
         print("")
-        print(f"  Host: {args.host}")
+        print(f"{BOLD}  Host: {args.host}{CLEAR}")
         confirm = input("\nAre you sure you want to proceed? (y/N) ")
 
         if confirm.lower() != "y":
@@ -149,14 +156,14 @@ def main():
     try:
         # Parse the datetime string
         rtc_time = pendulum.parse(hwclock_output)
-        
+
         # Get the time from 1 year ago
         one_year_ago = pendulum.now('UTC').subtract(years=1)
         
         if rtc_time < one_year_ago:
-            print(f"⚠ Warning: RTC clock is more than 1 year old: {rtc_time.to_datetime_string()}")
+            print(f"{YELLOW}  ⚠ Warning: RTC clock is more than 1 year old: {rtc_time.to_datetime_string()}{CLEAR}")
         else:
-            print(f"✓ RTC clock looks reasonable: {rtc_time.to_datetime_string()}")
+            print(f"{GREEN}  ✓ RTC clock looks reasonable: {rtc_time.to_datetime_string()}{CLEAR}")
             if not args.force:
                 print("Clock seems good. No installation needed. Use --force to proceed anyway.")
                 exit_flag = True
@@ -168,12 +175,12 @@ def main():
     result = check_ssh_command(args.host, args.user, "sudo systemctl status ntp-sync-once.service", args.verbose)
     # pprint.pprint(result)
     if result.returncode == 0 or result.returncode == 3:
-        print("\033[93mWarning: ntp-sync-once.service is already installed on this host.\033[0m")
+        print(f"{RED}  Warning: ntp-sync-once.service is already installed on this host.{CLEAR}")
         if not args.force:
             print("Use --force to reinstall.")
             sys.exit(0)
     else:
-        print("No existing installation found. Proceeding...")
+        print(f"{GREEN}No existing installation found. Proceeding...{CLEAR}")
 
     if exit_flag:
         sys.exit(0)
@@ -194,7 +201,7 @@ def main():
         # log_file.write(f"Installed ntp-sync-once.service on {args.host} as {args.user}\n")
     print(f"Logged installation to install_clock_fix.log")
 
-    print("\n\033[92mNTP sync service installed and started successfully.\033[0m")
+    print(f"{GREEN}NTP sync service installed and started successfully.{CLEAR}")
 
 if __name__ == "__main__":
     main()
