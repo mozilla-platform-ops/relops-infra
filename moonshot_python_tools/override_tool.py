@@ -113,6 +113,11 @@ def disable_override(host, user=None):
     finally:
         ssh.close()
 
+def write_log(host, action):
+    log_entry = f"{datetime.datetime.now().isoformat()} - {action} override on {host}\n"
+    with open("override_tool.log", "a") as log_file:
+        log_file.write(log_entry)
+
 def main():
     parser = argparse.ArgumentParser(
         description="Enable or disable ronin puppet override file on a remote host."
@@ -137,8 +142,10 @@ def main():
         print("")
         print(f"  ssh {args.host} sudo run-puppet.sh")
         print("")
+        write_log(args.host, "Enabled")
     elif args.command == "disable":
         disable_override(args.host, args.user)
+        write_log(args.host, "Disabled")
     else:
         parser.print_help()
 
