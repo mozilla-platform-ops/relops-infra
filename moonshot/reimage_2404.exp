@@ -84,16 +84,12 @@ expect "Virtual Serial Port Active: "
 send_user "\n\r"
 set timeout -1
 
-
-
-
-
 # netboot.xyz: select the 24.04 automated install
 send_user "\rWaiting for netboot.xyz menu on $node "
 expect "netboot.xyz"
 expect "booting default..."
 sleep 5
-# TODO: press down key 3 times and then press enter
+# press down key 3 times and then press enter
 send -- "\[B"
 sleep 0.5
 send -- "\[B"
@@ -103,70 +99,9 @@ sleep 0.5
 send -- "\r"
 sleep 10
 
-
-
-
-
-# AJE: 11/12/25: old 1804 code commented out below
-#
-# send_user "\rWaiting for boot menu on $node "
-# for {set NUM 0} {$NUM <= 5} {incr NUM} {
-#     send -- " "
-#     send_user "."
-#     sleep 5
-# }
-# set timeout -1
-# sleep 2
-
-# #expect "Starting drivers. Please wait, this may take a few moments....\r"
-# #expect "Fetching Netboot Image\r"
-
-# expect "Press 'e' to edit the selected item, or 'c' for a command prompt."
-# # "Chainload Grub on EFI System Partition"
-# # "Install Ubuntu 18.04 LTS x86_64 on moonshot"
-# # "Install Ubuntu 16.04.0 LTS x86_64 on moonshot"
-
-# # cursor down once
-# send -- "\[B"
-# expect "Install Ubuntu"
-# send -- "e"
-# set timeout 60
-# sleep 1
-# expect "Press Ctrl-x to start"
-# expect "initrd.gz"
-# send -- "\[B"
-# sleep 0.5
-# send -- "\[B"
-# sleep 0.5
-# send -- "\[B"
-# sleep 0.5
-# # cursor left to end of previous line
-# send -- "\[D"
-# sleep 1
-# # add a space at the end of line
-# send -- " "
-# sleep 0.5
-# # add parameters
-# send -- "$boot_params"
-# sleep 5
-# # "Ctrl-x to start"
-# send -- ""
-# send_user "\rInitiated boot ..."
-# sleep 60
-
-
-
-
-
-
-
-
-
-
 # exit virtual serial port
 send -- "("
 expect "hpiLO->"
 send -- "exit\r"
 expect eof
 send_user "\rFinished $chassis $node"
-
