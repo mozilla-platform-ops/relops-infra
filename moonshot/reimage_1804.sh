@@ -17,4 +17,5 @@ for node in $@; do
     echo $node
     ./reimage_1804.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
         | tee ${0%%.sh}.$chassis.$node.$(date +"%H:%M:%S").log
+    # TODO: sleep 10 minuets for host to finish? only do in single host mode?
 done
