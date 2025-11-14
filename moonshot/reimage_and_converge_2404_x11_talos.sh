@@ -22,23 +22,20 @@ RONIN_PUPPET_REPO_PATH="/Users/aerickson/git/ronin_puppet"
 
 # functions
 
+# v4 countdown function with spinner
 countdown() {
-  local total="$1"
-  local spin='|/-\'
-  local i=0
-  local start=$SECONDS
-  local end=$(( start + total ))
-  while (( SECONDS < end )); do
-    local remaining=$(( end - SECONDS ))
-    local mins=$(( remaining / 60 ))
-    local secs=$(( remaining % 60 ))
-    printf "\r[%c] %02d:%02d remaining..." "${spin:i%${#spin}:1}" "$mins" "$secs"
-    sleep 1
-    ((i++))
-  done
-  printf "\rDone.                      \n"
-}
+    local total="$1"
+    local spin='-\|/'
+    local i=0
 
+    for ((remaining=total; remaining>-1; remaining--)); do
+        for ((j=0; j<10; j++)); do
+            printf "\rWaiting $total seconds. Time remaining $remaining seconds... ${spin:$((j%4)):1}"
+            sleep 0.1
+        done
+    done
+    echo ""
+}
 
 # main
 
