@@ -29,6 +29,10 @@ if {$force_conservative} {
 
 set timeout 120
 spawn ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -oCiphers=+aes128-cbc -oStrictHostKeyChecking=no "$chassis"
+if { [string length $spawn_id] == 0 } {
+    send_user "\rERROR: Failed to spawn SSH connection to $chassis\n"
+    exit 1
+}
 match_max 100000
 sleep 5
 expect "hpiLO->"

@@ -1,5 +1,9 @@
 #!/bin/bash
 
+set -e
+# ensure that tee fails if the pipe fails
+set -o pipefail
+
 USAGE="Usage: $0 chassis node1 node2 ..\nExample: '\$ ./$0 7 {1..3}  # reinstall chassis 7 nodes 1-3\n\n"
 if [ "$#" == "0" ]; then
     printf "$USAGE"
