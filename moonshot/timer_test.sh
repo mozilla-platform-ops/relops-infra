@@ -20,6 +20,36 @@ countdown2() {
     echo ""
 }
 
+# countdown3 function with spinner
+countdown3() {
+    local total="$1"
+    local spin='-\|/'
+    local i=0
+
+    for ((remaining=total; remaining>-1; remaining--)); do
+        for ((j=0; j<4; j++)); do
+            printf "\rWaiting $total seconds. Time remaining $remaining seconds... ${spin:$j:1}"
+            sleep 0.25
+        done
+    done
+    echo ""
+}
+
+# TODO: countdown4( like v3, but higher frequency spinner updates)
+countdown4() {
+    local total="$1"
+    local spin='-\|/'
+    local i=0
+
+    for ((remaining=total; remaining>-1; remaining--)); do
+        for ((j=0; j<10; j++)); do
+            printf "\rWaiting $total seconds. Time remaining $remaining seconds... ${spin:$((j%4)):1}"
+            sleep 0.1
+        done
+    done
+    echo ""
+}
+
 echo "start"
-countdown2 4
+countdown4 4
 echo "end"
