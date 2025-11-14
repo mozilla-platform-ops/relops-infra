@@ -10,8 +10,8 @@ set -e
 #  - deliver.sh shouldn't use implicit path, have to pass in path for override
 
 # user settings
+# TODO: take this via cli args?
 ROLE="gecko_t_linux_2404_talos"
-PUPPET_BRANCH="110425_2404_errata_2_including_ntp"
 RONIN_PUPPET_REPO_PATH="/Users/aerickson/git/ronin_puppet"
 
 
@@ -39,7 +39,14 @@ CARTRIDGE="$2"
 HOST_NUMBER="$3"
 HOSTNAME="t-linux64-ms-${HOST_NUMBER}.test.releng.mdc1.mozilla.com"
 
-# heredoc for ascii art
+# TODO: show usage if any args are missing
+if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" ]]; then
+  echo "Usage: $0 <chassis> <cartridge> <host_number>"
+  echo "Example: $0 1 3 023"
+  exit 1
+fi
+
+# heredoc for ascii art (fonts are default (nothing specified) and 'slant')
 cat << "EOF"
   ___                  _           _   _
  / _ \ _ __   ___  ___| |__   ___ | |_| |
@@ -54,17 +61,29 @@ cat << "EOF"
 
 EOF
 
+# if there is a 'ronin-settings' file at RONIN_PUPPET_REPO_PATH/provisioners/linux,
+#  then source it to override the defaults below
+if [ -f "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings" ]; then
+  echo "Sourcing ronin-settings file to override default settings..."
+  # shellcheck source=/dev/null
+  source "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings"
+  # TODO: sort of dangerous, we don't fully control what comes in...
+# else
+#   echo "No ronin_settings file found at ${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings, using default settings."
+fi
+
 # show all of the options we are using
 echo "CHASSIS:                        $CHASSIS"
 echo "CARTRIDGE:                      $CARTRIDGE"
 echo "HOST_NUMBER:                    $HOST_NUMBER"
 echo "HOSTNAME (uses HOST_NUMBER):    $HOSTNAME"
 echo "ROLE:                           $ROLE"
+echo "PUPPET_REPO:                    ${PUPPET_REPO}"
 echo "PUPPET_BRANCH:                  $PUPPET_BRANCH"
 echo ""
 
 # confirm with user before proceeding
-read -p "Proceed with reimage and converge of ${HOSTNAME}? (y/n) " -n 1 -r
+read -p "Proceed with reimage and converge of ${HOSTNAME}? (y/N) " -n 1 -r
 echo ""  # move to a new line
 if [[ ! "$REPLY" =~ ^[Yy]$ ]] ; then
     echo "Aborting per user request."
@@ -90,6 +109,11 @@ ${RONIN_PUPPET_REPO_PATH}/provisioners/linux/deliver_linux.sh "${HOSTNAME}" "${R
 
 # run the script to converge the host
 echo "Running bootstrap script on host to converge..."
-ssh relops@"${HOSTNAME}" "sudo bash -c \"PUPPET_REPO='https://github.com/aerickson/ronin_puppet.git' PUPPET_BRANCH='${PUPPET_BRANCH}' /tmp/bootstrap.sh\""
+# if PUPPET_REPO and PUPPET_BRANCH are defined, run this
+if [[ -n "$PUPPET_REPO" && -n "$PUPPET_BRANCH" ]]; then
+  ssh relops@"${HOSTNAME}" sudo bash -c "PUPPET_REPO='${PUPPET_REPO}' PUPPET_BRANCH='${PUPPET_BRANCH}' /tmp/bootstrap.sh"
+else
+  ssh relops@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
+fi
 
 echo "Reimage and converge of ${HOSTNAME} complete."
