@@ -11,6 +11,15 @@ countdown() {
     sleep $total
 }
 
+countdown2() {
+    local total="$1"
+    for ((i=total; i>-1; i--)); do
+        sleep 1
+        printf "\rWaiting $total seconds. Time remaining $i seconds..."
+    done
+    echo ""
+}
+
 echo "start"
-countdown 4
+countdown2 4
 echo "end"
