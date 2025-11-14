@@ -21,14 +21,29 @@ CARTRIDGE="$2"
 HOST_NUMBER="$3"
 HOSTNAME="t-linux64-ms-${HOST_NUMBER}.test.releng.mdc1.mozilla.com"
 
-# show all of the options we are using
-echo "CHASSIS:        $CHASSIS"
-echo "CARTRIDGE:      $CARTRIDGE"
-echo "HOST_NUMBER:    $HOST_NUMBER"
-echo "HOSTNAME:       $HOSTNAME"
-echo "ROLE:           $ROLE"
-echo "PUPPET_BRANCH:  $PUPPET_BRANCH"
+# heredoc for ascii art
+cat << "EOF"
+  ___                  _           _   _
+ / _ \ _ __   ___  ___| |__   ___ | |_| |
+| | | | '_ \ / _ \/ __| '_ \ / _ \| __| |
+| |_| | | | |  __/\__ \ | | | (_) | |_|_|
+ \___/|_| |_|\___||___/_| |_|\___/ \__(_)
+         ___  __ __   ____  __ __
+        |__ \/ // /  / __ \/ // /
+        __/ / // /_ / / / / // /_
+       / __/__  __// /_/ /__  __/
+      /____/ /_/ (_)____/  /_/
 
+EOF
+
+# show all of the options we are using
+echo "CHASSIS:                        $CHASSIS"
+echo "CARTRIDGE:                      $CARTRIDGE"
+echo "HOST_NUMBER:                    $HOST_NUMBER"
+echo "ROLE:                           $ROLE"
+echo "PUPPET_BRANCH:                  $PUPPET_BRANCH"
+echo "HOSTNAME (uses HOST_NUMBER):    $HOSTNAME"
+echo ""
 # confirm with user before proceeding
 read -p "Proceed with reimage and converge of ${HOSTNAME}? (y/n) " -n 1 -r
 echo    # move to a new line
