@@ -41,6 +41,6 @@ done
 #     done
 # done
 
-# rm /Users/aerickson/Downloads/moonshot-jirc.jnlp
-
-echo "would have removed file"
+# echo "would have removed file"
+echo "removing jnlp file..."
+rm /Users/aerickson/Downloads/moonshot-jirc.jnlp
