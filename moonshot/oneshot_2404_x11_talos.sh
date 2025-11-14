@@ -117,7 +117,8 @@ set -x
 # deliver the bootstrap script to the host
 #   e.g. ./deliver_linux.sh t-linux64-ms-023.test.releng.mdc1.mozilla.com gecko_t_linux_2404_talos
 echo "Delivering bootstrap script to host..."
-${RONIN_PUPPET_REPO_PATH}/provisioners/linux/deliver_linux.sh "${HOSTNAME}" "${ROLE}"
+cd ${RONIN_PUPPET_REPO_PATH}/provisioners/linux
+./deliver_linux.sh "${HOSTNAME}" "${ROLE}"
 
 # run the script to converge the host
 echo "Running bootstrap script on host to converge..."
