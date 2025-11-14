@@ -32,6 +32,7 @@ while pgrep -f jweblauncher >/dev/null; do
     sleep 0.1
   done
 done
+echo ""
 
 # while pgrep -f jweblauncher >/dev/null; do
 #     # show spinner
