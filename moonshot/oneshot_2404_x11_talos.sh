@@ -40,6 +40,12 @@ countdown() {
     echo ""
 }
 
+pv_countdown() {
+    local total="$1"
+    echo "Waiting $total seconds..."
+    while true; do echo -n .; sleep 1; done | pv -s $total -S -F '%t %p' > /dev/null
+}
+
 run_remote_script() {
   local host="$1"
   local script="$2"
@@ -87,6 +93,17 @@ cat << "EOF"
       /____/ /_/ (_)____/  /_/
 
 EOF
+
+# if pv is present use pv_countdown, else use countdown
+if command -v pv >/dev/null 2>&1; then
+  # echo "pv command found, using pv_countdown for waits."
+  countdown() {
+    local total="$1"
+    pv_countdown "$total"
+  }
+else
+  echo "pv command not found, using built-in countdown for waits."
+fi
 
 # if there is a 'ronin-settings' file at RONIN_PUPPET_REPO_PATH/provisioners/linux,
 #  then source it to override the defaults below
