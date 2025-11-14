@@ -16,6 +16,21 @@ RONIN_PUPPET_REPO_PATH="/Users/aerickson/git/ronin_puppet"
 ######## non-user editable section below ########
 ########
 
+
+# functions
+
+countdown() {
+  local i
+  for ((i=$1; i>0; i--)); do
+    printf "\rSleeping for %2d seconds..." "$i"
+    sleep 1
+  done
+  printf "\rDone!                    \n"
+}
+
+
+# main
+
 CHASSIS="$1"
 CARTRIDGE="$2"
 HOST_NUMBER="$3"
@@ -40,14 +55,15 @@ EOF
 echo "CHASSIS:                        $CHASSIS"
 echo "CARTRIDGE:                      $CARTRIDGE"
 echo "HOST_NUMBER:                    $HOST_NUMBER"
+echo "HOSTNAME (uses HOST_NUMBER):    $HOSTNAME"
 echo "ROLE:                           $ROLE"
 echo "PUPPET_BRANCH:                  $PUPPET_BRANCH"
-echo "HOSTNAME (uses HOST_NUMBER):    $HOSTNAME"
 echo ""
+
 # confirm with user before proceeding
 read -p "Proceed with reimage and converge of ${HOSTNAME}? (y/n) " -n 1 -r
-echo    # move to a new line
-if [[ ! $REPLY =~ ^[Yy]$ ]] ; then
+echo ""  # move to a new line
+if [[ ! "$REPLY" =~ ^[Yy]$ ]] ; then
     echo "Aborting per user request."
     exit 1
 fi
@@ -56,13 +72,13 @@ set -x
 
 # reimage the host
 echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
-./reimage_2404.sh "$CHASSIS" "$CARTRIDGE"
+./reimage_2404.sh "${CHASSIS}" "${CARTRIDGE}"
 echo ""
 echo "Reimaging complete."
 
 # sleep 10 minutes to allow the host to finish reinstalling
 echo "Sleeping 10 minutes to allow host to finish reinstalling..."
-sleep 600
+countdown 600
 
 # deliver the boostrap script to the host
 #   e.g. ./deliver_linux.sh t-linux64-ms-023.test.releng.mdc1.mozilla.com gecko_t_linux_2404_talos
