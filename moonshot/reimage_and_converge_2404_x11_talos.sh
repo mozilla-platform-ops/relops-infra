@@ -22,6 +22,9 @@ RONIN_PUPPET_REPO_PATH="/Users/aerickson/git/ronin_puppet"
 
 # functions
 
+# TODO: just use pv for spinner?
+#  e.g. `while true; do echo -n .; sleep 1; done | pv -s 10 -S -F '%t %p' > /dev/null`
+
 # v4 countdown function with spinner
 countdown() {
     local total="$1"
@@ -103,9 +106,13 @@ echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
 echo ""
 echo "Reimaging complete."
 
+set +x
+
 # sleep 10 minutes to allow the host to finish installation
 echo "Sleeping 10 minutes to allow host to finish OS installation..."
 countdown 600
+
+set -x
 
 # deliver the bootstrap script to the host
 #   e.g. ./deliver_linux.sh t-linux64-ms-023.test.releng.mdc1.mozilla.com gecko_t_linux_2404_talos
