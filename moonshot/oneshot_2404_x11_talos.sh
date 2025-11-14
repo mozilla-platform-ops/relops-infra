@@ -40,6 +40,25 @@ countdown() {
     echo ""
 }
 
+run_remote_script() {
+  local host="$1"
+  local script="$2"
+  if [[ -z "$host" || -z "$script" ]]; then
+    echo "Usage: run_remote_script <host> <script.sh>"
+    return 1
+  fi
+
+  # Use mktemp remotely to get a temp file path
+  ssh "$host" 'tmp=$(mktemp /tmp/remote_script.XXXXXX.sh); echo $tmp' | {
+    read -r remote_tmp
+    echo "Uploading and running on $host:$remote_tmp"
+    # Send the script via stdin and execute remotely
+    cat "$script" | ssh "$host" "cat > '$remote_tmp' && chmod +x '$remote_tmp' && bash '$remote_tmp'"
+    echo "Remote script kept at: $host:$remote_tmp"
+  }
+}
+
+
 # main
 
 CHASSIS="$1"
@@ -120,11 +139,27 @@ echo "Delivering bootstrap script to host..."
 cd ${RONIN_PUPPET_REPO_PATH}/provisioners/linux
 ./deliver_linux.sh "${HOSTNAME}" "${ROLE}"
 
+REMOTE_SCRIPT=$(cat << EOF
+#!/usr/bin/env bash
+set -e
+export PUPPET_REPO='${PUPPET_REPO}'
+export PUPPET_BRANCH='${PUPPET_BRANCH}'
+sudo /tmp/bootstrap.sh
+EOF
+)
+
 # run the script to converge the host
 echo "Running bootstrap script on host to converge..."
 # if PUPPET_REPO and PUPPET_BRANCH are defined, run this
 if [[ -n "$PUPPET_REPO" && -n "$PUPPET_BRANCH" ]]; then
-  ssh relops@"${HOSTNAME}" sudo bash -c "PUPPET_REPO='${PUPPET_REPO}' PUPPET_BRANCH='${PUPPET_BRANCH}' /tmp/bootstrap.sh"
+  run_remote_script "relops@${HOSTNAME}" <(echo "$REMOTE_SCRIPT")
+
+  # place a file in /tmp that has these commands, then run it with sudo
+  # ssh relops@"${HOSTNAME}" sudo bash -c "echo '' > /tmp/run_bootstrap.sh && chmod +x /tmp/run_bootstrap.sh"
+  # ssh relops@"${HOSTNAME}" sudo /tmp/run_bootstrap.sh
+
+  # not working
+  # ssh relops@"${HOSTNAME}" sudo bash -c "PUPPET_REPO='${PUPPET_REPO}' PUPPET_BRANCH='${PUPPET_BRANCH}' /tmp/bootstrap.sh"
 else
   ssh relops@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
 fi
