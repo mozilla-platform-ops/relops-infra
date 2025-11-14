@@ -23,12 +23,20 @@ RONIN_PUPPET_REPO_PATH="/Users/aerickson/git/ronin_puppet"
 # functions
 
 countdown() {
-  local i
-  for ((i=$1; i>0; i--)); do
-    printf "\rSleeping for %2d seconds..." "$i"
+  local total="$1"
+  local spin='|/-\'
+  local i=0
+  local start=$SECONDS
+  local end=$(( start + total ))
+  while (( SECONDS < end )); do
+    local remaining=$(( end - SECONDS ))
+    local mins=$(( remaining / 60 ))
+    local secs=$(( remaining % 60 ))
+    printf "\r[%c] %02d:%02d remaining..." "${spin:i%${#spin}:1}" "$mins" "$secs"
     sleep 1
+    ((i++))
   done
-  printf "\rDone!                    \n"
+  printf "\rDone.                      \n"
 }
 
 
@@ -102,7 +110,7 @@ echo "Reimaging complete."
 echo "Sleeping 10 minutes to allow host to finish OS installation..."
 countdown 600
 
-# deliver the boostrap script to the host
+# deliver the bootstrap script to the host
 #   e.g. ./deliver_linux.sh t-linux64-ms-023.test.releng.mdc1.mozilla.com gecko_t_linux_2404_talos
 echo "Delivering bootstrap script to host..."
 ${RONIN_PUPPET_REPO_PATH}/provisioners/linux/deliver_linux.sh "${HOSTNAME}" "${ROLE}"
