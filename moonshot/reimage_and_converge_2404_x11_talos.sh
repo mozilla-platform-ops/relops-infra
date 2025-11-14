@@ -3,6 +3,9 @@
 set -e
 # set -x
 
+# oneshot script:
+#   reimages and converges a linux moonshot hardware host
+
 # TODO: handle override file generation somehow... gross currently.
 #  - deliver.sh shouldn't use implicit path, have to pass in path for override
 
