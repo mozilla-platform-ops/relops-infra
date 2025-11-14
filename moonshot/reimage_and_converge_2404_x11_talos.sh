@@ -76,8 +76,8 @@ echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
 echo ""
 echo "Reimaging complete."
 
-# sleep 10 minutes to allow the host to finish reinstalling
-echo "Sleeping 10 minutes to allow host to finish reinstalling..."
+# sleep 10 minutes to allow the host to finish installation
+echo "Sleeping 10 minutes to allow host to finish OS installation..."
 countdown 600
 
 # deliver the boostrap script to the host
