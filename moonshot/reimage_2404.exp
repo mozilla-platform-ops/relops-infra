@@ -104,6 +104,7 @@ send -- "\r"
 sleep 10
 
 # exit virtual serial port
+#  `Press 'ESC (' to return to the CLI Session.`
 send -- "("
 expect "hpiLO->"
 send -- "exit\r"
