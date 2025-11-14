@@ -91,7 +91,7 @@ cat << "EOF"
       __/ / // /_ / / / / // /_    |   // // /
      / __/__  __// /_/ /__  __/   /   |/ // /  
     /____/ /_/ (_)____/  /_/     /_/|_/_//_/   
-                                               
+
 EOF
 
 # if pv is present use pv_countdown, else use countdown
@@ -140,7 +140,7 @@ set -x
 echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
 ./reimage_2404.sh "${CHASSIS}" "${CARTRIDGE}"
 echo ""
-echo "Reimaging complete."
+echo "Reimaging started."
 
 set +x
 
