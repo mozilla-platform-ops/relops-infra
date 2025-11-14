@@ -1,7 +1,46 @@
 #!/usr/bin/env bash
 
 set -e
-set -x
+# set -x
+
+# if `pgrep -f javaws` finds a process, warn user and exit
+if pgrep -f javaws >/dev/null; then
+  echo "Error: A 'java javaws' process is already running. Please close it before running this script."
+  exit 1
+fi
 
 javaws /Users/aerickson/Downloads/moonshot-jirc.jnlp
-rm /Users/aerickson/Downloads/moonshot-jirc.jnlp
+
+
+# wait for the java process with jnlp in it to exit
+#  `pgrep -f javaws`
+SLEEP_TIME=35
+echo "Sleeping ${SLEEP_TIME} seconds to allow 'java javaws' to start..."
+# sleep $SLEEP_TIME
+while true; do echo -n .; sleep 1; done | pv -s $SLEEP_TIME -S -F '%t %p' > /dev/null
+echo "Waiting for 'java javaws' to exit..."
+
+spin[0]="-"
+spin[1]="\\"
+spin[2]="|"
+spin[3]="/"
+
+echo -n "[waiting] ${spin[0]}"
+while pgrep -f jnlp >/dev/null; do
+  for i in "${spin[@]}"; do
+    echo -ne "\b$i"
+    sleep 0.1
+  done
+done
+
+# while pgrep -f jnlp >/dev/null; do
+#     # show spinner
+#     for spin in - \| / ; do
+#         printf "\rWaiting for javaws to exit... $spin"
+#         sleep 0.1
+#     done
+# done
+
+# rm /Users/aerickson/Downloads/moonshot-jirc.jnlp
+
+echo "would have removed file"
