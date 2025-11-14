@@ -16,7 +16,8 @@ run_remote_script() {
     read -r remote_tmp
     echo "Uploading and running on $host:$remote_tmp"
     # Send the script via stdin and execute remotely
-    cat "$script" | ssh "$host" "cat > '$remote_tmp' && chmod +x '$remote_tmp' && bash '$remote_tmp'; rm -f '$remote_tmp'"
+    cat "$script" | ssh "$host" "cat > '$remote_tmp' && chmod +x '$remote_tmp' && bash '$remote_tmp'"
+    echo "Remote script kept at: $host:$remote_tmp"
   }
 }
 
