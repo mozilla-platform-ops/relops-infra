@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+set -e
+set -x
+
+javaws /Users/aerickson/Downloads/moonshot-jirc.jnlp
+rm /Users/aerickson/Downloads/moonshot-jirc.jnlp
