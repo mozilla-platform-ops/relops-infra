@@ -12,7 +12,7 @@ set -e
 # user settings
 # TODO: take this via cli args?
 ROLE="gecko_t_linux_2404_talos"
-RONIN_PUPPET_REPO_PATH="/Users/aerickson/git/ronin_puppet"
+RONIN_PUPPET_REPO_PATH="$HOME/git/ronin_puppet"
 
 
 ########
