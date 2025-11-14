@@ -50,6 +50,12 @@ countdown4() {
     echo ""
 }
 
+pv_countdown() {
+    local total="$1"
+    echo "Waiting $total seconds..."
+    while true; do echo -n .; sleep 1; done | pv -s $total -S -F '%t %p' > /dev/null
+}
+
 echo "start"
-countdown4 4
+pv_countdown 4
 echo "end"
