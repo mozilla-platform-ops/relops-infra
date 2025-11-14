@@ -13,11 +13,12 @@ javaws /Users/aerickson/Downloads/moonshot-jirc.jnlp
 
 
 # wait for the java process with jnlp in it to exit
-#  `pgrep -f javaws`
+#  `pgrep -f jweblauncher`
 SLEEP_TIME=35
 echo "Sleeping ${SLEEP_TIME} seconds to allow 'java jweblauncher' to start..."
-# sleep $SLEEP_TIME
-while true; do echo -n .; sleep 1; done | pv -s $SLEEP_TIME -S -F '%t %p' > /dev/null
+# pv was too hectic for the user experience here
+# while true; do echo -n .; sleep 1; done | pv -s $SLEEP_TIME -S -F '%t %p' > /dev/null
+sleep $SLEEP_TIME
 echo "Waiting for 'java jweblauncher' to exit..."
 
 spin[0]="-"
@@ -33,14 +34,7 @@ while pgrep -f jweblauncher >/dev/null; do
   done
 done
 echo ""
-
-# while pgrep -f jweblauncher >/dev/null; do
-#     # show spinner
-#     for spin in - \| / ; do
-#         printf "\rWaiting for javaws to exit... $spin"
-#         sleep 0.1
-#     done
-# done
+echo "'java jweblauncher' has exited."
 
 # echo "would have removed file"
 echo "removing jnlp file..."
