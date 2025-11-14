@@ -33,7 +33,7 @@ countdown() {
 
     for ((remaining=total; remaining>-1; remaining--)); do
         for ((j=0; j<10; j++)); do
-            printf "\rWaiting $total seconds. Time remaining $remaining seconds... ${spin:$((j%4)):1}"
+            printf "\rWaiting $total seconds. $remaining seconds remaining... ${spin:$((j%4)):1}"
             sleep 0.1
         done
     done
