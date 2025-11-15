@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+set -e
+# set -x
+
+# if `pgrep -f javaws` finds a process, warn user and exit
+if pgrep -f jweblauncher >/dev/null; then
+  echo "Error: A 'java jweblauncher' process is already running. Please close it before running this script."
+  exit 1
+fi
+
+javaws /Users/aerickson/Downloads/moonshot-jirc.jnlp
+
+
+# wait for the java process with jnlp in it to exit
+#  `pgrep -f jweblauncher`
+SLEEP_TIME=35
+echo "Sleeping ${SLEEP_TIME} seconds to allow 'java jweblauncher' to start..."
+# pv was too hectic for the user experience here
+# while true; do echo -n .; sleep 1; done | pv -s $SLEEP_TIME -S -F '%t %p' > /dev/null
+sleep $SLEEP_TIME
+echo "Waiting for 'java jweblauncher' to exit..."
+
+spin[0]="-"
+spin[1]="\\"
+spin[2]="|"
+spin[3]="/"
+
+echo -n "[waiting] ${spin[0]}"
+while pgrep -f jweblauncher >/dev/null; do
+  for i in "${spin[@]}"; do
+    echo -ne "\b$i"
+    sleep 0.1
+  done
+done
+echo ""
+echo "'java jweblauncher' has exited."
+
+# echo "would have removed file"
+echo "removing jnlp file..."
+rm /Users/aerickson/Downloads/moonshot-jirc.jnlp

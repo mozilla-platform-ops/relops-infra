@@ -29,6 +29,10 @@ if {$force_conservative} {
 
 set timeout 120
 spawn ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -oCiphers=+aes128-cbc -oStrictHostKeyChecking=no "$chassis"
+if { [string length $spawn_id] == 0 } {
+    send_user "\rERROR: Failed to spawn SSH connection to $chassis\n"
+    exit 1
+}
 match_max 100000
 sleep 5
 expect "hpiLO->"
@@ -84,19 +88,25 @@ expect "Virtual Serial Port Active: "
 send_user "\n\r"
 set timeout -1
 
-# netboot.xyz: select the 18.04 automated install
+# netboot.xyz: select the 24.04 automated install
 send_user "\rWaiting for netboot.xyz menu on $node "
 expect "netboot.xyz"
 expect "booting default..."
 sleep 5
-# press enter (18.04 automated install is the default)
+# press down key 3 times and then press enter
+send -- "\[B"
+sleep 0.5
+send -- "\[B"
+sleep 0.5
+send -- "\[B"
+sleep 0.5
 send -- "\r"
 sleep 10
 
 # exit virtual serial port
+#  `Press 'ESC (' to return to the CLI Session.`
 send -- "("
 expect "hpiLO->"
 send -- "exit\r"
 expect eof
 send_user "\rFinished $chassis $node"
-
