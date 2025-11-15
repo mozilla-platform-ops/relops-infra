@@ -159,9 +159,10 @@ cd ${RONIN_PUPPET_REPO_PATH}/provisioners/linux
 REMOTE_SCRIPT=$(cat << EOF
 #!/usr/bin/env bash
 set -e
-export PUPPET_REPO='${PUPPET_REPO}'
-export PUPPET_BRANCH='${PUPPET_BRANCH}'
-sudo /tmp/bootstrap.sh
+sudo \
+  export PUPPET_REPO='${PUPPET_REPO}' \
+  export PUPPET_BRANCH='${PUPPET_BRANCH}' \
+  /tmp/bootstrap.sh
 EOF
 )
 
