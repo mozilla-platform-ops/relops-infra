@@ -160,8 +160,8 @@ REMOTE_SCRIPT=$(cat << EOF
 #!/usr/bin/env bash
 set -e
 sudo \
-  export PUPPET_REPO='${PUPPET_REPO}' \
-  export PUPPET_BRANCH='${PUPPET_BRANCH}' \
+  PUPPET_REPO='${PUPPET_REPO}' \
+  PUPPET_BRANCH='${PUPPET_BRANCH}' \
   /tmp/bootstrap.sh
 EOF
 )
