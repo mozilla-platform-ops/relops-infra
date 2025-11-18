@@ -95,6 +95,7 @@ CALLING_SCRIPT_NAME=$(basename "$CALLER_FULL_CMD" | cut -d' ' -f1)
 # echo "** Called from script: $CALLING_SCRIPT_NAME **"
 CALLING_SNIPPET=$(echo "$CALLING_SCRIPT_NAME" | cut -f1 -d '.' | sed -e 's/^oneshot_//' -e 's/_/ /g')
 # echo "** Calling snippet: $CALLING_SNIPPET **"
+CALLING_SNIPPED_CAPITALIZED=$(echo "$CALLING_SNIPPET" | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')
 
 # check if pyfiglet is available for ascii art
 if uv tool run pyfiglet a >/dev/null 2>&1; then
@@ -117,10 +118,10 @@ cat << "EOF"
 EOF
 
 if [[ "$PYFIGLET_PRESENT" == true ]]; then
-  pyfiglet -f slant "$CALLING_SNIPPET"
+  pyfiglet -f slant "$CALLING_SNIPPED_CAPITALIZED" | sed 's/^/        /'
 else
   echo ""
-  echo "         ** $CALLING_SNIPPET **"
+  echo "         ** $CALLING_SNIPPED_CAPITALIZED **"
   echo ""
 fi
 
