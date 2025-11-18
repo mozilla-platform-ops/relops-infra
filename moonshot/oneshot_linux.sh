@@ -81,6 +81,36 @@ if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" || -z "$ROLE" ]]; th
   exit 1
 fi
 
+
+
+
+
+# 1. Get the Parent Process ID
+CALLER_PID=$PPID
+# 2. Get the full command line of the parent process.
+#    -o command= : Specifies the output format to be the 'command' field.
+#    The equals sign (=) suppresses the header line.
+CALLER_FULL_CMD=$(ps -o command= -p $CALLER_PID)
+# echo "** $CALLER_FULL_CMD **"
+CALLING_SCRIPT_NAME=$(basename "$CALLER_FULL_CMD" | cut -d' ' -f1)
+# TODO: check that caller had 'oneshot' in the name?
+# echo "** Called from script: $CALLING_SCRIPT_NAME **"
+CALLING_SNIPPET=$(echo "$CALLING_SCRIPT_NAME" | cut -f1 -d '.' | sed -e 's/^oneshot_//' -e 's/_/ /g')
+# echo "** Calling snippet: $CALLING_SNIPPET **"
+
+# check if pyfiglet is available for ascii art
+if uv tool run pyfiglet a >/dev/null 2>&1; then
+    PYFIGLET_PRESENT=true
+    pyfiglet() { uv tool run pyfiglet "$@"; }
+elif command -v pyfiglet >/dev/null 2>&1; then
+    PYFIGLET_PRESENT=true
+else
+    PYFIGLET_PRESENT=false
+    echo "pyfiglet command not found, minimal-ascii-art mode enabled. :("
+fi
+
+PYFIGLET_PRESENT=false
+
 # heredoc for ascii art (fonts are default (nothing specified) and 'slant')
 cat << "EOF"
   ___                  _           _   _
@@ -88,13 +118,15 @@ cat << "EOF"
 | | | | '_ \ / _ \/ __| '_ \ / _ \| __| |
 | |_| | | | |  __/\__ \ | | | (_) | |_|_|
  \___/|_| |_|\___||___/_| |_|\___/ \__(_)
-       ___  __ __   ____  __ __     _  ________
-      |__ \/ // /  / __ \/ // /    | |/ <  <  /
-      __/ / // /_ / / / / // /_    |   // // /
-     / __/__  __// /_/ /__  __/   /   |/ // /  
-    /____/ /_/ (_)____/  /_/     /_/|_/_//_/   
-
 EOF
+
+if [[ "$PYFIGLET_PRESENT" == true ]]; then
+  pyfiglet -f slant "$CALLING_SNIPPET"
+else
+  echo ""
+  echo "         ** $CALLING_SNIPPET **"
+  echo ""
+fi
 
 # if pv is present use pv_countdown, else use countdown
 if command -v pv >/dev/null 2>&1; then
