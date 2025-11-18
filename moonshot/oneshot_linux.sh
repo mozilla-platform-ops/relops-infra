@@ -177,8 +177,6 @@ if [[ ! "$REPLY" =~ ^[Yy]$ ]] ; then
     exit 1
 fi
 
-
-# TODO: make an option that skip the reimage step if desired
 if [[ -n "${SKIP_REIMAGE:-}" ]]; then
   echo "SKIP_REIMAGE is set; skipping reimage step."
 else
@@ -193,6 +191,7 @@ else
   set +x
 
   # sleep X minutes to allow the host to finish installation
+  # TODO: sleep less and then do a SSH check before continuing?
   echo "Sleeping 15 minutes to allow host to finish OS installation..."
   countdown 900
   echo "Sleep complete. Proceeding to convergence step."

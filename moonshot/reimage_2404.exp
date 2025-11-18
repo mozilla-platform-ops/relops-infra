@@ -56,6 +56,7 @@ while {$current_retry <= $RETRY_LIMIT} {
         }
         "hpiLO->" {
             send_user "\rSUCCESS: Connection established to $chassis."
+			send_user "\n\r"
             set connected 1
             break
         }
