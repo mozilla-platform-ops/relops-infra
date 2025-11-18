@@ -13,11 +13,28 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shutil
 import sys
 import time
 import subprocess
 import xml.etree.ElementTree as ET
 from typing import Sequence
+
+
+def get_pyfiglet_output(text: str) -> None:
+    """Run pyfiglet to display text in ASCII art."""
+    # see where pyfilget is installed
+
+    # if `uv tool run pyfiglet a` is non-zero use it, else try pyfilget, else fallback to print
+    uv_pyfiglet_output = subprocess.run(["uv", "tool", "run", "pyfiglet", text], check=False, stdout=subprocess.PIPE, text=True)
+    if uv_pyfiglet_output.returncode == 0:
+        output = uv_pyfiglet_output.stdout.rstrip()
+    elif shutil.which("pyfiglet"):
+        pass
+        output = subprocess.check_output(["pyfiglet", text], text=True).rstrip()
+    else:
+        output = text
+    return output
 
 
 def process_running(pattern: str) -> bool:
@@ -75,8 +92,14 @@ def launch_javaws(jnlp_path: str, dry_run: bool) -> int:
     port = parse_jnlp_port(jnlp_path)
     if port:
         cartridge = port_to_cartridge(port)
-        print(f"Connecting to cartridge {cartridge} (port {port})")
-    
+        # print(f"Connecting to cartridge {cartridge} (port {port})")
+        # use pyflget to print the cartridge number
+        print(f"[info] JNLP indicates cartridge {cartridge} (port {port})")
+        print(get_pyfiglet_output(f"Cartridge {cartridge}"))
+    else:
+        print("[info] Could not determine cartridge number from JNLP.")
+        sys.exit(1)
+
     cmd = ["javaws", jnlp_path]
     if dry_run:
         print(f"[dry-run] Would execute: {' '.join(cmd)}")
