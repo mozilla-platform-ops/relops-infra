@@ -134,19 +134,26 @@ if [[ ! "$REPLY" =~ ^[Yy]$ ]] ; then
     exit 1
 fi
 
-set -x
 
-# reimage the host
-echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
-./reimage_2404.sh "${CHASSIS}" "${CARTRIDGE}"
-echo ""
-echo "Reimaging started."
+# TODO: make an option that skip the reimage step if desired
+if [[ -n "${SKIP_REIMAGE:-}" ]]; then
+  echo "SKIP_REIMAGE is set; skipping reimage step."
+else
+  set -x
 
-set +x
+  # reimage the host
+  echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
+  ./reimage_2404.sh "${CHASSIS}" "${CARTRIDGE}"
+  echo ""
+  echo "Reimaging started."
 
-# sleep 10 minutes to allow the host to finish installation
-echo "Sleeping 10 minutes to allow host to finish OS installation..."
-countdown 600
+  set +x
+
+  # sleep 10 minutes to allow the host to finish installation
+  echo "Sleeping 10 minutes to allow host to finish OS installation..."
+  countdown 600
+fi
+
 
 set -x
 
@@ -171,13 +178,6 @@ echo "Running bootstrap script on host to converge..."
 # if PUPPET_REPO and PUPPET_BRANCH are defined, run this
 if [[ -n "$PUPPET_REPO" && -n "$PUPPET_BRANCH" ]]; then
   run_remote_script "relops@${HOSTNAME}" <(echo "$REMOTE_SCRIPT")
-
-  # place a file in /tmp that has these commands, then run it with sudo
-  # ssh relops@"${HOSTNAME}" sudo bash -c "echo '' > /tmp/run_bootstrap.sh && chmod +x /tmp/run_bootstrap.sh"
-  # ssh relops@"${HOSTNAME}" sudo /tmp/run_bootstrap.sh
-
-  # not working
-  # ssh relops@"${HOSTNAME}" sudo bash -c "PUPPET_REPO='${PUPPET_REPO}' PUPPET_BRANCH='${PUPPET_BRANCH}' /tmp/bootstrap.sh"
 else
   ssh relops@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
 fi
