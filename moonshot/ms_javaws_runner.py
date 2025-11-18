@@ -11,6 +11,7 @@ Features:
 """
 from __future__ import annotations
 import argparse
+import logging
 import os
 import sys
 import time
@@ -89,31 +90,30 @@ def remove_file(path: str, dry_run: bool) -> None:
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a JNLP via javaws and wait for its process to exit.")
-    parser.add_argument("--jnlp", default="/Users/aerickson/Downloads/moonshot-jirc.jnlp", help="Path to JNLP file to launch (default: %(default)s)")
+    parser.add_argument("--jnlp", default="$HOME/Downloads/moonshot-jirc.jnlp", help="Path to JNLP file to launch (default: %(default)s)")
     parser.add_argument("--pattern", default="jweblauncher", help="Process name/pattern to monitor (default: %(default)s)")
     parser.add_argument("--sleep", type=int, default=35, help="Seconds to sleep allowing process to start (default: %(default)s)")
     parser.add_argument("--spinner-interval", type=float, default=0.1, help="Seconds per spinner tick (default: %(default)s)")
     parser.add_argument("--dry-run", action="store_true", help="Do not execute or remove anything; just print actions")
     parser.add_argument("--no-remove", action="store_true", help="Skip removing the JNLP file at end")
-    parser.add_argument("--strict", action="store_true", help="Exit non-zero if JNLP file missing or javaws not found")
+    parser.add_argument("-C", "--continuous-mode", action="store_true", help="Run forever: poll for JNLP file, launch, wait, cleanup, repeat")
+    parser.add_argument("--poll-interval", type=int, default=5, help="Seconds to wait between JNLP checks in continuous mode (default: %(default)s)")
     return parser.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parse_args(argv or sys.argv[1:])
-
+def run_once(args: argparse.Namespace) -> int:
+    """Execute one cycle: check process, wait for file, launch, wait, cleanup."""
     # Pre-check existing process
     if process_running(args.pattern):
         print(f"Error: A process matching '{args.pattern}' is already running. Close it before running this script.")
         return 1
 
-    # Validate JNLP file presence
+    # Wait for JNLP file to be present
     if not os.path.exists(args.jnlp):
-        msg = f"Error: JNLP file not found: {args.jnlp}"
-        if args.strict:
-            print(msg, file=sys.stderr)
-            return 2
-        print(msg + " (continuing anyway)")
+        print(f"Waiting for JNLP file: {args.jnlp}...")
+        while not os.path.exists(args.jnlp):
+            time.sleep(1)
+        print(f"JNLP file found: {args.jnlp}")
 
     # Launch javaws
     pid_or_code = launch_javaws(args.jnlp, args.dry_run)
@@ -136,6 +136,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("Skipping JNLP file removal per --no-remove.")
 
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+
+    # expand $HOME in args.jnlp
+    args.jnlp = os.path.expandvars(os.path.expanduser(args.jnlp))
+
+    if args.continuous_mode:
+        print(f"[continuous-mode] Polling for JNLP every {args.poll_interval}s. Press Ctrl+C to stop.")
+        cycle = 0
+        try:
+            while True:
+                cycle += 1
+                print(f"\n--- Cycle {cycle} ---")
+                
+                # Wait for JNLP to appear
+                print(f"Waiting for JNLP file: {args.jnlp} (checking every {args.poll_interval}s)...")
+                while not os.path.exists(args.jnlp):
+                    time.sleep(args.poll_interval)
+
+                print(f"JNLP file found: {args.jnlp}")
+                
+                # Run one cycle
+                exit_code = run_once(args)
+                if exit_code != 0:
+                    print(f"Cycle failed with code {exit_code}. Continuing...")
+                
+                print(f"Cycle {cycle} complete. Waiting {args.poll_interval}s before next check...")
+                time.sleep(args.poll_interval)
+        except KeyboardInterrupt:
+            print("\n[continuous-mode] Interrupted by user. Exiting.")
+            return 0
+    else:
+        return run_once(args)
 
 
 if __name__ == "__main__":  # pragma: no cover
