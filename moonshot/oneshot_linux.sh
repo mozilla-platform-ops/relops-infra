@@ -156,6 +156,12 @@ echo "PUPPET_REPO:                    ${PUPPET_REPO}"
 echo "PUPPET_BRANCH:                  $PUPPET_BRANCH"
 echo ""
 
+# if skip_reimage is set, inform user
+if [[ -n "${SKIP_REIMAGE:-}" ]]; then
+  echo "NOTE: SKIP_REIMAGE is set; the reimage step will be skipped."
+  echo ""
+fi
+
 # confirm with user before proceeding
 read -p "Proceed with reimage and converge of ${HOSTNAME}? (y/N) " -n 1 -r
 echo ""  # move to a new line
@@ -180,8 +186,9 @@ else
   set +x
 
   # sleep 10 minutes to allow the host to finish installation
-  echo "Sleeping 10 minutes to allow host to finish OS installation..."
-  countdown 600
+  echo "Sleeping 11 minutes to allow host to finish OS installation..."
+  countdown 660
+  echo "Sleep complete. Proceeding to convergence step."
 fi
 
 
