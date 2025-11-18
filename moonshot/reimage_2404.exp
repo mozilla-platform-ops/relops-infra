@@ -28,14 +28,59 @@ if {$force_conservative} {
 }
 
 set timeout 120
-spawn ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -oCiphers=+aes128-cbc -oStrictHostKeyChecking=no "$chassis"
-if { [string length $spawn_id] == 0 } {
-    send_user "\rERROR: Failed to spawn SSH connection to $chassis\n"
+set RETRY_LIMIT 5
+set current_retry 1
+set connected 0
+
+# --- NEW: Connection Retry Loop ---
+while {$current_retry <= $RETRY_LIMIT} {
+    send_user "\rAttempt $current_retry/$RETRY_LIMIT: Spawning SSH connection to $chassis..."
+    # 1. Spawn the connection
+    spawn ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -oCiphers=+aes128-cbc -oStrictHostKeyChecking=no "$chassis"
+
+    # Check if the spawn itself failed (e.g., bad command)
+    if { [string length $spawn_id] == 0 } {
+        send_user "\rERROR: Failed to spawn SSH command to $chassis\n"
+        exit 1
+    }
+
+    # 2. Wait for successful prompt or failure
+    expect {
+        # Success: Matched the hpiLO prompt (or initial login prompt if needed)
+        timeout {
+            # Handle the case where connection is slow but doesn't immediately fail
+            send_user "\rWARNING: Connection attempt $current_retry timed out."
+            set current_retry [expr $current_retry + 1]
+            catch {close}
+            catch {wait}
+        }
+        "hpiLO->" {
+            send_user "\rSUCCESS: Connection established to $chassis."
+            set connected 1
+            break
+        }
+        # Failure: Connection closed unexpectedly (the 'Received disconnect' error)
+        eof {
+            send_user "\rERROR: Connection attempt $current_retry closed unexpectedly (EOF/Disconnect)."
+            set current_retry [expr $current_retry + 1]
+            # No need to close/wait for EOF
+        }
+    }
+    sleep 5 ; # Wait 5 seconds before retrying
+}
+
+# --- NEW: Check Retry Status ---
+if {!$connected} {
+    send_user "\n\rFATAL ERROR: Exceeded $RETRY_LIMIT connection attempts to $chassis. Exiting.\n"
     exit 1
 }
+# --- END NEW CODE ---
+
 match_max 100000
 sleep 5
-expect "hpiLO->"
+# The rest of your script now assumes a successful, active SSH connection.
+
+# expect "hpiLO->"  <-- This is now handled in the retry loop for initial connection
 send -- "set node bootonce pxe $node\r"
 expect "bootonce: PXE"
 expect "hpiLO->"
