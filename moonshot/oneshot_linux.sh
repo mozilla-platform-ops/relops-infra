@@ -81,10 +81,8 @@ if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" || -z "$ROLE" ]]; th
   exit 1
 fi
 
-
-
-
-
+# get the calling script's info for ascii art display
+#
 # 1. Get the Parent Process ID
 CALLER_PID=$PPID
 # 2. Get the full command line of the parent process.
@@ -108,8 +106,6 @@ else
     PYFIGLET_PRESENT=false
     echo "pyfiglet command not found, minimal-ascii-art mode enabled. :("
 fi
-
-PYFIGLET_PRESENT=false
 
 # heredoc for ascii art (fonts are default (nothing specified) and 'slant')
 cat << "EOF"
