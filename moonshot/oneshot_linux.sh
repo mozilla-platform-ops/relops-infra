@@ -163,6 +163,12 @@ if [[ -n "${SKIP_REIMAGE:-}" ]]; then
   echo ""
 fi
 
+#
+if [ -f "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings" ]; then
+  echo "NOTE: ronin_settings file found. It will be sent out to hosts."
+  echo ""
+fi
+
 # confirm with user before proceeding
 read -p "Proceed with reimage and converge of ${HOSTNAME}? (y/N) " -n 1 -r
 echo ""  # move to a new line
@@ -186,9 +192,9 @@ else
 
   set +x
 
-  # sleep 10 minutes to allow the host to finish installation
-  echo "Sleeping 11 minutes to allow host to finish OS installation..."
-  countdown 660
+  # sleep X minutes to allow the host to finish installation
+  echo "Sleeping 15 minutes to allow host to finish OS installation..."
+  countdown 900
   echo "Sleep complete. Proceeding to convergence step."
 fi
 
