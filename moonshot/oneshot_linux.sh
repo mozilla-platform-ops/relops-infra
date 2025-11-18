@@ -192,11 +192,19 @@ else
 
   # sleep X minutes to allow the host to finish installation
   # TODO: sleep less and then do a SSH check before continuing?
-  echo "Sleeping 15 minutes to allow host to finish OS installation..."
-  countdown 900
-  echo "Sleep complete. Proceeding to convergence step."
+  echo "Sleeping 10 minutes to allow host to finish OS installation..."
+  countdown 600
+  echo "Sleep complete."
 fi
 
+# check that the host is reachable via ssh (try forever until it works)
+echo "Checking SSH connectivity to host..."
+while ! nc -vz ${HOSTNAME} 22 >/dev/null 2>&1; do
+  echo "SSH check for ${HOSTNAME} failed, retrying in 30 seconds..."
+  countdown 30
+done
+echo "SSH connectivity to ${HOSTNAME} verified."
+echo ""
 
 set -x
 
