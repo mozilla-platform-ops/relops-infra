@@ -28,7 +28,7 @@ if {$force_conservative} {
 }
 
 set timeout 120
-set RETRY_LIMIT 5
+set RETRY_LIMIT 30
 set current_retry 1
 set connected 0
 
