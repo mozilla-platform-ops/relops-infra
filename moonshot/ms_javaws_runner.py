@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import subprocess
+import xml.etree.ElementTree as ET
 from typing import Sequence
 
 
@@ -39,10 +40,43 @@ def process_running(pattern: str) -> bool:
         return False
 
 
+def parse_jnlp_port(jnlp_path: str) -> int | None:
+    """Parse JNLP file and extract port number from codebase attribute.
+    Returns port number or None if not found/invalid.
+    """
+    try:
+        tree = ET.parse(jnlp_path)
+        root = tree.getroot()
+        codebase = root.get('codebase')
+        if codebase:
+            # Extract port from URL like "https://moon-chassis-2.inband.releng.mdc1.mozilla.com:737"
+            if ':' in codebase:
+                port_str = codebase.rsplit(':', 1)[1]
+                # Remove any trailing path
+                port_str = port_str.split('/')[0]
+                return int(port_str)
+    except Exception as e:
+        logging.debug(f"Failed to parse JNLP port: {e}")
+    return None
+
+
+def port_to_cartridge(port: int) -> int:
+    """Convert port number to cartridge number.
+    Cartridge 1 is at port 736, cartridge 2 at 737, etc.
+    """
+    return port - 735
+
+
 def launch_javaws(jnlp_path: str, dry_run: bool) -> int:
     """Launch javaws with the given JNLP file. Returns the exit code of the javaws process.
     In dry-run mode, just prints the command and returns 0.
     """
+    # Parse and display cartridge info
+    port = parse_jnlp_port(jnlp_path)
+    if port:
+        cartridge = port_to_cartridge(port)
+        print(f"Connecting to cartridge {cartridge} (port {port})")
+    
     cmd = ["javaws", jnlp_path]
     if dry_run:
         print(f"[dry-run] Would execute: {' '.join(cmd)}")
