@@ -207,6 +207,14 @@ done
 echo "SSH connectivity to ${HOSTNAME} verified."
 echo ""
 
+# check that a simple ssh command works (try forever until it works)
+while ! ssh -o BatchMode=yes -o ConnectTimeout=5 relops@"${HOSTNAME}" "echo 2>&1" && false; do
+  echo "SSH command check for ${HOSTNAME} failed, retrying in 30 seconds..."
+  countdown 30
+done
+echo "SSH command functionality to ${HOSTNAME} verified."
+echo ""
+
 set -x
 
 # deliver the bootstrap script to the host
