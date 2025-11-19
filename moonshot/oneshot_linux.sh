@@ -115,6 +115,7 @@ cat << "EOF"
 | | | | '_ \ / _ \/ __| '_ \ / _ \| __| |
 | |_| | | | |  __/\__ \ | | | (_) | |_|_|
  \___/|_| |_|\___||___/_| |_|\___/ \__(_)
+
 EOF
 
 if [[ "$PYFIGLET_PRESENT" == true ]]; then
@@ -233,4 +234,10 @@ else
   ssh relops@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
 fi
 
+if [[ "$PYFIGLET_PRESENT" == true ]]; then
+  echo ""
+  pyfiglet -f smslant "$HOST_NUMBER complete"
+fi
+
+echo ""
 echo "Reimage and converge of ${HOSTNAME} complete."
