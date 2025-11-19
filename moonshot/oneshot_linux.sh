@@ -234,6 +234,8 @@ else
   ssh relops@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
 fi
 
+set +x
+
 if [[ "$PYFIGLET_PRESENT" == true ]]; then
   echo ""
   pyfiglet -f smslant "$HOST_NUMBER complete"
