@@ -167,10 +167,8 @@ def run_once(args: argparse.Namespace) -> int:
 
     # Wait for JNLP file to be present
     if not os.path.exists(args.jnlp):
-        print(f"Waiting for JNLP file: {args.jnlp}...")
-        while not os.path.exists(args.jnlp):
-            time.sleep(1)
         print(f"JNLP file found: {args.jnlp}")
+        sys.exit(1)
 
     # Launch javaws
     pid_or_code = launch_javaws(args.jnlp, args.dry_run)
@@ -215,6 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     time.sleep(args.poll_interval)
 
                 print(f"JNLP file found: {args.jnlp}")
+                time.sleep(1)  # ensure downloaded file is complete
                 
                 # Run one cycle
                 exit_code = run_once(args)
