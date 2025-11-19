@@ -67,7 +67,7 @@ while {$current_retry <= $RETRY_LIMIT} {
             # No need to close/wait for EOF
         }
     }
-    sleep 7 ; # Wait X seconds before retrying, was 5, trying 7, 10 next.
+    sleep 5 ; # Wait X seconds before retrying, was 5, trying 7, 10 next.
 }
 
 # --- NEW: Check Retry Status ---
