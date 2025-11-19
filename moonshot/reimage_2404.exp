@@ -141,11 +141,11 @@ expect "booting default..."
 sleep 5
 # press down key 3 times and then press enter
 send -- "\[B"
-sleep 0.5
+sleep 1
 send -- "\[B"
-sleep 0.5
+sleep 1
 send -- "\[B"
-sleep 0.5
+sleep 1
 send -- "\r"
 sleep 10
 
