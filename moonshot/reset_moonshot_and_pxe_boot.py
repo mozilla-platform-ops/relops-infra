@@ -6,6 +6,13 @@ import json
 import sys
 import requests
 
+# uses HTTP requests to set PXE boot and reboot a Moonshot node via iLO Redfish API
+
+# example usage:
+#   ./reset_moonshot_and_pxe_boot.py \
+#     -H moon-chassis-7.inband.releng.mdc1.mozilla.com \
+#     -n c5n1
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Set PXE boot and reboot a Moonshot node via iLO Redfish API"
