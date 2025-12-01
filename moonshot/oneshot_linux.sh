@@ -111,6 +111,13 @@ else
     echo "pyfiglet command not found, minimal-ascii-art mode enabled. :("
 fi
 
+# ensure that flock is available
+if ! command -v flock >/dev/null 2>&1; then
+  echo "flock command not found, please install it to proceed."
+  echo "  on os x, install with 'brew install flock'"
+  exit 1
+fi
+
 # heredoc for ascii art (fonts are default (nothing specified) and 'slant')
 cat << "EOF"
   ___                  _           _   _
@@ -184,21 +191,24 @@ fi
 if [[ -n "${SKIP_REIMAGE:-}" ]]; then
   echo "SKIP_REIMAGE is set; skipping reimage step."
 else
-  set -x
-
-  # reimage the host
-  echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
-  ./reimage_2404.sh "${CHASSIS}" "${CARTRIDGE}"
-  echo ""
-  echo "Reimaging started."
-
-  set +x
-
-  # sleep X minutes to allow the host to finish installation
-  # TODO: sleep less and then do a SSH check before continuing?
-  echo "Sleeping 10 minutes to allow host to finish OS installation..."
-  countdown 600
-  echo "Sleep complete."
+  # Use flock to serialize reimage operations per chassis
+  LOCK_FILE="/tmp/moonshot_chassis_${CHASSIS}.lock"
+  
+  echo "Acquiring lock for chassis ${CHASSIS}..."
+  (
+    flock -x 200
+    echo "Lock acquired for chassis ${CHASSIS}."
+    
+    set -x
+    # reimage the host
+    echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
+    ./reimage_2404.sh "${CHASSIS}" "${CARTRIDGE}"
+    echo ""
+    echo "Reimaging started."
+    set +x
+    
+    echo "Lock released for chassis ${CHASSIS}."
+  ) 200>"$LOCK_FILE"
 fi
 
 # check that the host is reachable via ssh (try forever until it works)
