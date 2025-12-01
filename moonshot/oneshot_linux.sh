@@ -184,9 +184,9 @@ if [ -f "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings" ]; then
 fi
 
 # confirm with user before proceeding
-read -p "Proceed? (y/N) " -n 1 -r
+read -p "Proceed? (y/N) " -n 1 -r || true
 echo ""  # move to a new line
-if [[ ! "$REPLY" =~ ^[Yy]$ ]] ; then
+if [[ ! "${REPLY:-}" =~ ^[Yy]$ ]] ; then
     echo "Aborting per user request."
     exit 1
 fi
@@ -247,9 +247,9 @@ cd ${RONIN_PUPPET_REPO_PATH}/provisioners/linux
 read -r -d '' REMOTE_SCRIPT <<EOF || true
 #!/usr/bin/env bash
 set -e
-sudo \
-  PUPPET_REPO=${PUPPET_REPO} \
-  PUPPET_BRANCH=${PUPPET_BRANCH} \
+sudo \\
+  PUPPET_REPO=\"${PUPPET_REPO}\" \\
+  PUPPET_BRANCH=\"${PUPPET_BRANCH}\" \\
   /tmp/bootstrap.sh
 EOF
 
