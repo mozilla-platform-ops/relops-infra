@@ -42,7 +42,10 @@ countdown() {
 pv_countdown() {
     local total="$1"
     echo "Waiting $total seconds..."
-    while true; do echo -n .; sleep 1; done | pv -s $total -S -F '%t %p' > /dev/null
+    # Disable pipefail for this function to avoid pv pipe issues
+    set +o pipefail
+    ( while true; do echo -n .; sleep 1; done ) | pv -s "$total" -S -F '%t %p' > /dev/null
+    set -o pipefail
 }
 
 run_remote_script() {
@@ -209,6 +212,11 @@ else
     
     echo "Lock released for chassis ${CHASSIS}."
   ) 200>"$LOCK_FILE"
+
+  # sleep 10 minutes to allow the host to finish installation
+  echo "Sleeping 10 minutes to allow host to finish OS installation..."
+  countdown 600
+  echo "Sleep complete."
 fi
 
 # check that the host is reachable via ssh (try forever until it works)
@@ -240,8 +248,8 @@ read -r -d '' REMOTE_SCRIPT <<EOF || true
 #!/usr/bin/env bash
 set -e
 sudo \
-  PUPPET_REPO='${PUPPET_REPO}' \
-  PUPPET_BRANCH='${PUPPET_BRANCH}' \
+  PUPPET_REPO=${PUPPET_REPO} \
+  PUPPET_BRANCH=${PUPPET_BRANCH} \
   /tmp/bootstrap.sh
 EOF
 
