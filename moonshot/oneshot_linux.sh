@@ -52,14 +52,16 @@ run_remote_script() {
     return 1
   fi
 
-  # Use mktemp remotely to get a temp file path
-  ssh "$host" 'tmp=$(mktemp /tmp/remote_script.XXXXXX.sh); echo $tmp' | {
-    read -r remote_tmp
-    echo "Uploading and running on $host:$remote_tmp"
-    # Send the script via stdin and execute remotely
-    cat "$script" | ssh "$host" "cat > '$remote_tmp' && chmod +x '$remote_tmp' && bash '$remote_tmp'"
-    echo "Remote script kept at: $host:$remote_tmp"
-  }
+  # Create remote temp path (no pipeline; no subshell)
+  local remote_tmp
+  remote_tmp=$(ssh "$host" 'mktemp /tmp/remote_script.XXXXXX.sh')
+  echo "Uploading and running on $host:$remote_tmp"
+
+  # Stream the local script into the remote file, then run it
+  # Read the local script in this shell to keep /dev/fd/* valid.
+  ssh "$host" "cat > '$remote_tmp' && chmod +x '$remote_tmp' && bash '$remote_tmp'" < "$script"
+
+  echo "Remote script kept at: $host:$remote_tmp"
 }
 
 
