@@ -184,7 +184,7 @@ if [ -f "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings" ]; then
 fi
 
 # confirm with user before proceeding
-read -p "Proceed with reimage and converge of ${HOSTNAME}? (y/N) " -n 1 -r
+read -p "Proceed? (y/N) " -n 1 -r
 echo ""  # move to a new line
 if [[ ! "$REPLY" =~ ^[Yy]$ ]] ; then
     echo "Aborting per user request."
