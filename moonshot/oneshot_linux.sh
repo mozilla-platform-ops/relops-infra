@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 # set -x
+trap 'echo "Error at line $LINENO. Aborting."; exit 1' ERR
 
 # oneshot script:
 #   reimages and converges a linux moonshot hardware host
@@ -225,7 +226,7 @@ echo "Delivering bootstrap script to host..."
 cd ${RONIN_PUPPET_REPO_PATH}/provisioners/linux
 ./deliver_linux.sh "${HOSTNAME}" "${ROLE}"
 
-REMOTE_SCRIPT=$(cat << EOF
+read -r -d '' REMOTE_SCRIPT <<EOF || true
 #!/usr/bin/env bash
 set -e
 sudo \
@@ -233,7 +234,6 @@ sudo \
   PUPPET_BRANCH='${PUPPET_BRANCH}' \
   /tmp/bootstrap.sh
 EOF
-)
 
 # run the script to converge the host
 echo "Running bootstrap script on host to converge..."
