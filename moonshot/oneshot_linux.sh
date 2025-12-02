@@ -248,8 +248,8 @@ read -r -d '' REMOTE_SCRIPT <<EOF || true
 #!/usr/bin/env bash
 set -e
 sudo \\
-  PUPPET_REPO=\"${PUPPET_REPO}\" \\
-  PUPPET_BRANCH=\"${PUPPET_BRANCH}\" \\
+  PUPPET_REPO=${PUPPET_REPO} \\
+  PUPPET_BRANCH=${PUPPET_BRANCH} \\
   /tmp/bootstrap.sh
 EOF
 
