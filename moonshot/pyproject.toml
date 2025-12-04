@@ -1,11 +1,11 @@
 [project]
-name = "moonshot-python-tools"
+name = "moonshot"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "paramiko>=4.0.0",
     "pendulum>=3.1.0",
-    "requests>=2.32.4",
+    "requests>=2.32.5",
 ]

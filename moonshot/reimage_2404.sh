@@ -1,5 +1,9 @@
 #!/bin/bash
 
+set -e
+# ensure that tee fails if the pipe fails
+set -o pipefail
+
 USAGE="Usage: $0 chassis node1 node2 ..\nExample: '\$ ./$0 7 {1..3}  # reinstall chassis 7 nodes 1-3\n\n"
 if [ "$#" == "0" ]; then
     printf "$USAGE"
@@ -15,7 +19,6 @@ boot_params=""
 
 for node in $@; do
     echo $node
-    ./reimage_1804.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
+    ./reimage_2404.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
         | tee ${0%%.sh}.$chassis.$node.$(date +"%H:%M:%S").log
-    # TODO: sleep 10 minuets for host to finish? only do in single host mode?
 done

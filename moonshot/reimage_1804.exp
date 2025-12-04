@@ -83,50 +83,16 @@ send_user "\rcheck vsp\r"
 expect "Virtual Serial Port Active: "
 send_user "\n\r"
 set timeout -1
-send_user "\rWaiting for boot menu on $node "
-for {set NUM 0} {$NUM <= 5} {incr NUM} {
-    send -- " "
-    send_user "."
-    sleep 5
-}
-set timeout -1
-sleep 2
 
-#expect "Starting drivers. Please wait, this may take a few moments....\r"
-#expect "Fetching Netboot Image\r"
-
-expect "Press 'e' to edit the selected item, or 'c' for a command prompt."
-# "Chainload Grub on EFI System Partition"
-# "Install Ubuntu 18.04 LTS x86_64 on moonshot"
-# "Install Ubuntu 16.04.0 LTS x86_64 on moonshot"
-
-# cursor down once
-send -- "\[B"
-expect "Install Ubuntu"
-send -- "e"
-set timeout 60
-sleep 1
-expect "Press Ctrl-x to start"
-expect "initrd.gz"
-send -- "\[B"
-sleep 0.5
-send -- "\[B"
-sleep 0.5
-send -- "\[B"
-sleep 0.5
-# cursor left to end of previous line
-send -- "\[D"
-sleep 1
-# add a space at the end of line
-send -- " "
-sleep 0.5
-# add parameters
-send -- "$boot_params"
+# netboot.xyz: select the 18.04 automated install
+send_user "\rWaiting for netboot.xyz menu on $node "
+expect "netboot.xyz"
+expect "booting default..."
 sleep 5
-# "Ctrl-x to start"
-send -- ""
-send_user "\rInitiated boot ..."
-sleep 60
+# press enter (18.04 automated install is the default)
+send -- "\r"
+sleep 10
+
 # exit virtual serial port
 send -- "("
 expect "hpiLO->"

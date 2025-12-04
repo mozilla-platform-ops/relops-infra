@@ -1,0 +1,158 @@
+#!/usr/bin/expect --
+
+proc named {args defaults} {
+    upvar 1 "" ""
+    array set "" $defaults
+    foreach {key value} $args {
+        if {![info exists ($key)]} {
+            error "bad option '$key', should be one of: [lsort [array names {}]]"
+        }
+        set ($key) $value
+    }
+}
+named $argv {--chassis "" --node "" --boot-params ""}
+
+set chassis $(--chassis)
+set node $(--node)
+set boot_params $(--boot-params)
+
+send_user "\rConnecting to $chassis to control $node ..."
+
+set force_conservative 1
+if {$force_conservative} {
+	set send_slow {1 .1}
+	proc send {ignore arg} {
+		sleep .1
+		exp_send -s -- $arg
+	}
+}
+
+set timeout 120
+set RETRY_LIMIT 30
+set current_retry 1
+set connected 0
+
+# --- NEW: Connection Retry Loop ---
+while {$current_retry <= $RETRY_LIMIT} {
+    send_user "\rAttempt $current_retry/$RETRY_LIMIT: Spawning SSH connection to $chassis..."
+    # 1. Spawn the connection
+    spawn ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -oCiphers=+aes128-cbc -oStrictHostKeyChecking=no "$chassis"
+
+    # Check if the spawn itself failed (e.g., bad command)
+    if { [string length $spawn_id] == 0 } {
+        send_user "\rERROR: Failed to spawn SSH command to $chassis\n"
+        exit 1
+    }
+
+    # 2. Wait for successful prompt or failure
+    expect {
+        # Success: Matched the hpiLO prompt (or initial login prompt if needed)
+        timeout {
+            # Handle the case where connection is slow but doesn't immediately fail
+            send_user "\rWARNING: Connection attempt $current_retry timed out."
+            set current_retry [expr $current_retry + 1]
+            catch {close}
+            catch {wait}
+        }
+        "hpiLO->" {
+            send_user "\rSUCCESS: Connection established to $chassis."
+			send_user "\n\r"
+            set connected 1
+            break
+        }
+        # Failure: Connection closed unexpectedly (the 'Received disconnect' error)
+        eof {
+            send_user "\rERROR: Connection attempt $current_retry closed unexpectedly (EOF/Disconnect)."
+            set current_retry [expr $current_retry + 1]
+            # No need to close/wait for EOF
+        }
+    }
+    sleep 5 ; # Wait X seconds before retrying, was 5, trying 7, 10 next.
+}
+
+# --- NEW: Check Retry Status ---
+if {!$connected} {
+    send_user "\n\rFATAL ERROR: Exceeded $RETRY_LIMIT connection attempts to $chassis. Exiting.\n"
+    exit 1
+}
+# --- END NEW CODE ---
+
+match_max 100000
+sleep 5
+# The rest of your script now assumes a successful, active SSH connection.
+
+# expect "hpiLO->"  <-- This is now handled in the retry loop for initial connection
+send -- "set node bootonce pxe $node\r"
+expect "bootonce: PXE"
+expect "hpiLO->"
+set retries 2
+while { $retries > 0 } {
+	send -- "set node power off force $node\r"
+	expect "hpiLO->"
+	set waiting 6
+	send_user "\rWaiting for power off "
+	while { $waiting > 0 } {
+	    sleep 5
+	    set waiting [ expr $waiting - 1 ]
+	    send -- "show node power $node\r"
+	    expect {
+		"*Off" { set waiting -1 }
+		"*On" { send_user "." }
+	    }
+	}
+    if { $waiting == -1 } { set retries 0 }
+    set retries [ expr $retries - 1 ]
+}
+send_user "\rPower is off"
+send_user "\n\r"
+sleep 0.5
+set retries 2
+while { $retries > 0 } {
+	send -- "set node power on $node\r"
+	expect "hpiLO->"
+	set waiting 6
+	send_user "\rWaiting for power on "
+	while { $waiting > 0 } {
+	    sleep 5
+	    set waiting [ expr $waiting - 1 ]
+	    send -- "show node power $node\r"
+	    expect {
+		"*On" { set waiting -1 }
+		"*Off" { send_user "." }
+	    }
+	}
+    if { $waiting == -1 } { set retries 0 }
+    set retries [ expr $retries - 1 ]
+}
+send_user "\rPower is on"
+send_user "\n\r"
+sleep 0.2
+expect "hpiLO->"
+send -- "connect node vsp $node\r"
+send_user "\rcheck vsp\r"
+expect "Virtual Serial Port Active: "
+send_user "\n\r"
+set timeout -1
+
+# netboot.xyz: select the 24.04 automated install
+send_user "\rWaiting for netboot.xyz menu on $node "
+expect "netboot.xyz"
+expect "booting default..."
+sleep 5
+# press down key 3 times and then press enter
+send -- "\[B"
+sleep 1
+send -- "\[B"
+sleep 1
+send -- "\[B"
+sleep 1
+send -- "\r"
+sleep 10
+
+# exit virtual serial port
+#  `Press 'ESC (' to return to the CLI Session.`
+send -- "("
+expect "hpiLO->"
+send -- "exit\r"
+expect eof
+send_user "\rFinished $chassis $node"
