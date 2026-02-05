@@ -2,6 +2,15 @@
 
 Scripts for managing HP Moonshot chassis and cartridges.
 
+## Setup
+
+**SSH Key for HP iLO Access:**
+
+Add the HP ILO SSH key (search `Relops Common Keys 2020-05-07` in Relops 1P) to ssh-agent to avoid password prompts during reimage operations:
+```bash
+ssh-add ~/.ssh/id_rsa_relops_2020-05-07
+```
+
 ## Utility Scripts
 
 ### hostname_to_cart.sh
