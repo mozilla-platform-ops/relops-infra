@@ -25,8 +25,8 @@ def get_pyfiglet_output(text: str) -> None:
     """Run pyfiglet to display text in ASCII art."""
     # see where pyfilget is installed
 
-    # if `uv tool run pyfiglet a` is non-zero use it, else try pyfilget, else fallback to print
-    uv_pyfiglet_output = subprocess.run(["uv", "tool", "run", "pyfiglet", text], check=False, stdout=subprocess.PIPE, text=True)
+    # if `uv run pyfiglet a` is non-zero use it, else try pyfilget, else fallback to print
+    uv_pyfiglet_output = subprocess.run(["uv", "run", "pyfiglet", text], check=False, stdout=subprocess.PIPE, text=True)
     if uv_pyfiglet_output.returncode == 0:
         output = uv_pyfiglet_output.stdout.rstrip()
     elif shutil.which("pyfiglet"):
