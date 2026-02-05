@@ -13,6 +13,15 @@ ssh-add ~/.ssh/id_rsa_relops_2020-05-07
 
 ## Utility Scripts
 
+### ms_javaws_runner
+Launches Java Web Start (javaws) with JNLP files for HP iLO remote console access.
+> Python script that checks for existing Java processes, launches javaws, displays a progress spinner,
+and cleans up the JNLP file on completion. Requires Python 3 and `uv`.
+
+```bash
+uv run ./ms_javaws_runner <jnlp_file>
+```
+
 ### hostname_to_cart.sh
 Converts a hostname to chassis and cartridge numbers.
 ```bash
