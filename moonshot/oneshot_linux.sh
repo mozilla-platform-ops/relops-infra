@@ -214,9 +214,15 @@ else
     echo "Lock released for chassis ${CHASSIS}."
   ) 200>"$LOCK_FILE"
 
-  # sleep 10 minutes to allow the host to finish installation
-  echo "Sleeping 10 minutes to allow host to finish OS installation..."
-  countdown 600
+  # sleep to allow the host to finish installation
+  # 18.04 takes longer, so sleep 18 minutes; otherwise 10 minutes
+  if [[ "$OS_VERSION" == "1804" ]]; then
+    echo "Sleeping 18 minutes to allow host to finish OS installation (18.04 takes longer)..."
+    countdown 1080
+  else
+    echo "Sleeping 10 minutes to allow host to finish OS installation..."
+    countdown 600
+  fi
   echo "Sleep complete."
 fi
 
