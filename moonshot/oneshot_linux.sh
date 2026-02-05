@@ -80,6 +80,12 @@ OS_VERSION="$5"
 
 # calculated
 HOSTNAME="t-linux64-ms-${HOST_NUMBER}.test.releng.mdc1.mozilla.com"
+# 18.04 uses root, newer versions use relops
+if [[ "$OS_VERSION" == "1804" ]]; then
+  SSH_USER="root"
+else
+  SSH_USER="relops"
+fi
 
 # TODO: show usage if any args are missing
 if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" || -z "$ROLE" || -z "$OS_VERSION" ]]; then
@@ -235,8 +241,13 @@ done
 echo "SSH connectivity to ${HOSTNAME} verified."
 echo ""
 
+# remove old host key from known_hosts (host was just reimaged)
+echo "Removing old host key from known_hosts..."
+ssh-keygen -R "${HOSTNAME}" >/dev/null 2>&1 || true
+echo ""
+
 # check that a simple ssh command works (try forever until it works)
-while ! ssh -o BatchMode=yes -o ConnectTimeout=5 relops@"${HOSTNAME}" "echo 2>&1" && false; do
+while ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 ${SSH_USER}@"${HOSTNAME}" "echo 2>&1" && false; do
   echo "SSH command check for ${HOSTNAME} failed, retrying in 30 seconds..."
   countdown 30
 done
@@ -255,8 +266,8 @@ read -r -d '' REMOTE_SCRIPT <<EOF || true
 #!/usr/bin/env bash
 set -e
 sudo \\
-  PUPPET_REPO=${ONESHOT_PUPPET_REPO} \\
-  PUPPET_BRANCH=${ONESHOT_PUPPET_BRANCH} \\
+  PUPPET_REPO=${ONESHOT_PUPPET_REPO:-} \\
+  PUPPET_BRANCH=${ONESHOT_PUPPET_BRANCH:-} \\
   /tmp/bootstrap.sh
 EOF
 
@@ -264,9 +275,9 @@ EOF
 echo "Running bootstrap script on host to converge..."
 # if ONESHOT_PUPPET_REPO and ONESHOT_PUPPET_BRANCH are defined, run this
 if [[ -n "${ONESHOT_PUPPET_REPO:-}" && -n "${ONESHOT_PUPPET_BRANCH:-}" ]]; then
-  run_remote_script "relops@${HOSTNAME}" <(echo "$REMOTE_SCRIPT")
+  run_remote_script "${SSH_USER}@${HOSTNAME}" <(echo "$REMOTE_SCRIPT")
 else
-  ssh relops@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
+  ssh ${SSH_USER}@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
 fi
 
 set +x
