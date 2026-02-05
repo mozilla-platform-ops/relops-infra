@@ -94,12 +94,20 @@ of what would happen.
 
 **Environment Variables:**
 - `RONIN_PUPPET_REPO_PATH` - Path to ronin_puppet repository (default: `$HOME/git/ronin_puppet`)
-- `SKIP_REIMAGE` - Set to skip the reimage step (useful for testing convergence only)
-- `PUPPET_REPO` - Override default Puppet repository
-- `PUPPET_BRANCH` - Override default Puppet branch
+- `SKIP_REIMAGE` - (Optional) Set to skip the reimage step (useful for testing convergence only)
 
-**Settings File:**
-Optional file at `$RONIN_PUPPET_REPO_PATH/provisioners/linux/ronin_settings` can override defaults.
+
+**Optional Override File**
+
+If you'd like to have the newly imaged host use an override file immediately after initial convergence, place your override at `$RONIN_PUPPET_REPO_PATH/provisioners/linux/ronin_settings` the script will deploy it to the host.
+
+**Optional Environment Variables**
+
+If the override file has an effect too late in the process (e.g. you want to test initial convergence) you can set these variables and it will use the values in the bootstrap script.
+
+- `ONESHOT_PUPPET_REPO` - Override default Puppet repository for bootstrap script
+- `ONESHOT_PUPPET_BRANCH` - Override default Puppet branch for bootstrap script
+
 
 ## How It Works
 

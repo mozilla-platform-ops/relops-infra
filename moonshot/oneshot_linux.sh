@@ -168,8 +168,8 @@ echo "CARTRIDGE:                      $CARTRIDGE"
 echo "HOST_NUMBER:                    $HOST_NUMBER"
 echo "HOSTNAME (uses HOST_NUMBER):    $HOSTNAME"
 echo "ROLE:                           $ROLE"
-echo "PUPPET_REPO:                    ${PUPPET_REPO}"
-echo "PUPPET_BRANCH:                  $PUPPET_BRANCH"
+echo "ONESHOT_PUPPET_REPO:            ${ONESHOT_PUPPET_REPO}"
+echo "ONESHOT_PUPPET_BRANCH:          $ONESHOT_PUPPET_BRANCH"
 echo ""
 
 # if skip_reimage is set, inform user
@@ -249,15 +249,15 @@ read -r -d '' REMOTE_SCRIPT <<EOF || true
 #!/usr/bin/env bash
 set -e
 sudo \\
-  PUPPET_REPO=${PUPPET_REPO} \\
-  PUPPET_BRANCH=${PUPPET_BRANCH} \\
+  PUPPET_REPO=${ONESHOT_PUPPET_REPO} \\
+  PUPPET_BRANCH=${ONESHOT_PUPPET_BRANCH} \\
   /tmp/bootstrap.sh
 EOF
 
 # run the script to converge the host
 echo "Running bootstrap script on host to converge..."
-# if PUPPET_REPO and PUPPET_BRANCH are defined, run this
-if [[ -n "$PUPPET_REPO" && -n "$PUPPET_BRANCH" ]]; then
+# if ONESHOT_PUPPET_REPO and ONESHOT_PUPPET_BRANCH are defined, run this
+if [[ -n "$ONESHOT_PUPPET_REPO" && -n "$ONESHOT_PUPPET_BRANCH" ]]; then
   run_remote_script "relops@${HOSTNAME}" <(echo "$REMOTE_SCRIPT")
 else
   ssh relops@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
