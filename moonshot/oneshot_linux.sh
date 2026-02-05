@@ -76,14 +76,15 @@ CHASSIS="$1"
 CARTRIDGE="$2"
 HOST_NUMBER="$3"
 ROLE="$4"
+OS_VERSION="$5"
 
 # calculated
 HOSTNAME="t-linux64-ms-${HOST_NUMBER}.test.releng.mdc1.mozilla.com"
 
 # TODO: show usage if any args are missing
-if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" || -z "$ROLE" ]]; then
-  echo "Usage: $0 <chassis> <cartridge> <host_number> <role>"
-  echo "Example: $0 1 3 023 gecko_t_linux_2404_talos"
+if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" || -z "$ROLE" || -z "$OS_VERSION" ]]; then
+  echo "Usage: $0 <chassis> <cartridge> <host_number> <role> <os_version>"
+  echo "Example: $0 1 3 023 gecko_t_linux_2404_talos 2404"
   exit 1
 fi
 
@@ -205,7 +206,7 @@ else
     set -x
     # reimage the host
     echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
-    ./reimage_2404.sh "${CHASSIS}" "${CARTRIDGE}"
+    ./reimage_${OS_VERSION}.sh "${CHASSIS}" "${CARTRIDGE}"
     echo ""
     echo "Reimaging started."
     set +x

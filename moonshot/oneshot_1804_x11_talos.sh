@@ -14,5 +14,5 @@ if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" ]]; then
   exit 1
 fi
 
-# export ROLE="gecko_t_linux_2404_talos"
-./oneshot_linux.sh "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "gecko_t_linux_2404_talos" "2404" "$@"
+# export ROLE="gecko_t_linux_talos"
+./oneshot_linux.sh "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "gecko_t_linux_talos" "1804" "$@"
