@@ -1,5 +1,27 @@
 # moonshot scripts
 
+Scripts for managing HP Moonshot chassis and cartridges.
+
+## Utility Scripts
+
+### hostname_to_cart.sh
+Converts a hostname to chassis and cartridge numbers.
+```bash
+./hostname_to_cart.sh <hostname>
+```
+
+### check_power.sh
+Checks the power status of moonshot cartridges.
+```bash
+./check_power.sh
+```
+
+### moon_command.sh / moon_ilo_command.exp
+Executes generic commands on the Moonshot chassis iLO.
+```bash
+./moon_command.sh <chassis> <command>
+```
+
 ## Reboot Scripts
 
 ### reboot_hung.sh
@@ -30,7 +52,14 @@ Each script calls its corresponding `.exp` expect script to handle the interacti
 # Example: ./reimage_2404.sh 1 3
 ```
 
+---
+
 ## Oneshot Scripts
+
+**Prerequisites for oneshot/reimage scripts:**
+- `expect` - Automated iLO interaction
+- `flock` - Serializing reimage operations
+- `ssh` / `nc` - Remote host access and connectivity checks
 
 ### oneshot_linux.sh
 Generic orchestration script for complete reimage and Puppet convergence workflow.
@@ -60,3 +89,32 @@ of what would happen.
 ./oneshot_2404_x11_talos.sh <chassis> <cartridge> <host_number> --confirm
 # Example: ./oneshot_2404_x11_talos.sh 1 3 023 --confirm
 ```
+
+### Configuration for Oneshot Scripts
+
+**Environment Variables:**
+- `RONIN_PUPPET_REPO_PATH` - Path to ronin_puppet repository (default: `$HOME/git/ronin_puppet`)
+- `SKIP_REIMAGE` - Set to skip the reimage step (useful for testing convergence only)
+- `PUPPET_REPO` - Override default Puppet repository
+- `PUPPET_BRANCH` - Override default Puppet branch
+
+**Settings File:**
+Optional file at `$RONIN_PUPPET_REPO_PATH/provisioners/linux/ronin_settings` can override defaults.
+
+## How It Works
+
+**Reimage Workflow:**
+1. `reimage_*.sh` wrapper scripts call their corresponding `reimage_*.exp` expect scripts
+2. Expect scripts connect to Moonshot chassis iLO via SSH
+3. Configure cartridge to PXE boot and power cycle
+4. OS installation proceeds via netboot.xyz
+
+**Oneshot Workflow:**
+1. Wrapper scripts (`oneshot_*_x11_talos.sh`) call `oneshot_linux.sh` with pre-configured parameters
+2. `oneshot_linux.sh` orchestrates the full workflow:
+   - Reimage the host (calls appropriate `reimage_*.sh`)
+   - Wait for OS installation to complete (10 minutes)
+   - Poll for SSH connectivity
+   - Upload and execute Puppet bootstrap script
+   - Converge host with specified Puppet role
+3. File locking ensures only one reimage per chassis runs at a time
