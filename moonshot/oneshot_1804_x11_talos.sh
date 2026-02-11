@@ -25,8 +25,8 @@ if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" ]]; then
   exit 1
 fi
 
-ROLE="gecko_t_linux_2404_talos"
-OS_VERSION="2404"
+ROLE="gecko_t_linux_talos"
+OS_VERSION="1804"
 HOSTNAME="t-linux64-ms-${HOST_NUMBER}.test.releng.mdc1.mozilla.com"
 
 # Dry run mode if --confirm not provided
@@ -39,7 +39,7 @@ if [[ "$CONFIRM" == false ]]; then
   echo "  Chassis:      $CHASSIS"
   echo "  Cartridge:    $CARTRIDGE"
   echo "  Host Number:  $HOST_NUMBER"
-  echo "  OS Version:   Ubuntu $OS_VERSION (24.04)"
+  echo "  OS Version:   Ubuntu $OS_VERSION (18.04)"
   echo "  Puppet Role:  $ROLE"
   echo ""
   echo "Command that would run:"
@@ -50,5 +50,5 @@ if [[ "$CONFIRM" == false ]]; then
   exit 0
 fi
 
-# export ROLE="gecko_t_linux_2404_talos"
+# export ROLE="gecko_t_linux_talos"
 ./oneshot_linux.sh "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION"

@@ -2,12 +2,14 @@
 """Python rewrite of ms_javaws_runner bash script.
 
 Features:
+- Runs in continuous mode by default: waits for JNLP file, launches, waits for exit, cleans up, repeats.
 - Checks for existing running Java Web Start process matching a pattern (default 'jweblauncher').
 - Launches `javaws` with a provided JNLP file.
 - Sleeps a configurable amount to allow process startup.
 - Displays a spinner while waiting for the process to exit.
 - Removes the JNLP file on completion.
 - Supports a dry-run mode for testing without side effects.
+- Use --once flag to run a single cycle instead of continuous mode.
 """
 from __future__ import annotations
 import argparse
@@ -25,8 +27,8 @@ def get_pyfiglet_output(text: str) -> None:
     """Run pyfiglet to display text in ASCII art."""
     # see where pyfilget is installed
 
-    # if `uv tool run pyfiglet a` is non-zero use it, else try pyfilget, else fallback to print
-    uv_pyfiglet_output = subprocess.run(["uv", "tool", "run", "pyfiglet", text], check=False, stdout=subprocess.PIPE, text=True)
+    # if `uv run pyfiglet a` is non-zero use it, else try pyfilget, else fallback to print
+    uv_pyfiglet_output = subprocess.run(["uv", "run", "pyfiglet", text], check=False, stdout=subprocess.PIPE, text=True)
     if uv_pyfiglet_output.returncode == 0:
         output = uv_pyfiglet_output.stdout.rstrip()
     elif shutil.which("pyfiglet"):
@@ -146,29 +148,30 @@ def remove_file(path: str, dry_run: bool) -> None:
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a JNLP via javaws and wait for its process to exit.")
+    parser = argparse.ArgumentParser(description="Run a JNLP via javaws and wait for its process to exit. Runs in continuous mode by default.")
     parser.add_argument("--jnlp", default="$HOME/Downloads/moonshot-jirc.jnlp", help="Path to JNLP file to launch (default: %(default)s)")
     parser.add_argument("--pattern", default="jweblauncher", help="Process name/pattern to monitor (default: %(default)s)")
     parser.add_argument("--sleep", type=int, default=35, help="Seconds to sleep allowing process to start (default: %(default)s)")
     parser.add_argument("--spinner-interval", type=float, default=0.1, help="Seconds per spinner tick (default: %(default)s)")
     parser.add_argument("--dry-run", action="store_true", help="Do not execute or remove anything; just print actions")
     parser.add_argument("--no-remove", action="store_true", help="Skip removing the JNLP file at end")
-    parser.add_argument("-C", "--continuous-mode", action="store_true", help="Run forever: poll for JNLP file, launch, wait, cleanup, repeat")
+    parser.add_argument("--once", action="store_true", help="Run once and exit instead of continuous polling mode")
     parser.add_argument("--poll-interval", type=int, default=5, help="Seconds to wait between JNLP checks in continuous mode (default: %(default)s)")
     return parser.parse_args(argv)
 
 
 def run_once(args: argparse.Namespace) -> int:
-    """Execute one cycle: check process, wait for file, launch, wait, cleanup."""
+    """Execute one cycle: check process, launch, wait, cleanup.
+    Assumes JNLP file already exists (caller should ensure this)."""
     # Pre-check existing process
     if process_running(args.pattern):
         print(f"Error: A process matching '{args.pattern}' is already running. Close it before running this script.")
         return 1
 
-    # Wait for JNLP file to be present
+    # Verify JNLP file exists (should already be ensured by caller)
     if not os.path.exists(args.jnlp):
-        print(f"JNLP file found: {args.jnlp}")
-        sys.exit(1)
+        print(f"Error: JNLP file not found: {args.jnlp}")
+        return 1
 
     # Launch javaws
     pid_or_code = launch_javaws(args.jnlp, args.dry_run)
@@ -199,14 +202,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     # expand $HOME in args.jnlp
     args.jnlp = os.path.expandvars(os.path.expanduser(args.jnlp))
 
-    if args.continuous_mode:
+    if args.once:
+        # Single run mode: wait for file, run once, exit
+        print(f"Waiting for JNLP file: {args.jnlp} (checking every {args.poll_interval}s)...")
+        while not os.path.exists(args.jnlp):
+            time.sleep(args.poll_interval)
+        print(f"JNLP file found: {args.jnlp}")
+        time.sleep(1)  # ensure downloaded file is complete
+        return run_once(args)
+    else:
+        # Continuous mode (default)
         print(f"[continuous-mode] Polling for JNLP every {args.poll_interval}s. Press Ctrl+C to stop.")
         cycle = 0
         try:
             while True:
                 cycle += 1
                 print(f"\n--- Cycle {cycle} ---")
-                
+
                 # Wait for JNLP to appear
                 print(f"Waiting for JNLP file: {args.jnlp} (checking every {args.poll_interval}s)...")
                 while not os.path.exists(args.jnlp):
@@ -214,19 +226,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
                 print(f"JNLP file found: {args.jnlp}")
                 time.sleep(1)  # ensure downloaded file is complete
-                
+
                 # Run one cycle
                 exit_code = run_once(args)
                 if exit_code != 0:
                     print(f"Cycle failed with code {exit_code}. Continuing...")
-                
+
                 print(f"Cycle {cycle} complete. Waiting {args.poll_interval}s before next check...")
                 time.sleep(args.poll_interval)
         except KeyboardInterrupt:
             print("\n[continuous-mode] Interrupted by user. Exiting.")
             return 0
-    else:
-        return run_once(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

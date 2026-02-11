@@ -7,5 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "paramiko>=4.0.0",
     "pendulum>=3.1.0",
+    "pyfiglet>=1.0.4",
     "requests>=2.32.5",
 ]
