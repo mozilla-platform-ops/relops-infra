@@ -17,8 +17,26 @@ shift
 # if we need to drop some secrets through the preseed, we could add them:
 boot_params=""
 
+MAX_RETRIES=3
+
 for node in $@; do
     echo $node
-    ./reimage_2404.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
+    attempt=0
+    while [ $attempt -lt $MAX_RETRIES ]; do
+        attempt=$((attempt + 1))
+        ./reimage_2404.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
         | tee ${0%%.sh}.$chassis.$node.$(date +"%H:%M:%S").log
+        exit_code=${PIPESTATUS[0]}
+        if [ $exit_code -eq 0 ]; then
+            break
+        fi
+        echo "Attempt $attempt/$MAX_RETRIES failed (exit code $exit_code)."
+        if [ $attempt -lt $MAX_RETRIES ]; then
+            echo "Retrying in 5 seconds..."
+            sleep 5
+        else
+            echo "All $MAX_RETRIES attempts failed for chassis $chassis node $node."
+            exit 1
+        fi
+    done
 done
