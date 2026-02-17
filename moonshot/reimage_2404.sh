@@ -24,13 +24,11 @@ for node in $@; do
     attempt=0
     while [ $attempt -lt $MAX_RETRIES ]; do
         attempt=$((attempt + 1))
-        ./reimage_2404.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
-        | tee ${0%%.sh}.$chassis.$node.$(date +"%H:%M:%S").log
-        exit_code=${PIPESTATUS[0]}
-        if [ $exit_code -eq 0 ]; then
+        if ./reimage_2404.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
+                | tee ${0%%.sh}.$chassis.$node.$(date +"%H:%M:%S").log; then
             break
         fi
-        echo "Attempt $attempt/$MAX_RETRIES failed (exit code $exit_code)."
+        echo "Attempt $attempt/$MAX_RETRIES failed."
         if [ $attempt -lt $MAX_RETRIES ]; then
             echo "Retrying in 5 seconds..."
             sleep 5
