@@ -31,7 +31,11 @@ set timeout 120
 spawn ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -oCiphers=+aes128-cbc -oStrictHostKeyChecking=no "$chassis"
 match_max 100000
 sleep 5
-expect "hpiLO->"
+expect {
+    "hpiLO->" {}
+    eof { send_user "\rConnection closed before hpiLO prompt\n"; exit 1 }
+    timeout { send_user "\rTimed out waiting for hpiLO prompt\n"; exit 1 }
+}
 send -- "set node bootonce pxe $node\r"
 expect "bootonce: PXE"
 expect "hpiLO->"
