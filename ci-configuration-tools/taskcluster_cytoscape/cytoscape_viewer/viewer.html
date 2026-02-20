@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>Taskcluster Cytoscape Viewer</title>
+  <script src="https://unpkg.com/cytoscape@3.25.0/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/cytoscape-tidytree@0.2.0/dist/cytoscape-tidytree.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #cy {
+      flex: 1 1 auto;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    #bottombar {
+      flex: 0 0 auto;
+      background: #f4f4f4;
+      border-top: 1px solid #ccc;
+      padding: 12px 18px 8px 18px;
+      box-sizing: border-box;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 18px 32px;
+      z-index: 10;
+    }
+
+    #bottombar>* {
+      margin-bottom: 4px;
+    }
+
+    .legend-group {
+      margin: 0 18px 0 0;
+    }
+
+    .small-layout-btn {
+      font-size: 0.8em;
+      padding: 3px 6px;
+      width: 48%;
+      min-width: unset;
+      margin: 2px 0;
+    }
+
+    #selected-info {
+      background: #e9e9e9;
+      border-radius: 4px;
+      padding: 8px;
+      margin: 0 18px 0 0;
+    }
+
+    label {
+      display: block;
+      padding-bottom: 2px;
+    }
+
+    .inline-pre {
+      font-family: "Courier New", Courier, monospace;
+      background: #f5f5f5;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-size: 0.98em;
+      white-space: pre;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="cy"></div>
+  <div id="bottombar">
+    <div>
+      <label>Layout:</label>
+      <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
+        <button class="small-layout-btn" onclick="applyLayout('initial')">Initial</button>
+        <button class="small-layout-btn" onclick="applyLayout('tidytree')">Tidytree</button>
+        <button class="small-layout-btn" onclick="applyLayout('cose')">Cose</button>
+        <button class="small-layout-btn" onclick="applyLayout('grid')">Grid</button>
+      </div>
+      <button onclick="fitGraph()">Fit View</button>
+      <div style="margin-top: 8px;">
+        <label>Debug:</label>
+        <button onclick="showMetadataWindow()">Metadata</button>
+      </div>
+    </div>
+
+    <div class="legend-group" style="min-width: 180px;">
+
+      <label>Node Type Filter:</label>
+      <label><input type="checkbox" class="typeFilter" value="taskNode" checked> taskNode</label>
+      <label><input type="checkbox" class="typeFilter" value="poolNode" checked> poolNode</label>
+      <label><input type="checkbox" class="typeFilter" value="hwPoolNode" checked> hwPoolNode</label>
+      <label><input type="checkbox" class="typeFilter" value="aliasNode" checked> aliasNode</label>
+      <label><input type="checkbox" class="typeFilter" value="imageNode" checked> imageNode</label>
+      <label><input type="checkbox" class="typeFilter" value="l3imageNode" checked> l3imageNode</label>
+      <div style="padding-top: 12px; display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px;">
+        <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(false)">Disable All</button>
+        <button class="small-layout-btn" style="width:48%;" type="button" onclick="toggleTypeFilters(true)">Enable All</button>
+      </div>
+    </div>
+
+    <div>
+      <label for="search">Search Node:</label>
+      <input type="text" id="search" placeholder="Enter label or ID">
+      <button onclick="searchNode()">Search</button>
+      <button onclick="clearHighlights()">Clear Highlights</button>
+      <div style="margin-top: 8px;">
+        <button onclick="showOnlyLinked()">Show Only Linked</button>
+        <button onclick="showAll()">Show All Nodes</button>
+      </div>
+    </div>
+    <div id="selected-info" style="flex: 1 0 auto; min-width: 200px; max-width: 1000px;">
+      <label>Selected Nodes:</label>
+      <div id="selected-count">0</div>
+      <ul id="selected-list" style="margin:0; padding-left: 18px; max-height: 120px; overflow-y: auto;"></ul>
+    </div>
+  </div>
+
+  <div id="metadata-window"
+    style="display:none; position:fixed; top:60px; right:40px; width:680px; background:#fff; border:1px solid #888; border-radius:8px; box-shadow:0 2px 12px #0002; z-index:1000; padding:16px;">
+    <div id="metadata-header" style="cursor:move; font-weight:bold; margin-bottom:8px;">
+      Graph Metadata
+      <button onclick="hideMetadataWindow()" style="float:right;">✕</button>
+    </div>
+    <ul id="metadata-list-window"
+      style="margin:0; padding-left:18px; font-size:0.95em; max-height:300px; overflow-y:auto;"></ul>
+  </div>
+
+  <script>
+    var cy;
+
+    let hierarchy = ['taskNode', ['poolNode', 'hwPoolNode'], 'aliasNode', ['imageNode', 'l3imageNode']];
+
+    // Flatten hierarchy and build class-to-level map
+    function getClassLevelMap(hierarchy) {
+      const map = {};
+      let level = 0;
+      for (const entry of hierarchy) {
+        if (Array.isArray(entry)) {
+          for (const cls of entry) {
+            map[cls] = level;
+          }
+        } else {
+          map[entry] = level;
+        }
+        level++;
+      }
+      return map;
+    }
+    const classLevelMap = getClassLevelMap(hierarchy);
+
+    function showOnlyLinked() {
+      const selected = cy.nodes(':selected');
+      if (!selected || selected.length === 0) return;
+
+      function getNodeClass(node) {
+        for (const cls in classLevelMap) {
+          if (node.hasClass(cls)) return cls;
+        }
+        return null;
+      }
+
+      function getNodeLevel(node) {
+        const cls = getNodeClass(node);
+        return classLevelMap[cls];
+      }
+
+      let visited = new Set();
+      let result = cy.collection();
+
+      // For each selected node, do a ±n level wave expansion
+      selected.forEach(startNode => {
+        const baseLevel = getNodeLevel(startNode);
+        if (baseLevel === undefined) return;
+        visited.add(startNode.id());
+        result = result.union(startNode);
+
+        let wave = 1;
+        let currentFrontier = [startNode];
+        let foundAny = true;
+        while (foundAny) {
+          foundAny = false;
+          let nextFrontier = [];
+          currentFrontier.forEach(node => {
+            node.connectedEdges().forEach(edge => {
+              let other = edge.source().id() === node.id() ? edge.target() : edge.source();
+              if (visited.has(other.id())) return;
+              const otherLevel = getNodeLevel(other);
+              if (otherLevel === baseLevel + wave || otherLevel === baseLevel - wave) {
+                result = result.union(other).union(edge);
+                nextFrontier.push(other);
+                visited.add(other.id());
+                foundAny = true;
+              }
+            });
+          });
+          currentFrontier = nextFrontier;
+          wave++;
+        }
+      });
+
+      cy.elements().forEach(el => {
+        el.style('display', result.contains(el) ? 'element' : 'none');
+      });
+    }
+
+    function showAll() {
+      if (!cy) return;
+      // Get active types from checkboxes
+      const activeTypes = Array.from(document.querySelectorAll('.typeFilter:checked'))
+        .map(cb => cb.value);
+
+      // Show/hide nodes based on type filter
+      cy.nodes().forEach(n => {
+        n.style('display', activeTypes.includes(n.data('type')) ? 'element' : 'none');
+      });
+
+      // Show/hide edges: only show if both source and target are visible
+      cy.edges().forEach(e => {
+        const srcVisible = e.source().style('display') !== 'none';
+        const tgtVisible = e.target().style('display') !== 'none';
+        e.style('display', (srcVisible && tgtVisible) ? 'element' : 'none');
+      });
+    }
+
+    var cy;
+
+    // Utility to update selected node info in sidebar
+    function updateSelectedInfo() {
+      if (!cy) return;
+      const selected = cy.nodes(':selected');
+      document.getElementById('selected-count').textContent = selected.length;
+      const list = document.getElementById('selected-list');
+      list.innerHTML = '';
+      selected.forEach(n => {
+        const label = n.data('label') || n.id();
+        const li = document.createElement('li');
+        li.textContent = label;
+        list.appendChild(li);
+      });
+    }
+
+    function toggleMetadata() {
+      const list = document.getElementById('metadata-list');
+      list.style.display = (list.style.display === 'none' || !list.style.display) ? 'block' : 'none';
+    }
+
+    function showMetadataWindow() {
+      document.getElementById('metadata-window').style.display = 'block';
+    }
+    function hideMetadataWindow() {
+      document.getElementById('metadata-window').style.display = 'none';
+    }
+
+    // Make the window draggable
+    (function () {
+      const win = document.getElementById('metadata-window');
+      const header = document.getElementById('metadata-header');
+      let offsetX = 0, offsetY = 0, isDown = false;
+
+      header.onmousedown = function (e) {
+        isDown = true;
+        offsetX = win.offsetLeft - e.clientX;
+        offsetY = win.offsetTop - e.clientY;
+        document.onmousemove = function (e) {
+          if (!isDown) return;
+          win.style.left = (e.clientX + offsetX) + 'px';
+          win.style.top = (e.clientY + offsetY) + 'px';
+        };
+        document.onmouseup = function () {
+          isDown = false;
+          document.onmousemove = null;
+          document.onmouseup = null;
+        };
+      };
+    })();
+
+    fetch('worker_pools_images.cyto.json')
+      .then(response => response.json())
+      .then(raw => {
+        const elements = raw.elements || raw;
+
+        // Estimate width for each node based on label length
+        elements.forEach(el => {
+          if (el.data && (el.data.label || el.data.id)) {
+            // Estimate: 8px per character + 20px padding
+            const label = el.data.label || el.data.id;
+            el.data.width = Math.max(40, label.length * 8 + 20); // min width 40
+            el.data.height = 36; // or adjust as needed
+          }
+        });
+
+        // Assign Y-row positions by class using preset layout
+        const classGroups = {};
+        let xSpacing = 150;
+        let ySpacing = 100;
+
+        elements.forEach((el) => {
+          if (el.data && el.data.id && el.classes) {
+            const cls = el.classes || 'unknown';
+            if (!classGroups[cls]) classGroups[cls] = [];
+            classGroups[cls].push(el);
+          }
+        });
+
+        let y = 0;
+        for (const level of hierarchy) {
+          let classesAtLevel = Array.isArray(level) ? level : [level];
+          // Find the largest group size for this level to help with centering if needed
+          let maxGroupSize = Math.max(...classesAtLevel.map(cls => (classGroups[cls] || []).length));
+          let xOffset = 0;
+          for (const cls of classesAtLevel) {
+            const group = classGroups[cls] || [];
+            group.forEach((el, i) => {
+              el.position = { x: xOffset + i * xSpacing, y };
+              el.data = el.data || {};
+              el.data.originalPosition = { x: el.position.x, y: el.position.y };
+            });
+            xOffset += group.length * xSpacing;
+          }
+          y += ySpacing;
+        }
+
+        // Create Cytoscape with preset positions
+        cy = cytoscape({
+          container: document.getElementById('cy'),
+          elements: elements,
+          style: [
+            {
+              selector: 'node',
+              style: {
+                'label': function (ele) { return ele.data('label') || ele.id(); },
+                'text-valign': 'center',
+                'text-halign': 'center',
+                'shape': 'roundrectangle',
+                'width': 'data(width)',
+                'height': 'data(height)',
+                'border-width': 1,
+                'border-color': '#333',
+                'color': '#000',
+                'background-color': '#ccc',
+                'padding': '2px'
+              }
+            },
+            { selector: '.taskNode', style: { 'background-color': '#dda0dd' } },
+            { selector: '.poolNode', style: { 'background-color': '#b6fcd5' } },
+            { selector: '.hwPoolNode', style: { 'background-color': '#91c9aa' } },
+            { selector: '.aliasNode', style: { 'background-color': '#d0e7ff' } },
+            { selector: '.imageNode', style: { 'background-color': '#fff9b1' } },
+            { selector: '.l3imageNode', style: { 'background-color': '#ffd6e0' } },
+            {
+              selector: 'edge',
+              style: {
+                'width': 1,
+                'line-color': '#ccc',
+                'target-arrow-color': '#ccc',
+                'target-arrow-shape': 'triangle'
+              }
+            },
+            {
+              selector: '.highlighted',
+              style: {
+                'background-color': '#f00',
+                'line-color': '#f00',
+                'target-arrow-color': '#f00',
+                'transition-property': 'background-color, line-color, target-arrow-color',
+                'transition-duration': '0.5s'
+              }
+            }
+          ],
+          layout: {
+            name: 'preset',
+            fit: true,
+            padding: 50
+          }
+        });
+
+        cy.on('tap', 'node', function (evt) {
+          var node = evt.target;
+          var neighborhood = node.closedNeighborhood();
+          cy.elements().removeClass('highlighted');
+          neighborhood.addClass('highlighted');
+        });
+
+        // Also update sidebar on selection changes (e.g. via ctrl+click)
+        cy.on('select unselect', 'node', function () {
+          updateSelectedInfo();
+        });
+
+        // Filter nodes by type
+        document.querySelectorAll('.typeFilter').forEach(checkbox => {
+          checkbox.addEventListener('change', () => {
+            const activeTypes = Array.from(document.querySelectorAll('.typeFilter:checked'))
+              .map(cb => cb.value);
+            cy.nodes().forEach(n => {
+              n.style('display', activeTypes.includes(n.data('type')) ? 'element' : 'none');
+            });
+          });
+        });
+
+        // Surface metadata in the floating window
+        if (raw.metadata) {
+          const metaList = document.getElementById('metadata-list-window');
+          metaList.innerHTML = '';
+          for (const [key, value] of Object.entries(raw.metadata)) {
+            const li = document.createElement('li');
+            if (typeof value === 'object' && value !== null) {
+              const pre = document.createElement('pre');
+              pre.style.margin = '0';
+              pre.style.whiteSpace = 'pre-wrap';
+              pre.className = 'inline-pre';
+              pre.textContent = JSON.stringify(value, null, 2);
+              li.innerHTML = '<strong>' + key + ':</strong> ';
+              li.appendChild(pre);
+            } else {
+              li.innerHTML = `<strong>${key}:</strong> <span class="inline-pre">${value}</span>`;
+            }
+            metaList.appendChild(li);
+          }
+        }
+      });
+
+    function restoreInitialPositions() {
+      cy.nodes().forEach(node => {
+        const orig = node.data('originalPosition');
+        if (orig) {
+          node.position(orig);
+        }
+      });
+    }
+
+    function applyLayout(layoutName) {
+      if (layoutName === 'initial') {
+        restoreInitialPositions();
+        cy.layout({ name: 'preset', fit: true, padding: 50 }).run();
+      }
+      else if (layoutName === 'tidytree') {
+        options = {
+          name: 'tidytree',
+          fit: true,
+          padding: 50,
+          spacingFactor: 1.2,
+          animate: false,
+        };
+        cy.layout(options).run();
+      }
+      else if (layoutName === 'cose') {
+        cy.layout({ name: 'cose', fit: true, padding: 50 }).run();
+      }
+      else if (layoutName === 'grid') {
+        cy.layout({ name: 'grid', fit: true, padding: 50 }).run();
+      }
+      else {
+        cy.layout({ name: layoutName, fit: true, padding: 50 }).run();
+      }
+    }
+
+    function searchNode() {
+      const term = document.getElementById('search').value.toLowerCase();
+      if (!term || !cy) return;
+      cy.elements().removeClass('highlighted');
+      const match = cy.nodes().filter(node =>
+        node.data('label').toLowerCase().includes(term) ||
+        node.id().toLowerCase().includes(term)
+      );
+      if (match.length > 0) {
+        match.select();
+        match.addClass('highlighted');
+        cy.center(match);
+      }
+    }
+
+    // Enable pressing Enter in the search field to trigger search
+    document.getElementById('search').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        searchNode();
+      }
+    });
+
+    function fitGraph() {
+      if (cy) cy.fit();
+    }
+
+    function clearHighlights() {
+      if (cy) {
+        cy.elements().removeClass('highlighted');
+        cy.elements().unselect();
+        updateSelectedInfo();
+      }
+    }
+
+    // Add this function to handle enable/disable all
+    function toggleTypeFilters(enable) {
+      document.querySelectorAll('.typeFilter').forEach(cb => {
+        cb.checked = enable;
+      });
+      // Trigger change event to update graph
+      const event = new Event('change');
+      document.querySelectorAll('.typeFilter').forEach(cb => {
+        cb.dispatchEvent(event);
+      });
+    }
+  </script>
+</body>
+
+</html>
