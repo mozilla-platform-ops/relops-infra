@@ -94,11 +94,11 @@ expect "netboot.xyz"
 expect "booting default..."
 sleep 5
 # press down key 3 times and then press enter
-send -- "\[B"
+exp_send -- "\033\[B"
 sleep 1
-send -- "\[B"
+exp_send -- "\033\[B"
 sleep 1
-send -- "\[B"
+exp_send -- "\033\[B"
 sleep 1
 send -- "\r"
 sleep 10
