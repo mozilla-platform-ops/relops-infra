@@ -221,13 +221,13 @@ else
   ) 200>"$LOCK_FILE"
 
   # sleep to allow the host to finish installation
-  # 18.04 takes longer, so sleep 18 minutes; otherwise 10 minutes
+  # 18.04 takes longer, so sleep 18 minutes; otherwise 14 minutes
   if [[ "$OS_VERSION" == "1804" ]]; then
     echo "Sleeping 18 minutes to allow host to finish OS installation (18.04 takes longer)..."
     countdown 1080
   else
-    echo "Sleeping 10 minutes to allow host to finish OS installation..."
-    countdown 600
+    echo "Sleeping 14 minutes to allow host to finish OS installation..."
+    countdown 840
   fi
   echo "Sleep complete."
 fi
