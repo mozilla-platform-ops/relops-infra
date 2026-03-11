@@ -16,11 +16,13 @@ import argparse
 import logging
 import os
 import shutil
+import socket
 import sys
 import time
 import subprocess
 import xml.etree.ElementTree as ET
 from typing import Sequence
+from urllib.parse import urlparse
 
 
 def get_pyfiglet_output(text: str) -> None:
@@ -77,6 +79,66 @@ def parse_jnlp_port(jnlp_path: str) -> int | None:
     except Exception as e:
         logging.debug(f"Failed to parse JNLP port: {e}")
     return None
+
+
+def update_exception_sites(jnlp_path: str, dry_run: bool) -> None:
+    """Add host and IP entries from JNLP codebase to Java exception.sites."""
+    try:
+        tree = ET.parse(jnlp_path)
+        root = tree.getroot()
+        codebase = root.get('codebase')
+        if not codebase:
+            logging.debug("No codebase in JNLP, skipping exception.sites update")
+            return
+
+        parsed = urlparse(codebase)
+        hostname = parsed.hostname
+        port = parsed.port
+        scheme = parsed.scheme or 'https'
+
+        if not hostname:
+            return
+
+        host_entry = f"{scheme}://{hostname}"
+        if port:
+            host_entry += f":{port}"
+
+        try:
+            ip = socket.gethostbyname(hostname)
+            ip_entry = f"{scheme}://{ip}"
+            if port:
+                ip_entry += f":{port}"
+        except socket.gaierror as e:
+            logging.warning(f"Could not resolve {hostname}: {e}")
+            ip_entry = None
+
+        exception_sites_path = os.path.expanduser(
+            "~/Library/Application Support/Oracle/Java/Deployment/security/exception.sites"
+        )
+
+        existing: set[str] = set()
+        if os.path.exists(exception_sites_path):
+            with open(exception_sites_path) as f:
+                existing = {line.strip() for line in f if line.strip()}
+
+        new_entries = [e for e in [host_entry, ip_entry] if e and e not in existing]
+
+        if not new_entries:
+            print("[info] exception.sites already up to date.")
+            return
+
+        if dry_run:
+            for entry in new_entries:
+                print(f"[dry-run] Would add to exception.sites: {entry}")
+            return
+
+        os.makedirs(os.path.dirname(exception_sites_path), exist_ok=True)
+        with open(exception_sites_path, 'a') as f:
+            for entry in new_entries:
+                f.write(entry + '\n')
+                print(f"[info] Added to exception.sites: {entry}")
+    except Exception as e:
+        logging.warning(f"Failed to update exception.sites: {e}")
 
 
 def port_to_cartridge(port: int) -> int:
@@ -172,6 +234,9 @@ def run_once(args: argparse.Namespace) -> int:
     if not os.path.exists(args.jnlp):
         print(f"Error: JNLP file not found: {args.jnlp}")
         return 1
+
+    # Update Java exception.sites with host and IP from JNLP
+    update_exception_sites(args.jnlp, args.dry_run)
 
     # Launch javaws
     pid_or_code = launch_javaws(args.jnlp, args.dry_run)
