@@ -13,6 +13,8 @@ import requests
 #     -H moon-chassis-7.inband.releng.mdc1.mozilla.com \
 #     -n c5n1
 
+# TODO: pull this all out into a library (very similar to reset_moonshot_and_pxe_boot.py)
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Set PXE boot and reboot a Moonshot node via iLO Redfish API"
