@@ -412,11 +412,6 @@ def parse_args() -> argparse.Namespace:
         help="Seconds between iterations (default: %(default)s)",
     )
     parser.add_argument(
-        "--ilo-user",
-        default=None,
-        help="ILO username, overrides value from ~/.moonshot.toml (default: Administrator)",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Check and report without rebooting any workers",
@@ -429,8 +424,7 @@ def main():
     hostname_prefixes = args.prefixes.split()
     repeat_time = args.repeat_time
 
-    ilo_user_from_config, password = load_ilo_credentials()
-    ilo_user = args.ilo_user or ilo_user_from_config
+    ilo_user, password = load_ilo_credentials()
 
     if args.dry_run:
         print("[DRY RUN] No reboots will be performed.")
