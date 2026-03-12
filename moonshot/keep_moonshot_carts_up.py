@@ -18,10 +18,11 @@ import requests
 RUN_TIME_MAX_MINUTES = 120
 IDLE_TIME_MAX_MINUTES = 30
 PROVISIONER = "releng-hardware"
-DEFAULT_HOSTNAME_PREFIXES = ["t-linux64-ms-", "t-w1064-ms-"]
+DEFAULT_HOSTNAME_PREFIXES = ["t-linux64-ms-"]
 REPEAT_TIME = 1800
 ROOT_URL = "https://firefox-ci-tc.services.mozilla.com/api/queue"
 SKIP_HOSTS_FILE = "skip_hosts.txt"
+WORK_DIR = Path("/tmp/keep_moonshot_carts_up")
 
 print_lock = Lock()
 
@@ -87,8 +88,8 @@ def ping_host(fqdn: str) -> bool:
 
 
 def find_no_ping(hostnames: dict, skip_hosts: set[str]) -> list[tuple[str, str]]:
-    log_file = f"{SKIP_HOSTS_FILE}.log"
-    old_log_file = f"{SKIP_HOSTS_FILE}.log.old"
+    log_file = WORK_DIR / "skip_hosts.log"
+    old_log_file = WORK_DIR / "skip_hosts.log.old"
     try:
         os.rename(log_file, old_log_file)
     except OSError:
@@ -179,7 +180,7 @@ def check_queues(provisioner: str, worker_types: list[str]) -> dict[str, int]:
 def find_task_id_for_worker(
     hostname: str, dc_name: str, worker_types: list[str]
 ) -> tuple[str | None, str | None]:
-    workers_file = Path("workers") / hostname
+    workers_file = WORK_DIR / "workers" / hostname
     if workers_file.exists():
         parts = workers_file.read_text().strip().split()
         if len(parts) >= 2:
@@ -192,7 +193,9 @@ def find_task_id_for_worker(
                 if recent:
                     return recent[-1].get("taskId"), worker_type
 
-    try_first = ["gecko-t-linux-talos", "gecko-t-win10-64-hw"]
+    try_first = ["gecko-t-linux-talos", "gecko_t_linux_2404_talos",
+                 #, "gecko-t-win10-64-hw"  # no more windows
+                 ]
     ordered = try_first + [wt for wt in worker_types if wt not in try_first]
 
     for worker_type in ordered:
@@ -353,7 +356,7 @@ def reboot_workers(missing: list[str], password: str, ilo_user: str):
     procs = []
     for chassis_fqdn, nodes in chassis_map.items():
         nodes_str = ",".join(nodes)
-        log_path = f"reboot.{chassis_fqdn}.{datetime.now().strftime('%H')}.log"
+        log_path = WORK_DIR / f"reboot.{chassis_fqdn}.{datetime.now().strftime('%H')}.log"
         print(f": {chassis_fqdn} {nodes_str}")
         log_f = open(log_path, "w")
         proc = subprocess.Popen(
@@ -432,6 +435,9 @@ def main():
     if args.dry_run:
         print("[DRY RUN] No reboots will be performed.")
 
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    (WORK_DIR / "workers").mkdir(exist_ok=True)
+
     print("Discovering hosts...")
     carts, hosts, hostnames = find_hosts(hostname_prefixes)
 
@@ -441,7 +447,7 @@ def main():
 
         skip_hosts = load_skip_hosts()
         alllist = current_hostlist(hostnames, skip_hosts)
-        noping_log = "nopinglist.log"
+        noping_log = WORK_DIR / "nopinglist.log"
 
         nopinglist = find_no_ping(hostnames, skip_hosts)
         with open(noping_log, "w") as f:
@@ -454,10 +460,10 @@ def main():
         worker_types = get_worker_types(PROVISIONER)
         queued_tasks = check_queues(PROVISIONER, worker_types)
 
-        for d in ["reboot_workers", "not_reboot_workers"]:
-            os.makedirs(d, exist_ok=True)
-            for fname in os.listdir(d):
-                os.remove(os.path.join(d, fname))
+        for d in [WORK_DIR / "reboot_workers", WORK_DIR / "not_reboot_workers"]:
+            d.mkdir(parents=True, exist_ok=True)
+            for fname in d.iterdir():
+                fname.unlink()
 
         noping_set = set(noping_ids)
         skip_set = set(skip_hosts)
@@ -473,20 +479,20 @@ def main():
             if not ok:
                 if slot not in skip_set:
                     if slot in noping_set:
-                        Path(f"reboot_workers/{slot}").touch()
+                        (WORK_DIR / "reboot_workers" / slot).touch()
                     else:
                         with print_lock:
                             print(f"Ping was okay from {slot} {fqdn}")
                 else:
-                    Path(f"not_reboot_workers/{slot}").touch()
+                    (WORK_DIR / "not_reboot_workers" / slot).touch()
 
         with ThreadPoolExecutor(max_workers=20) as executor:
             list(executor.map(check_host, alllist))
 
         print(f"did not find [{len(not_found_hosts)}]: {' '.join(not_found_hosts)}")
 
-        missing = os.listdir("reboot_workers")
-        not_missing = os.listdir("not_reboot_workers")
+        missing = [p.name for p in (WORK_DIR / "reboot_workers").iterdir()]
+        not_missing = [p.name for p in (WORK_DIR / "not_reboot_workers").iterdir()]
 
         print(f"now will reboot [{len(missing)}]: {' '.join(missing)}")
 
