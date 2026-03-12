@@ -30,7 +30,8 @@ print_lock = Lock()
 # TODO:
 #   - definitely need to have list of bad carts so we don't continually powercycle them.
 #     - most of the hosts/carts returned currently are known bad 
-
+#  - use taskcluster library
+#  - use reset_moonshot.py vs exp script
 
 def short_host(fqdn: str) -> str:
     return fqdn.split(".")[0]

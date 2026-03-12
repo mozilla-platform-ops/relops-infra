@@ -13,6 +13,7 @@ from moonshot_lib import expand_host, normalize_node, make_headers, load_credent
 #     -H moon-chassis-7.inband.releng.mdc1.mozilla.com \
 #     -n c5n1
 
+# TODO: be able to specify multiple nodes to cold boot
 
 def parse_args():
     parser = argparse.ArgumentParser(
