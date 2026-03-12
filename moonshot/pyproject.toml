@@ -10,3 +10,8 @@ dependencies = [
     "pyfiglet>=1.0.4",
     "requests>=2.32.5",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

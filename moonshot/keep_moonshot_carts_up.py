@@ -27,6 +27,26 @@ WORK_DIR = Path("/tmp/keep_moonshot_carts_up")
 print_lock = Lock()
 
 
+def short_host(fqdn: str) -> str:
+    return fqdn.split(".")[0]
+
+
+def format_age(timestamp_str: str | None) -> str:
+    if not timestamp_str:
+        return "?"
+    try:
+        ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - ts
+        total_minutes = int(delta.total_seconds() / 60)
+        if total_minutes < 60:
+            return f"{total_minutes}m ago"
+        hours = total_minutes // 60
+        mins = total_minutes % 60
+        return f"{hours}h{mins:02d}m ago"
+    except (ValueError, TypeError):
+        return timestamp_str or "?"
+
+
 def get_hostname(slot: int, prefixes: list[str]) -> str | None:
     slot_str = f"{slot:03d}"
     for prefix in prefixes:
@@ -168,12 +188,22 @@ def get_worker_types(provisioner: str) -> list[str]:
 
 def check_queues(provisioner: str, worker_types: list[str]) -> dict[str, int]:
     queued: dict[str, int] = {}
+    non_zero: dict[str, int] = {}
     for wt in worker_types:
         data = tc_get(f"/v1/pending/{provisioner}/{wt}")
         count = data.get("pendingTasks", 0) if data else 0
         key = f"{provisioner}_{wt}"
         queued[key] = count
-        print(f"{key} {count}")
+        if count > 0:
+            non_zero[wt] = count
+
+    if non_zero:
+        print("queued tasks:")
+        for wt, count in sorted(non_zero.items()):
+            print(f"  {wt}: {count}")
+    else:
+        print("queued tasks: none")
+
     return queued
 
 
@@ -193,9 +223,7 @@ def find_task_id_for_worker(
                 if recent:
                     return recent[-1].get("taskId"), worker_type
 
-    try_first = ["gecko-t-linux-talos", "gecko_t_linux_2404_talos",
-                 #, "gecko-t-win10-64-hw"  # no more windows
-                 ]
+    try_first = ["gecko-t-linux-talos", "gecko_t_linux_2404_talos"]
     ordered = try_first + [wt for wt in worker_types if wt not in try_first]
 
     for worker_type in ordered:
@@ -222,41 +250,31 @@ def check_last_task(
 
     ok=True means no action needed.
     not_found=True means worker was not found in Taskcluster.
+    Prints a line only when there is something notable to report.
     """
-    with print_lock:
-        print(fqdn, end="", flush=True)
-
-    hostname = fqdn.split(".")[0]
+    hostname = short_host(fqdn)
     dc_parts = [p for p in fqdn.split(".") if p.startswith("mdc")]
     dc_name = dc_parts[0] if dc_parts else "mdc1"
 
     task_id, worker_type = find_task_id_for_worker(hostname, dc_name, worker_types)
     if not task_id:
         with print_lock:
-            print(f" not found {hostname} ")
+            print(f"  {hostname}: not found")
         return False, True
-
-    with print_lock:
-        print(f' "{task_id}":', end="", flush=True)
 
     data = tc_get(f"/v1/task/{task_id}/status")
     queue_key = f"{PROVISIONER}_{worker_type}"
 
     if not data:
-        with print_lock:
-            print()
         return True, False
 
     runs = data.get("status", {}).get("runs", [])
     if not runs:
-        with print_lock:
-            pending = queued_tasks.get(queue_key, 0)
-            print(f" no tasks", end="")
-            if pending > 0:
-                print(f" [queue {worker_type}]: {pending}]")
-                print(" N")
-                return False, False
-            print()
+        pending = queued_tasks.get(queue_key, 0)
+        if pending > 0:
+            with print_lock:
+                print(f"  {hostname}: no tasks, queue={pending} [{worker_type}] N")
+            return False, False
         return True, False
 
     last_run = runs[-1]
@@ -264,37 +282,40 @@ def check_last_task(
     started = last_run.get("started")
     ended = last_run.get("ended")
 
-    with print_lock:
-        print(f" {state} {started}->{ended}", end="", flush=True)
-
     if ended:
         if is_older_than(ended, IDLE_TIME_MAX_MINUTES):
             task_data = tc_get(f"/v1/task/{task_id}")
             task_name = task_data.get("metadata", {}).get("name", "") if task_data else ""
             pending = queued_tasks.get(queue_key, 0)
-            with print_lock:
-                print(f" [end>{IDLE_TIME_MAX_MINUTES}min]", end="")
-                print(f' "{task_name}"', end="")
-                print(f" [queue {worker_type}]: {pending}]", end="")
-                if pending > 0:
-                    print(" Q")
-                    return False, False
-                if state == "exception":
-                    print(" X")
-                    return False, False
-                print()
-            return True, False
+            line = f"  {hostname}: {state}, idle {format_age(ended)}"
+            if task_name:
+                line += f', "{task_name}"'
+            line += f", queue={pending} [{worker_type}]"
+            if pending > 0:
+                line += " Q"
+                with print_lock:
+                    print(line)
+                return False, False
+            if state == "exception":
+                line += " X"
+                with print_lock:
+                    print(line)
+                return False, False
+        # ended recently or no queue pressure — healthy
+        return True, False
+
     elif started and is_older_than(started, RUN_TIME_MAX_MINUTES):
         task_data = tc_get(f"/v1/task/{task_id}")
         task_name = task_data.get("metadata", {}).get("name", "") if task_data else ""
+        line = f"  {hostname}: {state}, running {format_age(started)}"
+        if task_name:
+            line += f', "{task_name}"'
+        line += " S"
         with print_lock:
-            print(f" [start>{RUN_TIME_MAX_MINUTES}min]", end="")
-            print(f' "{task_name}"', end="")
-            print(" S")
+            print(line)
         return False, False
 
-    with print_lock:
-        print()
+    # Running or recently completed — healthy, suppress
     return True, False
 
 
@@ -327,8 +348,6 @@ def hostname_to_cart(ids: list[str]) -> dict[str, list[str]]:
     return chassis_map
 
 
-
-
 def check_chassis_power(chassis: str, password: str, ilo_user: str) -> list[str]:
     result = subprocess.run(
         ["./check_power.sh", f"{ilo_user}@{chassis}"],
@@ -357,7 +376,7 @@ def reboot_workers(missing: list[str], password: str, ilo_user: str):
     for chassis_fqdn, nodes in chassis_map.items():
         nodes_str = ",".join(nodes)
         log_path = WORK_DIR / f"reboot.{chassis_fqdn}.{datetime.now().strftime('%H')}.log"
-        print(f": {chassis_fqdn} {nodes_str}")
+        print(f"  {chassis_fqdn}: nodes {nodes_str}")
         log_f = open(log_path, "w")
         proc = subprocess.Popen(
             [
@@ -434,23 +453,26 @@ def main():
 
     print("Discovering hosts...")
     carts, hosts, hostnames = find_hosts(hostname_prefixes)
+    print(f"Found {len(hosts)} hosts.")
 
     while True:
-        print(datetime.now())
+        print(f"\n--- {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
         next_time = time.time() + repeat_time
 
         skip_hosts = load_skip_hosts()
         alllist = current_hostlist(hostnames, skip_hosts)
         noping_log = WORK_DIR / "nopinglist.log"
 
+        print("Pinging hosts...")
         nopinglist = find_no_ping(hostnames, skip_hosts)
         with open(noping_log, "w") as f:
             for slot, host in nopinglist:
                 f.write(f"{slot} {host}\n")
 
-        noping_ids = [slot for slot, _ in nopinglist]
-        print(f"no ping response [{len(nopinglist)}]: {' '.join(f'{s} {h}' for s, h in nopinglist)}")
+        noping_ids = sorted([slot for slot, _ in nopinglist])
+        print(f"no ping [{len(noping_ids)}]: {', '.join(noping_ids)}")
 
+        print("Checking queues...")
         worker_types = get_worker_types(PROVISIONER)
         queued_tasks = check_queues(PROVISIONER, worker_types)
 
@@ -462,44 +484,54 @@ def main():
         noping_set = set(noping_ids)
         skip_set = set(skip_hosts)
         not_found_hosts: list[str] = []
+        healthy_count = 0
         results_lock = Lock()
 
+        print("Checking task status...")
+
         def check_host(slot_host: tuple[str, str]):
+            nonlocal healthy_count
             slot, fqdn = slot_host
             ok, not_found = check_last_task(fqdn, worker_types, queued_tasks)
             if not_found:
                 with results_lock:
-                    not_found_hosts.append(fqdn.split(".")[0])
+                    not_found_hosts.append(short_host(fqdn))
+            if ok:
+                with results_lock:
+                    healthy_count += 1
             if not ok:
                 if slot not in skip_set:
                     if slot in noping_set:
                         (WORK_DIR / "reboot_workers" / slot).touch()
                     else:
                         with print_lock:
-                            print(f"Ping was okay from {slot} {fqdn}")
+                            print(f"  ping ok but task check failed: {slot} {short_host(fqdn)}")
                 else:
                     (WORK_DIR / "not_reboot_workers" / slot).touch()
 
         with ThreadPoolExecutor(max_workers=20) as executor:
             list(executor.map(check_host, alllist))
 
-        print(f"did not find [{len(not_found_hosts)}]: {' '.join(not_found_hosts)}")
+        print(f"  {healthy_count} hosts healthy")
 
-        missing = [p.name for p in (WORK_DIR / "reboot_workers").iterdir()]
-        not_missing = [p.name for p in (WORK_DIR / "not_reboot_workers").iterdir()]
+        not_found_sorted = sorted(not_found_hosts)
+        print(f"not found in TC [{len(not_found_sorted)}]: {', '.join(not_found_sorted)}")
 
-        print(f"now will reboot [{len(missing)}]: {' '.join(missing)}")
+        missing = sorted([p.name for p in (WORK_DIR / "reboot_workers").iterdir()])
+        not_missing = sorted([p.name for p in (WORK_DIR / "not_reboot_workers").iterdir()])
 
-        print(f"will not reboot [{len(not_missing)}]: {' '.join(not_missing)}")
+        print(f"will reboot [{len(missing)}]: {', '.join(missing)}")
+        if not_missing:
+            print(f"will not reboot (skipped) [{len(not_missing)}]: {', '.join(not_missing)}")
 
         if missing:
             if args.dry_run:
-                print("[DRY RUN] Would reboot:", " ".join(missing))
+                print("[DRY RUN] Skipping reboot.")
             else:
-                print("NOW rebooting ...")
+                print("Rebooting...")
                 reboot_workers(missing, password, ilo_user)
 
-        print("now check if down...")
+        print("Checking chassis power...")
         for i in range(1, 15):
             chassis = None
             for dc in [1, 2]:
@@ -511,18 +543,23 @@ def main():
                 except socket.gaierror:
                     pass
             if chassis:
-                check_chassis_power(chassis, password, ilo_user)
+                off_carts = check_chassis_power(chassis, password, ilo_user)
+                if off_carts:
+                    print(f"  {chassis}: powered off: {', '.join(sorted(off_carts))}")
             break  # original script only checks first chassis found
 
+        print("Second ping pass...")
         nopinglist2 = find_no_ping(hostnames, skip_hosts)
-        print(f"no ping response: {' '.join(f'{s} {h}' for s, h in nopinglist2)}")
+        noping_ids2 = sorted([slot for slot, _ in nopinglist2])
+        print(f"no ping [{len(noping_ids2)}]: {', '.join(noping_ids2)}")
 
-        print(datetime.now())
+        print(f"--- done {datetime.now().strftime('%H:%M:%S')} ---")
 
-        while time.time() < next_time:
-            print(".", end="", flush=True)
-            time.sleep(30)
-        print()
+        remaining = next_time - time.time()
+        if remaining > 0:
+            print(f"Sleeping {int(remaining)}s until next check...")
+            while time.time() < next_time:
+                time.sleep(30)
 
 
 if __name__ == "__main__":
