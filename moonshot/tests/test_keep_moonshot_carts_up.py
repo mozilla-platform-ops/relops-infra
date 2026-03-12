@@ -134,6 +134,19 @@ class TestHostnameToCart:
         assert "moon-chassis-5." in chassis
         assert result[chassis] == ["34"]
 
+    def test_fqdn_ignores_dc_suffix_number(self):
+        # "t-linux64-ms-018.test.releng.mdc1.mozilla.com" — the '1' in 'mdc1'
+        # must not be mistaken for the slot number
+        result = hostname_to_cart(["t-linux64-ms-018.test.releng.mdc1.mozilla.com"])
+        chassis = list(result.keys())[0]
+        assert "moon-chassis-1." in chassis
+        assert result[chassis] == ["18"]
+
+    def test_fqdn_and_short_name_agree(self):
+        short = hostname_to_cart(["t-linux64-ms-018"])
+        fqdn  = hostname_to_cart(["t-linux64-ms-018.test.releng.mdc1.mozilla.com"])
+        assert short == fqdn
+
     def test_return_type(self):
         result = hostname_to_cart(["001"])
         assert isinstance(result, dict)
