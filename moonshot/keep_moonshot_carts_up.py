@@ -15,7 +15,7 @@ from threading import Lock
 
 import requests
 
-from moonshot_lib import hostname_to_cart
+from moonshot_lib import hostname_to_cart, ping_host
 
 RUN_TIME_MAX_MINUTES = 120
 IDLE_TIME_MAX_MINUTES = 30
@@ -105,14 +105,6 @@ def load_skip_hosts() -> set[str]:
         pass
     return skip
 
-
-def ping_host(fqdn: str) -> bool:
-    result = subprocess.run(
-        ["ping", "-q", "-c1", "-W5", fqdn],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return result.returncode == 0
 
 
 def find_no_ping(hostnames: dict, skip_hosts: set[str]) -> list[tuple[str, str]]:
