@@ -83,7 +83,8 @@ def hostname_to_cart(ids: list[str]) -> dict[str, list[str]]:
     """
     chassis_map: dict[str, list[str]] = {}
     for id_str in ids:
-        matches = re.findall(r'\d+', id_str)
+        host_part = id_str.split(".")[0]
+        matches = re.findall(r'\d+', host_part)
         if not matches:
             continue
         i = int(matches[-1].lstrip("0") or "0")
