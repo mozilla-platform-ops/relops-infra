@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import re
 import sys
 import requests
 
@@ -69,6 +70,39 @@ def send_reboot(system_url, headers, verbose=False):
     if not response.ok:
         print(f"[ERROR] Failed to send reboot: {response.status_code} {response.text}")
         sys.exit(1)
+
+
+def hostname_to_cart(ids: list[str]) -> dict[str, list[str]]:
+    """Translate worker slot IDs or hostnames to chassis FQDN -> node number list.
+
+    Accepts strings containing a numeric slot ID (e.g. 't-linux64-ms-001', '001', '1').
+    Returns a dict mapping chassis FQDN to a list of node numbers (as strings).
+    """
+    chassis_map: dict[str, list[str]] = {}
+    for id_str in ids:
+        matches = re.findall(r'\d+', id_str)
+        if not matches:
+            continue
+        i = int(matches[-1].lstrip("0") or "0")
+
+        if i > 630:
+            c = ((i - 1) - 30) // 45 + 2
+            n = ((i - 1) - 630) % 45 + 1
+        elif i > 615:
+            c = ((i - 1) - 15) // 45 + 1 - 13
+            n = ((i - 1) - 615) % 45 + 1 + 30
+        elif i > 300:
+            c = ((i - 1) + 15) // 45 + 1
+            n = ((i - 1) + 15) % 45 + 1
+        else:
+            c = (i - 1) // 45 + 1
+            n = (i - 1) % 45 + 1
+
+        dc = "mdc2" if c > 7 else "mdc1"
+        chassis_fqdn = f"moon-chassis-{c}.inband.releng.{dc}.mozilla.com"
+        chassis_map.setdefault(chassis_fqdn, []).append(str(n))
+
+    return chassis_map
 
 
 def print_success(message):

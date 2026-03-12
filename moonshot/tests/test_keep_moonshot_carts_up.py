@@ -119,10 +119,20 @@ class TestHostnameToCart:
         result = hostname_to_cart(["1"])
         assert len(result) == 1
 
-    def test_prefixed_string_extracts_number(self):
-        # e.g. "t-linux64-ms-001" contains 1
+    def test_prefixed_string_extracts_last_number(self):
+        # "t-linux64-ms-001" should use slot 1 (last number), not 64
         result = hostname_to_cart(["t-linux64-ms-001"])
-        assert len(result) == 1
+        chassis = list(result.keys())[0]
+        assert "moon-chassis-1." in chassis
+        assert result[chassis] == ["1"]
+
+    def test_prefixed_string_high_slot(self):
+        # "t-linux64-ms-214" should use slot 214, not 64
+        result = hostname_to_cart(["t-linux64-ms-214"])
+        chassis = list(result.keys())[0]
+        # slot 214: c=(214-1)//45+1=5, n=(214-1)%45+1=34
+        assert "moon-chassis-5." in chassis
+        assert result[chassis] == ["34"]
 
     def test_return_type(self):
         result = hostname_to_cart(["001"])

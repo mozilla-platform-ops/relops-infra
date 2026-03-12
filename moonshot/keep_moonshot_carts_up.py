@@ -15,6 +15,8 @@ from threading import Lock
 
 import requests
 
+from moonshot_lib import hostname_to_cart
+
 RUN_TIME_MAX_MINUTES = 120
 IDLE_TIME_MAX_MINUTES = 30
 PROVISIONER = "releng-hardware"
@@ -323,35 +325,6 @@ def check_last_task(
 
     # Running or recently completed — healthy, suppress
     return True, False
-
-
-def hostname_to_cart(ids: list[str]) -> dict[str, list[str]]:
-    """Translate host slot IDs to chassis FQDN -> node number list."""
-    chassis_map: dict[str, list[str]] = {}
-    for id_str in ids:
-        m = re.search(r'\d+', id_str)
-        if not m:
-            continue
-        i = int(m.group().lstrip("0") or "0")
-
-        if i > 630:
-            c = ((i - 1) - 30) // 45 + 2
-            n = ((i - 1) - 630) % 45 + 1
-        elif i > 615:
-            c = ((i - 1) - 15) // 45 + 1 - 13
-            n = ((i - 1) - 615) % 45 + 1 + 30
-        elif i > 300:
-            c = ((i - 1) + 15) // 45 + 1
-            n = ((i - 1) + 15) % 45 + 1
-        else:
-            c = (i - 1) // 45 + 1
-            n = (i - 1) % 45 + 1
-
-        dc = "mdc2" if c > 7 else "mdc1"
-        chassis_fqdn = f"moon-chassis-{c}.inband.releng.{dc}.mozilla.com"
-        chassis_map.setdefault(chassis_fqdn, []).append(str(n))
-
-    return chassis_map
 
 
 def check_chassis_power(chassis: str, password: str, ilo_user: str) -> list[str]:
