@@ -27,6 +27,11 @@ WORK_DIR = Path("/tmp/keep_moonshot_carts_up")
 print_lock = Lock()
 
 
+# TODO:
+#   - definitely need to have list of bad carts so we don't continually powercycle them.
+#     - most of the hosts/carts returned currently are known bad 
+
+
 def short_host(fqdn: str) -> str:
     return fqdn.split(".")[0]
 
@@ -370,20 +375,20 @@ def check_chassis_power(chassis: str, password: str, ilo_user: str) -> list[str]
     return off_carts
 
 
-def reboot_workers(missing: list[str], password: str, ilo_user: str):
+def reboot_workers(missing: list[str], password: str, ilo_user: str, dry_run: bool = False):
     chassis_map = hostname_to_cart(missing)
     procs = []
     for chassis_fqdn, nodes in chassis_map.items():
         nodes_str = ",".join(nodes)
+        cmd = ["./up_carts_on_chassis.exp", "--hostname", f"{ilo_user}@{chassis_fqdn}", "--nodes", nodes_str]
+        if dry_run:
+            print(f"  [DRY RUN] {' '.join(cmd)}")
+            continue
         log_path = WORK_DIR / f"reboot.{chassis_fqdn}.{datetime.now().strftime('%H')}.log"
         print(f"  {chassis_fqdn}: nodes {nodes_str}")
         log_f = open(log_path, "w")
         proc = subprocess.Popen(
-            [
-                "./up_carts_on_chassis.exp",
-                "--hostname", f"{ilo_user}@{chassis_fqdn}",
-                "--nodes", nodes_str,
-            ],
+            cmd,
             stdin=subprocess.PIPE,
             stdout=log_f,
             stderr=subprocess.STDOUT,
@@ -525,11 +530,8 @@ def main():
             print(f"will not reboot (skipped) [{len(not_missing)}]: {', '.join(not_missing)}")
 
         if missing:
-            if args.dry_run:
-                print("[DRY RUN] Skipping reboot.")
-            else:
-                print("Rebooting...")
-                reboot_workers(missing, password, ilo_user)
+            print("Rebooting...")
+            reboot_workers(missing, password, ilo_user, dry_run=args.dry_run)
 
         print("Checking chassis power...")
         for i in range(1, 15):
