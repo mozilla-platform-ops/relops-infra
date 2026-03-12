@@ -16,7 +16,7 @@ from moonshot_lib import expand_host, normalize_node, make_headers, load_credent
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Set PXE boot and reboot a Moonshot node via iLO Redfish API"
+        description="Reboot a Moonshot node via iLO Redfish API"
     )
     parser.add_argument("-H", "--host", required=True, help="iLO host (an integer can be specified that will expand to moon-chassis-X.inband.releng.mdc1.mozilla.com)")
     parser.add_argument("-n", "--node", required=True, help="Node ID (e.g., c1n1, c1, or 1 — n1 is assumed if omitted)")
