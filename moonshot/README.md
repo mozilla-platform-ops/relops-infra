@@ -11,7 +11,7 @@ Add the HP ILO SSH key (search `Relops Common Keys 2020-05-07` in Relops 1P) to 
 ssh-add ~/.ssh/id_rsa_relops_2020-05-07
 ```
 
-## Utility Scripts
+## Console Access
 
 ### ms_javaws_runner
 Launches Java Web Start (javaws) with JNLP files for HP iLO remote console access.
@@ -21,6 +21,8 @@ and cleans up the JNLP file on completion. Requires Python 3 and `uv`.
 ```bash
 uv run ./ms_javaws_runner <jnlp_file>
 ```
+
+## Name / Address Resolution
 
 ### hostname_to_cart.sh
 Named oddly... really more like `cart_to_chassis.sh`.
@@ -36,6 +38,8 @@ Given a hostname or cart number, resolves the FQDN, the chassis web UI URL, and 
 ```bash
 ./translate_ms_name.sh <hostname_or_cart_number>
 ```
+
+## Status & Monitoring
 
 ### check_taskcluster_state.sh
 Queries Taskcluster for the last task run on each Linux cartridge across all 14 chassis, prints state/timing, and logs to a timestamped file.
@@ -53,7 +57,7 @@ Sends an ILO command (`show cartridge power all`) to one or more chassis hosts t
 ./check_power.sh
 ```
 
-### moon_command.sh 
+### moon_command.sh
 
 Executes generic commands on the Moonshot chassis iLO.
 
@@ -63,13 +67,13 @@ SSHes into all Linux moonshot workers and runs an arbitrary command (default: ch
 ./moon_command.sh <chassis> <command>
 ```
 
-## Reboot Scripts
-
 ### keep_moonshot_carts_up.sh
 Long-running daemon (loops every 30 min by default). Finds all known cartridges, pings them, checks their last Taskcluster task, and power-cycles any that are unresponsive or stuck (no ping + task idle >30 min or in exception state). Reports metrics to InfluxDB via Telegraf.
 ```bash
 ./keep_moonshot_carts_up.sh [hostname_prefix] [repeat_seconds] [ilo_user]
 ```
+
+## Reboot / Remediation
 
 ### reboot_hung.sh
 
