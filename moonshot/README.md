@@ -35,6 +35,7 @@ Converts a cart number (e.g. `023`) or hostname to its physical location: chassi
 
 ### translate_ms_name.sh
 Given a hostname or cart number, resolves the FQDN, the chassis web UI URL, and the `--hostname`/`--addr` flags needed by Expect scripts. Supports both Linux (`t-linux64-ms-`) and Windows (`t-w1064-ms-`) workers.
+
 ```bash
 ./translate_ms_name.sh <hostname_or_cart_number>
 ```
@@ -43,15 +44,14 @@ Given a hostname or cart number, resolves the FQDN, the chassis web UI URL, and 
 
 ### check_taskcluster_state.sh
 Queries Taskcluster for the last task run on each Linux cartridge across all 14 chassis, prints state/timing, and logs to a timestamped file.
+
 ```bash
 ./check_taskcluster_state.sh
 ```
 
 ### check_power.sh
 
-Checks the power status of moonshot cartridges.
-
-Sends an ILO command (`show cartridge power all`) to one or more chassis hosts to report cartridge power states.
+Checks the power status of moonshot cartridges by sending an ILO command (`show cartridge power all`) to one or more chassis hosts to report cartridge power states.
 
 ```bash
 ./check_power.sh
@@ -69,6 +69,7 @@ SSHes into all Linux moonshot workers and runs an arbitrary command (default: ch
 
 ### keep_moonshot_carts_up.sh
 Long-running daemon (loops every 30 min by default). Finds all known cartridges, pings them, checks their last Taskcluster task, and power-cycles any that are unresponsive or stuck (no ping + task idle >30 min or in exception state). Reports metrics to InfluxDB via Telegraf.
+
 ```bash
 ./keep_moonshot_carts_up.sh [hostname_prefix] [repeat_seconds] [ilo_user]
 ```
@@ -83,7 +84,8 @@ Reboots hung moonshot cartridges.
 > The moonshot cartridges hang sometimes when rebooting. This script checks
 if a cartridge is powered on but not responding to a ping. It then reboots those
 cartridges.
-```
+
+``` bash
 ./reboot_hung.sh
 # enter Administrator password
 ```
@@ -115,6 +117,7 @@ Each script calls its corresponding `.exp` expect script to handle the interacti
 
 ### reimage_loop.sh
 Interactive wrapper: prompts for ILO and kickstart passwords, then calls `reimage_watch.exp` for each cart number passed as arguments.
+
 ```bash
 ./reimage_loop.sh <cart_number> [cart_number ...]
 # enter ILO and kickstart passwords when prompted
