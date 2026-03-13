@@ -1,6 +1,8 @@
-# keep_moonshot_carts_up.sh
+# keep_moonshot_carts_up
 
 Monitoring and auto-remediation loop for Mozilla's Moonshot hardware workers.
+
+> **Note:** `keep_moonshot_carts_up.py` is a Python rewrite of the original `keep_moonshot_carts_up.sh` shell script. The shell script should not be run — use the Python script instead. Until the Python script is fully understood and validated in your environment, only run it with `--dry-run`.
 
 ## Setup
 
