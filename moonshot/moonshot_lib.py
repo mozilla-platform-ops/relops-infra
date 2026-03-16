@@ -188,14 +188,20 @@ def print_success(message):
     print(f"\033[92m{message}\033[0m")
 
 
-def get_pyfiglet_output(text: str, font: str = "standard") -> str:
-    """Return text rendered as ASCII art via pyfiglet, falling back to plain text."""
-    uv_result = subprocess.run(
-        ["uv", "run", "pyfiglet", "-f", font, text],
-        check=False, stdout=subprocess.PIPE, text=True,
-    )
-    if uv_result.returncode == 0:
-        return uv_result.stdout.rstrip()
-    if shutil.which("pyfiglet"):
-        return subprocess.check_output(["pyfiglet", "-f", font, text], text=True).rstrip()
+def get_pyfiglet_output(text: str, font: str | list[str] = "standard") -> str:
+    """Return text rendered as ASCII art via pyfiglet, falling back to plain text.
+
+    If font is a list, each font is tried in order until one succeeds.
+    """
+    fonts = [font] if isinstance(font, str) else font
+    cmd_base = ["uv", "run", "pyfiglet"] if not shutil.which("pyfiglet") else ["pyfiglet"]
+    use_uv = cmd_base[0] == "uv"
+
+    for f in fonts:
+        cmd = (["uv", "run", "pyfiglet", "-f", f, text] if use_uv
+               else ["pyfiglet", "-f", f, text])
+        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0:
+            return result.stdout.rstrip()
+
     return text

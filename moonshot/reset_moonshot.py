@@ -84,8 +84,14 @@ def main():
         if args.hostname:
             for h in args.hostname:
                 slot = re.findall(r'\d+', h.split(".")[0])
-                label = slot[-1].lstrip("0") or "0" if slot else h
-                print(get_pyfiglet_output(label, font="slant"))
+                label = slot[-1] if slot else h
+                print(get_pyfiglet_output(label, font=["bigmono12", "ansi_shadow", "4max", "smmono12"]))
+        else:
+            for host, node in targets:
+                chassis = re.search(r'moon-chassis-(\d+)', host)
+                cart = re.search(r'c(\d+)', node)
+                if chassis and cart:
+                    print(get_pyfiglet_output(f"{chassis.group(1)}-{cart.group(1)}", font=["bigmono12", "ansi_shadow", "4max", "smmono12"]))
         confirm = input("Are you sure you want to proceed? (y/N) ")
         if confirm.lower() != "y":
             print("Operation cancelled.")
