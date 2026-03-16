@@ -14,8 +14,8 @@ from moonshot_lib import expand_host, hostname_to_cart, normalize_node, make_hea
 #     -n c5n1
 #
 # example usage (worker hostname):
-#   ./reset_moonshot.py --hostname t-linux64-ms-001.test.releng.mdc1.mozilla.com
-#   ./reset_moonshot.py --hostname t-linux64-ms-001 t-linux64-ms-002
+#   ./reset_moonshot.py t-linux64-ms-001.test.releng.mdc1.mozilla.com
+#   ./reset_moonshot.py t-linux64-ms-001 t-linux64-ms-002
 
 
 def parse_args():
@@ -28,8 +28,8 @@ def parse_args():
 
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
-        "--hostname",
-        nargs="+",
+        "hostname",
+        nargs="*",
         metavar="HOSTNAME",
         help="Worker hostname(s) (e.g. t-linux64-ms-001); chassis and node are derived automatically",
     )
@@ -40,9 +40,9 @@ def parse_args():
 
     args = parser.parse_args()
 
-    if args.hostname is None:
+    if not args.hostname:
         if not args.host or not args.node:
-            parser.error("-H/--host and -n/--node are both required when --hostname is not used")
+            parser.error("provide hostname(s), or both -H/--host and -n/--node")
 
     return args
 
