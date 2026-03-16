@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import sys
 import requests
 
@@ -9,8 +10,8 @@ from moonshot_lib import expand_host, hostname_to_cart, normalize_node, load_cre
 # Generate an iLO Java IRC JNLP file for a Moonshot cartridge.
 #
 # example usage (worker hostname):
-#   ./moonshot_jnlp.py t-linux64-ms-214
-#   ./moonshot_jnlp.py t-linux64-ms-214 -o /tmp/console.jnlp
+#   ./moonshot_jnlp.py t-linux64-ms-214            # writes ~/Downloads/t-linux64-ms-214.jnlp
+#   ./moonshot_jnlp.py t-linux64-ms-214 --stdout   # prints to stdout
 #
 # example usage (chassis + node):
 #   ./moonshot_jnlp.py -H moon-chassis-5 -n c31n1
@@ -58,7 +59,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate an iLO Java IRC JNLP for a Moonshot cartridge"
     )
-    parser.add_argument("-o", "--output", help="Write JNLP to this file (default: stdout)")
+    parser.add_argument("--stdout", action="store_true", help="Print JNLP to stdout instead of writing to ~/Downloads/")
 
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
@@ -163,12 +164,14 @@ def main():
         kvm_port=KVM_PORT,
     )
 
-    if args.output:
-        with open(args.output, "w") as f:
-            f.write(jnlp)
-        print(f"JNLP written to {args.output}")
-    else:
+    if args.stdout:
         print(jnlp)
+    else:
+        name = args.hostname if args.hostname else f"{chassis}-c{cartridge}"
+        path = os.path.expanduser(f"~/Downloads/{name}.jnlp")
+        with open(path, "w") as f:
+            f.write(jnlp)
+        print(f"JNLP written to {path}")
 
 
 if __name__ == "__main__":
