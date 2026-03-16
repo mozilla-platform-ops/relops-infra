@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -185,3 +186,16 @@ def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10):
 
 def print_success(message):
     print(f"\033[92m{message}\033[0m")
+
+
+def get_pyfiglet_output(text: str, font: str = "standard") -> str:
+    """Return text rendered as ASCII art via pyfiglet, falling back to plain text."""
+    uv_result = subprocess.run(
+        ["uv", "run", "pyfiglet", "-f", font, text],
+        check=False, stdout=subprocess.PIPE, text=True,
+    )
+    if uv_result.returncode == 0:
+        return uv_result.stdout.rstrip()
+    if shutil.which("pyfiglet"):
+        return subprocess.check_output(["pyfiglet", "-f", font, text], text=True).rstrip()
+    return text

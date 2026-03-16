@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
 import argparse
+import re
 import sys
 import requests
 
-from moonshot_lib import expand_host, hostname_to_cart, normalize_node, make_headers, load_credentials, send_reboot, wait_for_online, worker_fqdn, print_success
+from moonshot_lib import expand_host, hostname_to_cart, normalize_node, make_headers, load_credentials, send_reboot, wait_for_online, worker_fqdn, print_success, get_pyfiglet_output
 
 # uses HTTP requests to reboot a Moonshot node via iLO Redfish API
 
@@ -80,6 +81,11 @@ def main():
         print("This will reboot:")
         for host, node in targets:
             print(f"  {node} @ {host}")
+        if args.hostname:
+            for h in args.hostname:
+                slot = re.findall(r'\d+', h.split(".")[0])
+                label = slot[-1].lstrip("0") or "0" if slot else h
+                print(get_pyfiglet_output(label, font="slant"))
         confirm = input("Are you sure you want to proceed? (y/N) ")
         if confirm.lower() != "y":
             print("Operation cancelled.")
