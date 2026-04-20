@@ -48,13 +48,14 @@ def parse_args():
     return args
 
 
-def build_targets(args) -> list[tuple[str, str]]:
-    """Return a list of (chassis_fqdn, node_id) pairs to reboot."""
+def build_targets(args) -> list[tuple[str, str, str | None]]:
+    """Return a list of (chassis_fqdn, node_id, label) tuples to reboot."""
     if args.hostname:
         targets = []
-        for chassis_fqdn, nodes in hostname_to_cart(args.hostname).items():
-            for node in nodes:
-                targets.append((chassis_fqdn, f"c{node}n1"))
+        for h in args.hostname:
+            for chassis_fqdn, nodes in hostname_to_cart([h]).items():
+                for node in nodes:
+                    targets.append((chassis_fqdn, f"c{node}n1", h.split(".")[0]))
         return targets
 
     host = expand_host(args.host)
@@ -63,7 +64,7 @@ def build_targets(args) -> list[tuple[str, str]]:
         print(f"Expanding host {args.host} to {host}...")
     if node != args.node:
         print(f"Expanding node {args.node} to {node}...")
-    return [(host, node)]
+    return [(host, node, None)]
 
 
 def main():
@@ -79,7 +80,7 @@ def main():
 
     if not args.force:
         print("This will reboot:")
-        for host, node in targets:
+        for host, node, label in targets:
             print(f"  {node} @ {host}")
         if args.hostname:
             for h in args.hostname:
@@ -87,19 +88,23 @@ def main():
                 label = slot[-1] if slot else h
                 print(get_pyfiglet_output(label, font=["bigmono12", "ansi_shadow", "4max", "smmono12"]))
         else:
-            for host, node in targets:
+            for host, node, _ in targets:
                 chassis = re.search(r'moon-chassis-(\d+)', host)
                 cart = re.search(r'c(\d+)', node)
                 if chassis and cart:
                     print(get_pyfiglet_output(f"{chassis.group(1)}-{cart.group(1)}", font=["bigmono12", "ansi_shadow", "4max", "smmono12"]))
+        chassis_count = len({host for host, node, label in targets})
+        print(f"{len(targets)} node(s) across {chassis_count} chassis.")
         confirm = input("Are you sure you want to proceed? (y/N) ")
         if confirm.lower() != "y":
             print("Operation cancelled.")
             sys.exit(0)
 
-    for host, node in targets:
+    total = len(targets)
+    for i, (host, node, label) in enumerate(targets, 1):
         system_url = f"https://{host}/rest/v1/Systems/{node}"
-        send_reboot(system_url, headers, verbose=args.verbose)
+        progress = f"{i}/{total}" if total > 1 else None
+        send_reboot(system_url, headers, verbose=args.verbose, label=label, progress=progress)
 
     print_success(f"Reboot command sent successfully ({len(targets)} node(s)).")
 

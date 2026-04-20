@@ -58,12 +58,14 @@ def load_credentials():
         sys.exit(1)
 
 
-def send_reboot(system_url, headers, verbose=False):
+def send_reboot(system_url, headers, verbose=False, label=None, progress=None):
     payload = {
         "Action": "Reset",
         "ResetType": "ColdReset"
     }
-    print(f"Sending ColdReset reboot request via POST {system_url}...")
+    prefix = f"{progress}: " if progress else ""
+    prefix += f"{label}: " if label else ""
+    print(f"{prefix}Sending ColdReset reboot request via POST {system_url}...")
     if verbose:
         print(f"[VERBOSE] POST {system_url}")
         print(f"[VERBOSE] Headers: {headers}")
