@@ -3,6 +3,8 @@
 import argparse
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from alive_progress import alive_bar
 import requests
 
 from moonshot_lib import expand_host, hostname_to_cart, normalize_node, make_headers, load_credentials, send_reboot, wait_for_online, worker_fqdn, print_success, get_pyfiglet_output
@@ -110,9 +112,18 @@ def main():
 
     if not args.no_wait:
         if args.hostname:
-            print("Waiting for node(s) to come back online...")
-            for fqdn in [worker_fqdn(h) for h in args.hostname]:
-                wait_for_online(fqdn)
+            fqdns = [worker_fqdn(h) for h in args.hostname]
+            failed = []
+            with alive_bar(len(fqdns), title="Waiting for nodes") as bar:
+                with ThreadPoolExecutor() as executor:
+                    futures = {executor.submit(wait_for_online, fqdn): fqdn for fqdn in fqdns}
+                    for future in as_completed(futures):
+                        if not future.result():
+                            failed.append(futures[future])
+                        bar()
+            if failed:
+                print(f"[ERROR] {len(failed)} node(s) did not come back online: {', '.join(sorted(failed))}")
+                sys.exit(1)
             print_success("All node(s) are back online.")
         else:
             print("(--no-wait not set, but wait is only supported in --hostname mode)")

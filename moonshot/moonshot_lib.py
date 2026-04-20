@@ -159,10 +159,10 @@ def ssh_port_open(fqdn: str, timeout: float = 5.0) -> bool:
         return False
 
 
-def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10):
+def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10) -> bool:
     """Wait for a host to respond to ping then accept SSH connections.
 
-    Prints progress to stdout. Exits with an error if timeout is reached.
+    Prints progress to stdout. Returns True if online, False if timeout reached.
     """
     deadline = time.monotonic() + timeout
 
@@ -173,7 +173,7 @@ def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10):
         time.sleep(poll_interval)
     else:
         print(f"[ERROR] Timed out waiting for {fqdn} to respond to ping.")
-        sys.exit(1)
+        return False
     print(f"  [{fqdn}] Ping OK. Waiting for SSH...", flush=True)
 
     while time.monotonic() < deadline:
@@ -182,8 +182,9 @@ def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10):
         time.sleep(poll_interval)
     else:
         print(f"[ERROR] Timed out waiting for {fqdn} to accept SSH connections.")
-        sys.exit(1)
+        return False
     print(f"  [{fqdn}] SSH OK.", flush=True)
+    return True
 
 
 def print_success(message):
