@@ -10,6 +10,7 @@ dependencies = [
     "pendulum>=3.1.0",
     "pyfiglet>=1.0.4",
     "requests>=2.32.5",
+    "pexpect>=4.9",
 ]
 
 [dependency-groups]
