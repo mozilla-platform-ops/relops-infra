@@ -19,6 +19,8 @@ from moonshot_lib import expand_host, hostname_to_cart, normalize_node, make_hea
 # example usage (worker hostname):
 #   ./reset_moonshot.py t-linux64-ms-001.test.releng.mdc1.mozilla.com
 #   ./reset_moonshot.py t-linux64-ms-001 t-linux64-ms-002
+#   cat hosts.txt | ./reset_moonshot.py
+#   ./reset_moonshot.py     (paste hostnames one per line, then Ctrl-D)
 
 
 def parse_args():
@@ -29,7 +31,7 @@ def parse_args():
     parser.add_argument("-v", "--verbose", action="store_true", help="Show request and response details")
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for the node(s) to come back online after reboot")
 
-    mode = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument(
         "hostname",
         nargs="*",
@@ -42,6 +44,17 @@ def parse_args():
     direct.add_argument("-n", "--node", help="Node ID (e.g., c1n1, c1, or 1 — n1 is assumed if omitted)")
 
     args = parser.parse_args()
+
+    if not args.hostname:
+        if sys.stdin.isatty():
+            if not (args.host or args.node):
+                print("Enter hostnames (one per line, Ctrl-D to finish):", file=sys.stderr)
+                args.hostname = [line.strip() for line in sys.stdin if line.strip()]
+        else:
+            args.hostname = [line.strip() for line in sys.stdin if line.strip()]
+
+    if args.hostname:
+        args.hostname = [h.strip() for raw in args.hostname for h in raw.splitlines() if h.strip()]
 
     if not args.hostname:
         if not args.host or not args.node:
