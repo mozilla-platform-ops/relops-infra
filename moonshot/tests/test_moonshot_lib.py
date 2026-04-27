@@ -13,7 +13,34 @@ from moonshot_lib import (
     make_headers,
     normalize_node,
     send_reboot,
+    worker_fqdn,
 )
+
+
+class TestWorkerFqdn:
+    def test_full_hostname_passthrough(self):
+        assert worker_fqdn("t-linux64-ms-130") == "t-linux64-ms-130.test.releng.mdc1.mozilla.com"
+
+    def test_fqdn_passthrough(self):
+        fqdn = "t-linux64-ms-001.test.releng.mdc1.mozilla.com"
+        assert worker_fqdn(fqdn) == fqdn
+
+    def test_short_ms_dash_form(self):
+        assert worker_fqdn("ms-006") == "t-linux64-ms-006.test.releng.mdc1.mozilla.com"
+
+    def test_short_ms_nodash_form(self):
+        assert worker_fqdn("ms006") == "t-linux64-ms-006.test.releng.mdc1.mozilla.com"
+
+    def test_bare_slot_number(self):
+        assert worker_fqdn("006") == "t-linux64-ms-006.test.releng.mdc1.mozilla.com"
+
+    def test_bare_slot_integer(self):
+        assert worker_fqdn("1") == "t-linux64-ms-001.test.releng.mdc1.mozilla.com"
+
+    def test_dc_mdc2_for_high_slot(self):
+        # slot 346 -> chassis 8 (>7) -> mdc2
+        result = worker_fqdn("t-linux64-ms-346")
+        assert ".mdc2." in result
 
 
 class TestExpandHost:

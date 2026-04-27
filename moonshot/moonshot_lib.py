@@ -128,6 +128,9 @@ def worker_fqdn(hostname: str) -> str:
     slot_str = matches[-1]
     i = int(slot_str.lstrip("0") or "0")
     prefix = hostname[: hostname.rfind(slot_str)]
+    # bare slot ("006", "6") or short ms form ("ms-006", "ms006") -> full worker hostname
+    if prefix.lower().rstrip("-") in ("", "ms"):
+        prefix = "t-linux64-ms-"
 
     if i > 630:
         c = ((i - 1) - 30) // 45 + 2
