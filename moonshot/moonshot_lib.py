@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import os
 import re
 import shutil
@@ -9,7 +10,11 @@ import socket
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 import requests
+
+JAVAWS_STARTUP_SLEEP = 35
 
 
 def expand_host(host):
@@ -192,6 +197,158 @@ def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10) -> b
 
 def print_success(message):
     print(f"\033[92m{message}\033[0m")
+
+
+def process_running(pattern: str) -> bool:
+    """Return True if any process matches pattern using `pgrep -f`."""
+    try:
+        proc = subprocess.run(["pgrep", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return proc.returncode == 0
+    except FileNotFoundError:
+        try:
+            ps = subprocess.check_output(["ps", "-axo", "pid,args"], text=True, errors="ignore")
+        except Exception:
+            return False
+        pattern_lower = pattern.lower()
+        for line in ps.splitlines():
+            if pattern_lower in line.lower():
+                return True
+        return False
+
+
+def parse_jnlp_port(jnlp_path: str) -> int | None:
+    """Parse JNLP file and extract port number from codebase attribute."""
+    try:
+        tree = ET.parse(jnlp_path)
+        root = tree.getroot()
+        codebase = root.get('codebase')
+        if codebase and ':' in codebase:
+            port_str = codebase.rsplit(':', 1)[1].split('/')[0]
+            return int(port_str)
+    except Exception as e:
+        logging.debug(f"Failed to parse JNLP port: {e}")
+    return None
+
+
+def update_exception_sites(jnlp_path: str, dry_run: bool) -> None:
+    """Add host and IP entries from JNLP codebase to Java exception.sites."""
+    try:
+        tree = ET.parse(jnlp_path)
+        root = tree.getroot()
+        codebase = root.get('codebase')
+        if not codebase:
+            logging.debug("No codebase in JNLP, skipping exception.sites update")
+            return
+
+        parsed = urlparse(codebase)
+        hostname = parsed.hostname
+        port = parsed.port
+        scheme = parsed.scheme or 'https'
+
+        if not hostname:
+            return
+
+        host_entry = f"{scheme}://{hostname}"
+        if port:
+            host_entry += f":{port}"
+
+        try:
+            ip = socket.gethostbyname(hostname)
+            ip_entry = f"{scheme}://{ip}"
+            if port:
+                ip_entry += f":{port}"
+        except socket.gaierror as e:
+            logging.warning(f"Could not resolve {hostname}: {e}")
+            ip_entry = None
+
+        exception_sites_path = os.path.expanduser(
+            "~/Library/Application Support/Oracle/Java/Deployment/security/exception.sites"
+        )
+
+        existing: set[str] = set()
+        if os.path.exists(exception_sites_path):
+            with open(exception_sites_path) as f:
+                existing = {line.strip() for line in f if line.strip()}
+
+        new_entries = [e for e in [host_entry, ip_entry] if e and e not in existing]
+
+        if not new_entries:
+            print("[info] exception.sites already up to date.")
+            return
+
+        if dry_run:
+            for entry in new_entries:
+                print(f"[dry-run] Would add to exception.sites: {entry}")
+            return
+
+        os.makedirs(os.path.dirname(exception_sites_path), exist_ok=True)
+        with open(exception_sites_path, 'a') as f:
+            for entry in new_entries:
+                f.write(entry + '\n')
+                print(f"[info] Added to exception.sites: {entry}")
+    except Exception as e:
+        logging.warning(f"Failed to update exception.sites: {e}")
+
+
+def port_to_cartridge(port: int) -> int:
+    """Convert port number to cartridge number (slot 1 = port 736)."""
+    return port - 735
+
+
+def launch_javaws(jnlp_path: str, dry_run: bool) -> int:
+    """Launch javaws with the given JNLP file. Returns PID on success, error code on failure."""
+    port = parse_jnlp_port(jnlp_path)
+    if port:
+        cartridge = port_to_cartridge(port)
+        print(f"[info] JNLP indicates cartridge {cartridge} (port {port})")
+        print(get_pyfiglet_output(f"Cartridge {cartridge}"))
+    else:
+        print("[info] Could not determine cartridge number from JNLP.")
+        sys.exit(1)
+
+    cmd = ["javaws", jnlp_path]
+    if dry_run:
+        print(f"[dry-run] Would execute: {' '.join(cmd)}")
+        return 0
+    try:
+        proc = subprocess.Popen(cmd)
+    except FileNotFoundError:
+        print("Error: 'javaws' command not found in PATH.", file=sys.stderr)
+        return 127
+    except Exception as e:
+        print(f"Error launching javaws: {e}", file=sys.stderr)
+        return 1
+    return proc.pid
+
+
+def wait_for_process_exit(pattern: str, spinner_interval: float = 0.1) -> None:
+    """Wait until no process matches the pattern, showing a spinner."""
+    spinner = ["-", "\\", "|", "/"]
+    idx = 0
+    sys.stdout.write(f"[waiting] {spinner[0]}")
+    sys.stdout.flush()
+    while process_running(pattern):
+        sys.stdout.write("\b" + spinner[idx])
+        sys.stdout.flush()
+        time.sleep(spinner_interval)
+        idx = (idx + 1) % len(spinner)
+    sys.stdout.write("\b ")
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def remove_file(path: str, dry_run: bool) -> None:
+    if dry_run:
+        print(f"[dry-run] Would remove: {path}")
+        return
+    if not os.path.exists(path):
+        print(f"Note: File already absent: {path}")
+        return
+    try:
+        os.remove(path)
+        print(f"Removed file: {path}")
+    except Exception as e:
+        print(f"Error removing file '{path}': {e}", file=sys.stderr)
 
 
 def get_pyfiglet_output(text: str, font: str | list[str] = "standard") -> str:

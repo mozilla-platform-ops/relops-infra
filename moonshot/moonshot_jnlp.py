@@ -3,9 +3,14 @@
 import argparse
 import os
 import sys
+import time
 import requests
 
-from moonshot_lib import expand_host, hostname_to_cart, normalize_node, load_credentials
+from moonshot_lib import (
+    expand_host, hostname_to_cart, normalize_node, load_credentials,
+    process_running, update_exception_sites, launch_javaws,
+    wait_for_process_exit, remove_file, JAVAWS_STARTUP_SLEEP,
+)
 
 # Generate an iLO Java IRC JNLP file for a Moonshot cartridge.
 #
@@ -60,6 +65,9 @@ def parse_args():
         description="Generate an iLO Java IRC JNLP for a Moonshot cartridge"
     )
     parser.add_argument("--stdout", action="store_true", help="Print JNLP to stdout instead of writing to ~/Downloads/")
+    parser.add_argument("--auto", action="store_true", help="Write JNLP, launch via javaws, wait for exit, then clean up. Mutually exclusive with --stdout.")
+    parser.add_argument("--no-remove", action="store_true", help="With --auto: keep the JNLP after the console exits")
+    parser.add_argument("--dry-run", action="store_true", help="With --auto: print actions instead of executing them")
 
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
@@ -77,6 +85,8 @@ def parse_args():
 
     if args.hostname is None and not (args.host and args.node):
         parser.error("provide a worker hostname, or both -H/--host and -n/--node")
+    if args.auto and args.stdout:
+        parser.error("--auto and --stdout are mutually exclusive")
 
     return args
 
@@ -166,12 +176,29 @@ def main():
 
     if args.stdout:
         print(jnlp)
-    else:
-        name = args.hostname if args.hostname else f"{chassis}-c{cartridge}"
-        path = os.path.expanduser(f"~/Downloads/{name}.jnlp")
-        with open(path, "w") as f:
-            f.write(jnlp)
-        print(f"JNLP written to {path}")
+        return
+
+    name = args.hostname if args.hostname else f"{chassis}-c{cartridge}"
+    path = os.path.expanduser(f"~/Downloads/{name}.jnlp")
+    with open(path, "w") as f:
+        f.write(jnlp)
+    print(f"JNLP written to {path}")
+
+    if args.auto:
+        if process_running("jweblauncher"):
+            print("[ERROR] A jweblauncher process is already running. Close it before using --auto.", file=sys.stderr)
+            sys.exit(1)
+        update_exception_sites(path, args.dry_run)
+        result = launch_javaws(path, args.dry_run)
+        if result in (1, 127):
+            sys.exit(result)
+        print(f"Sleeping {JAVAWS_STARTUP_SLEEP}s for jweblauncher to start...")
+        time.sleep(JAVAWS_STARTUP_SLEEP)
+        print("Waiting for jweblauncher to exit...")
+        wait_for_process_exit("jweblauncher")
+        print("jweblauncher exited.")
+        if not args.no_remove:
+            remove_file(path, args.dry_run)
 
 
 if __name__ == "__main__":
