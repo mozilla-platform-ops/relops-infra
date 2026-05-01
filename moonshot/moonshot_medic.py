@@ -23,9 +23,9 @@ import time
 from pathlib import Path
 
 FLEETROLL_DIR = Path.home() / "git/fleetroll_mvp"
-RESET_DIR = Path.home() / "git/relops-infra/moonshot"
 SCRIPT_DIR = Path(__file__).parent.resolve()
-RESULTS_BASE = SCRIPT_DIR.parent / "moonshot_debugging_results"
+RESET_DIR = SCRIPT_DIR
+RESULTS_BASE = SCRIPT_DIR / "moonshot_debugging_results"
 HANG_SCRIPT = SCRIPT_DIR / "moonshot_hang_report.py"
 RECENCY_MINUTES = 60
 AUTO_BATCH_SIZE = 10
