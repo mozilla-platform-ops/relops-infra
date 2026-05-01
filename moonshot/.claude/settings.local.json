@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(ls:*)",
-      "Bash(uv add:*)"
+      "Bash(uv add:*)",
+      "Bash(python -m pytest tests/test_moonshot_lib.py -q)"
     ]
   }
 }
