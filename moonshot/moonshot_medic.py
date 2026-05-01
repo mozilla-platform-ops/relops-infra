@@ -752,11 +752,9 @@ def main() -> None:
                                 except Exception as exc:
                                     err(f"[{label}] unexpected error: {exc}")
                                     fail_hosts.append(label)
+                                update_overview_md(state)
+                                update_overview_html(state)
                                 print()
-
-                                if _interrupt_count:
-                                    warn("Stopping after interrupt.")
-                                    break
 
                         # --- summary ---
                         _emit(_c('1', "=" * 40))
