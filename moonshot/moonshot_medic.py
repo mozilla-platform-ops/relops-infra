@@ -53,7 +53,7 @@ def _sigint_handler(sig, frame):
     global _interrupt_count
     _interrupt_count += 1
     if _interrupt_count == 1:
-        print("\n[Ctrl-C] Will stop after current host finishes. Press again to exit immediately.",
+        print("\n[Ctrl-C] Will stop after current batch finishes. Press again to exit immediately.",
               file=sys.stderr)
     else:
         print("\n[Ctrl-C] Exiting immediately.", file=sys.stderr)
@@ -158,6 +158,10 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)).isoformat()
+    for h in state.get("hosts", {}).values():
+        if "reset_timestamps" in h:
+            h["reset_timestamps"] = [ts for ts in h["reset_timestamps"] if ts >= cutoff]
     RESULTS_BASE.mkdir(parents=True, exist_ok=True)
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2) + "\n")
@@ -172,15 +176,18 @@ def _host_entry(state: dict, fqdn: str) -> dict:
         "total_resets": 0,
         "total_failures": 0,
         "skip_until": None,
+        "reset_timestamps": [],
     })
 
 
 def record_reset_success(state: dict, fqdn: str) -> None:
     h = _host_entry(state, fqdn)
     h["consecutive_reset_failures"] = 0
-    h["last_success"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    h["last_success"] = now_iso
     h["total_resets"] = h.get("total_resets", 0) + 1
     h["skip_until"] = None
+    h.setdefault("reset_timestamps", []).append(now_iso)
 
 
 def record_reset_failure(state: dict, fqdn: str) -> None:
@@ -207,6 +214,22 @@ def is_skipped(state: dict, fqdn: str) -> bool:
     return datetime.datetime.fromisoformat(skip_until) > datetime.datetime.now(datetime.timezone.utc)
 
 
+def _fleet_size() -> int:
+    host_list = FLEETROLL_DIR / "configs/host-lists/linux/all.list"
+    if not host_list.exists():
+        return 0
+    return sum(1 for line in host_list.read_text().splitlines()
+               if line.strip() and not line.startswith("#"))
+
+
+def _resets_since(hosts: dict, hours: int) -> int:
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)).isoformat()
+    return sum(
+        sum(1 for ts in h.get("reset_timestamps", []) if ts >= cutoff)
+        for h in hosts.values()
+    )
+
+
 def update_overview_md(state: dict) -> None:
     now = datetime.datetime.now(datetime.timezone.utc)
     hosts = state.get("hosts", {})
@@ -228,6 +251,17 @@ def update_overview_md(state: dict) -> None:
         if h.get("skip_until") and
         datetime.datetime.fromisoformat(h["skip_until"]) > now
     }
+    total_resets = sum(h.get("total_resets", 0) for h in hosts.values())
+    unique_hosts = sum(1 for h in hosts.values() if h.get("total_resets", 0) > 0)
+    resets_24h = _resets_since(hosts, 24)
+    resets_7d = _resets_since(hosts, 24 * 7)
+    fleet_size = _fleet_size()
+    never_reset_pct = round(100 * (fleet_size - unique_hosts) / fleet_size) if fleet_size else None
+    if hosts:
+        never_reset_str = f", {never_reset_pct}% of fleet never reset" if never_reset_pct is not None else ""
+        lines.append(f"_{total_resets} reset{'s' if total_resets != 1 else ''} across {unique_hosts} unique host{'s' if unique_hosts != 1 else ''} — {resets_24h} in last 24h, {resets_7d} in last 7 days{never_reset_str}._")
+        lines.append("")
+
     counts = daily_counts()
     if counts:
         lines += ["## Daily Activity", ""]
@@ -282,6 +316,12 @@ def update_overview_html(state: dict) -> None:
         if h.get("skip_until") and
         datetime.datetime.fromisoformat(h["skip_until"]) > now
     }
+    total_resets = sum(h.get("total_resets", 0) for h in hosts.values())
+    unique_hosts = sum(1 for h in hosts.values() if h.get("total_resets", 0) > 0)
+    resets_24h = _resets_since(hosts, 24)
+    resets_7d = _resets_since(hosts, 24 * 7)
+    fleet_size = _fleet_size()
+    never_reset_pct = round(100 * (fleet_size - unique_hosts) / fleet_size) if fleet_size else None
 
     parts = [
         "<!DOCTYPE html>",
@@ -314,6 +354,9 @@ def update_overview_html(state: dict) -> None:
         "<body>",
         "<h1>Moonshot Medic: Overview</h1>",
         f'<p class="generated">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
+        (f'<p class="generated">{total_resets} reset{"s" if total_resets != 1 else ""} across {unique_hosts} unique host{"s" if unique_hosts != 1 else ""} — {resets_24h} in last 24h, {resets_7d} in last 7 days'
+         + (f", {never_reset_pct}% of fleet never reset" if never_reset_pct is not None else "")
+         + ".</p>") if hosts else "",
         '<div class="tz-toggle">',
         '  <label><input type="radio" name="tz" value="local" checked> Local time</label>',
         '  <label><input type="radio" name="tz" value="utc"> UTC</label>',
@@ -537,6 +580,8 @@ def parse_args() -> argparse.Namespace:
                         help=f"Speak outside working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00).")
     parser.add_argument("-l", "--loop-interval", type=int, default=15, metavar="MINUTES",
                         help="Minutes to sleep between auto runs (default: 15).")
+    parser.add_argument("--freshness-min-pct", type=int, default=FRESHNESS_MIN_PCT, metavar="PCT",
+                        help=f"Minimum %% of hosts with fresh fleetroll data required (default: {FRESHNESS_MIN_PCT}).")
     return parser.parse_args()
 
 
@@ -570,7 +615,7 @@ def main() -> None:
     if args.auto and not args.confirm:
         stale_threshold = freshness_mins * 60
         info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
-        r = subprocess.run(["uv", "run", "fleetroll", "data-freshness", "configs/host-lists/linux/all.list", "--stale-threshold", str(stale_threshold), "--min-fresh-pct", str(FRESHNESS_MIN_PCT)],
+        r = subprocess.run(["uv", "run", "fleetroll", "data-freshness", "configs/host-lists/linux/all.list", "--stale-threshold", str(stale_threshold), "--min-fresh-pct", str(args.freshness_min_pct)],
                            cwd=FLEETROLL_DIR, capture_output=True, text=True)
         freshness_out = (r.stdout + r.stderr).strip()
         for line in freshness_out.splitlines():
@@ -617,7 +662,7 @@ def main() -> None:
         if args.auto:
             stale_threshold = freshness_mins * 60
             info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
-            r = subprocess.run(["uv", "run", "fleetroll", "data-freshness", "configs/host-lists/linux/all.list", "--stale-threshold", str(stale_threshold), "--min-fresh-pct", str(FRESHNESS_MIN_PCT)],
+            r = subprocess.run(["uv", "run", "fleetroll", "data-freshness", "configs/host-lists/linux/all.list", "--stale-threshold", str(stale_threshold), "--min-fresh-pct", str(args.freshness_min_pct)],
                                cwd=FLEETROLL_DIR, capture_output=True, text=True)
             freshness_out = (r.stdout + r.stderr).strip()
             for line in freshness_out.splitlines():
