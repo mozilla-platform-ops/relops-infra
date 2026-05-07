@@ -76,6 +76,27 @@ def build_steps(boot: int) -> List[Step]:
             os_match="18.04",
         ),
         Step(
+            "auth.log.1 sshd entries",
+            "grep -iE 'sshd' /var/log/auth.log.1 2>/dev/null | tail -200",
+            needs_sudo=True,
+            os_match="18.04",
+        ),
+        Step(
+            "journalctl full (previous boot, 2000 lines)",
+            "journalctl -b -1 --no-pager | tail -2000",
+            os_match="18.04",
+        ),
+        Step(
+            "journalctl NetworkManager (previous boot, 500 lines)",
+            "journalctl -u NetworkManager -b -1 --no-pager | tail -500",
+            os_match="18.04",
+        ),
+        Step(
+            "journalctl systemd-resolved (previous boot, 200 lines)",
+            "journalctl -u systemd-resolved -b -1 --no-pager | tail -200",
+            os_match="18.04",
+        ),
+        Step(
             "journalctl kernel (current boot, 500 lines)",
             "journalctl -k --no-pager | tail -500",
             os_match="18.04",

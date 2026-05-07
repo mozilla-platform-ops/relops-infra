@@ -352,7 +352,11 @@ def update_overview_html(state: dict) -> None:
         "</style>",
         "</head>",
         "<body>",
-        "<h1>Moonshot Medic: Overview</h1>",
+        '<pre style="color:#0ff;line-height:1;margin:0 0 .5rem;font-size:1rem">',
+        " ▄▀▄▀▄ ▄▀▄ ▄▀▄ ▄▀█ █▀ █░░ ▄▀▄ ▄█▄    ▄▀▄▀▄ ██▀ ▄▄█ ▀ ▄▀▀",
+        " █░▀░█ ▀▄▀ ▀▄▀ █░█ ▄█ █▀█ ▀▄▀ ░█▄    █░▀░█ █▄▄ █▄█ █ ▀▄▄",
+        '<span style="color:#888;font-size:.75rem;letter-spacing:.15em"> OVERVIEW</span>',
+        "</pre>",
         f'<p class="generated">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
         (f'<p class="generated">{total_resets} reset{"s" if total_resets != 1 else ""} across {unique_hosts} unique host{"s" if unique_hosts != 1 else ""} — {resets_24h} in last 24h, {resets_7d} in last 7 days'
          + (f", {never_reset_pct}% of fleet never reset" if never_reset_pct is not None else "")
