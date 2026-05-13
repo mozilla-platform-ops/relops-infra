@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -m py_compile keep_moonshot_carts_up.py && echo \"OK\")"
+    ]
+  }
+}

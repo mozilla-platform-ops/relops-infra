@@ -6,7 +6,8 @@
       "Bash(python -m pytest tests/test_moonshot_lib.py -q)",
       "Bash(tokenjuice wrap *)",
       "Bash(git -C /Users/aerickson/git/ronin_puppet branch)",
-      "Bash(git -C /Users/aerickson/git/ronin_puppet status)"
+      "Bash(git -C /Users/aerickson/git/ronin_puppet status)",
+      "Bash(git add *)"
     ]
   }
 }
