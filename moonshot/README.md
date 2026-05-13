@@ -11,7 +11,7 @@ Add the HP ILO SSH key (search `Relops Common Keys 2020-05-07` in Relops 1P) to 
 ssh-add ~/.ssh/id_rsa_relops_2020-05-07
 ```
 
-## Utility Scripts
+## Console Access
 
 ### ms_javaws_runner
 Launches Java Web Start (javaws) with JNLP files for HP iLO remote console access.
@@ -22,33 +22,78 @@ and cleans up the JNLP file on completion. Requires Python 3 and `uv`.
 uv run ./ms_javaws_runner <jnlp_file>
 ```
 
+## Name / Address Resolution
+
 ### hostname_to_cart.sh
-Converts a hostname to chassis and cartridge numbers.
+Named oddly... really more like `cart_to_chassis.sh`.
+
+Converts a cart number (e.g. `023`) or hostname to its physical location: chassis number, cartridge slot, and ILO address. Handles the non-linear numbering quirks across mdc1/mdc2.
+
 ```bash
-./hostname_to_cart.sh <hostname>
+./hostname_to_cart.sh hostname[s]/host_number[s]
+```
+
+### translate_ms_name.sh
+Given a hostname or cart number, resolves the FQDN, the chassis web UI URL, and the `--hostname`/`--addr` flags needed by Expect scripts. Supports both Linux (`t-linux64-ms-`) and Windows (`t-w1064-ms-`) workers.
+
+```bash
+./translate_ms_name.sh <hostname_or_cart_number>
+```
+
+## Status & Monitoring
+
+### check_taskcluster_state.sh
+Queries Taskcluster for the last task run on each Linux cartridge across all 14 chassis, prints state/timing, and logs to a timestamped file.
+
+```bash
+./check_taskcluster_state.sh
 ```
 
 ### check_power.sh
-Checks the power status of moonshot cartridges.
+
+Checks the power status of moonshot cartridges by sending an ILO command (`show cartridge power all`) to one or more chassis hosts to report cartridge power states.
+
 ```bash
 ./check_power.sh
 ```
 
-### moon_command.sh / moon_ilo_command.exp
+### moon_command.sh
+
 Executes generic commands on the Moonshot chassis iLO.
+
+SSHes into all Linux moonshot workers and runs an arbitrary command (default: check Puppet last-run summary). Supports a parallelism argument.
+
 ```bash
 ./moon_command.sh <chassis> <command>
 ```
 
-## Reboot Scripts
+### keep_moonshot_carts_up.sh
+Long-running daemon (loops every 30 min by default). Finds all known cartridges, pings them, checks their last Taskcluster task, and power-cycles any that are unresponsive or stuck (no ping + task idle >30 min or in exception state). Reports metrics to InfluxDB via Telegraf.
+
+```bash
+./keep_moonshot_carts_up.sh [hostname_prefix] [repeat_seconds] [ilo_user]
+```
+
+## Reboot / Remediation
 
 ### reboot_hung.sh
+
+One-shot older version of `keep_moonshot_carts_up.sh`. Scans all 630 cart numbers across mdc1/mdc2, finds those not responding to ping, checks their last Taskcluster task, and power-cycles hung ones via `reboot_if_on.exp`.
+
 Reboots hung moonshot cartridges.
 > The moonshot cartridges hang sometimes when rebooting. This script checks
 if a cartridge is powered on but not responding to a ping. It then reboots those
 cartridges.
-```
+
+``` bash
 ./reboot_hung.sh
+# enter Administrator password
+```
+
+### reboot_loop.sh
+One-liner script: iterates over 7 chassis × 15 carts in mdc1, checks Taskcluster for each, and reboots any not found in the queue via `reboot.exp`.
+```bash
+./reboot_loop.sh
 # enter Administrator password
 ```
 
@@ -70,6 +115,14 @@ Each script calls its corresponding `.exp` expect script to handle the interacti
 # Example: ./reimage_2404.sh 1 3
 ```
 
+### reimage_loop.sh
+Interactive wrapper: prompts for ILO and kickstart passwords, then calls `reimage_watch.exp` for each cart number passed as arguments.
+
+```bash
+./reimage_loop.sh <cart_number> [cart_number ...]
+# enter ILO and kickstart passwords when prompted
+```
+
 ---
 
 ## Oneshot Scripts
@@ -80,9 +133,12 @@ Each script calls its corresponding `.exp` expect script to handle the interacti
 - `ssh` / `nc` - Remote host access and connectivity checks
 
 ### oneshot_linux.sh
+
 Generic orchestration script for complete reimage and Puppet convergence workflow.
 > Handles the full lifecycle: reimage → wait for OS installation → verify SSH connectivity →
 run Puppet bootstrap → converge host. Uses file locking to serialize reimage operations per chassis.
+
+Given a chassis, cartridge, host number, Puppet role, and OS version, it: (1) acquires a per-chassis lock, (2) reimages via the appropriate `reimage_*.sh`, (3) waits for install to complete (14–18 min), (4) waits for SSH to come up, (5) delivers and runs the Ronin Puppet bootstrap script to converge the host.
 
 ```bash
 ./oneshot_linux.sh <chassis> <cartridge> <host_number> <role> <os_version>
@@ -126,6 +182,11 @@ If the override file has an effect too late in the process (e.g. you want to tes
 - `ONESHOT_PUPPET_REPO` - Override default Puppet repository for bootstrap script
 - `ONESHOT_PUPPET_BRANCH` - Override default Puppet branch for bootstrap script
 
+
+## On-Host Maintenance
+
+### moonshot_cltbld_and_apt_systemd_unit/cltbld-and-apt-cleaner.sh
+Runs on the worker itself (as root via systemd). If disk usage exceeds 70%, cleans up the `cltbld` user's build caches and runs `apt autoremove`/`apt clean`.
 
 ## How It Works
 

@@ -1,0 +1,9 @@
+# data dirs
+20*
+older/
+# generated overview files
+OVERVIEW*
+# generated reports
+_analysis/
+# moonshot medic state
+state.json

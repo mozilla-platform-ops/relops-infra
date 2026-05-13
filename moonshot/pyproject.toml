@@ -5,8 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "alive-progress>=3.2.0",
     "paramiko>=4.0.0",
     "pendulum>=3.1.0",
     "pyfiglet>=1.0.4",
     "requests>=2.32.5",
+    "pexpect>=4.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
 ]
