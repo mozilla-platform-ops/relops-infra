@@ -323,6 +323,34 @@ def update_overview_html(state: dict) -> None:
     fleet_size = _fleet_size()
     never_reset_pct = round(100 * (fleet_size - unique_hosts) / fleet_size) if fleet_size else None
 
+    from collections import defaultdict
+    _buckets: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for _fqdn, _h in hosts.items():
+        _label = short_label(_fqdn)
+        for _ts in _h.get("reset_timestamps", []):
+            _buckets[_ts[:10]][_label] += 1
+    _chart_days = [(now.date() - datetime.timedelta(days=i)).isoformat() for i in range(29, -1, -1)]
+    chart_data = [
+        {"date": d, "total": sum(_buckets[d].values()), "hosts": dict(_buckets[d])}
+        for d in _chart_days
+    ]
+
+    _reset_counts: dict[int, list[str]] = defaultdict(list)
+    for _fqdn, _h in hosts.items():
+        _reset_counts[_h.get("total_resets", 0)].append(short_label(_fqdn))
+    _host_list_path = FLEETROLL_DIR / "configs/host-lists/linux/all.list"
+    if _host_list_path.exists():
+        _known = {_fqdn for _fqdn in hosts}
+        for _line in _host_list_path.read_text().splitlines():
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and _line not in _known:
+                _reset_counts[0].append(short_label(_line))
+    _max_bucket = max(_reset_counts.keys(), default=0)
+    hist_data = [
+        {"resets": i, "count": len(_reset_counts[i]), "hosts": sorted(_reset_counts[i])}
+        for i in range(_max_bucket + 1)
+    ]
+
     parts = [
         "<!DOCTYPE html>",
         '<html lang="en">',
@@ -349,6 +377,8 @@ def update_overview_html(state: dict) -> None:
         "  .ok { color: #4c4; }",
         "  .bad { color: #f44; }",
         "  .warn { color: #f90; }",
+        "  .chart-tip { position:absolute; background:#222; border:1px solid #444; padding:.4rem .6rem; font-size:.8rem; color:#ccc; pointer-events:none; display:none; z-index:10; max-width:320px; }",
+        "  .chart-tip strong { color:#fff; }",
         "</style>",
         "</head>",
         "<body>",
@@ -361,6 +391,9 @@ def update_overview_html(state: dict) -> None:
         (f'<p class="generated">{total_resets} reset{"s" if total_resets != 1 else ""} across {unique_hosts} unique host{"s" if unique_hosts != 1 else ""} — {resets_24h} in last 24h, {resets_7d} in last 7 days'
          + (f", {never_reset_pct}% of fleet never reset" if never_reset_pct is not None else "")
          + ".</p>") if hosts else "",
+        "<h2>Reset Frequency (last 30 days)</h2>",
+        '<div id="reset-chart" style="position:relative;margin-bottom:1.5rem;max-width:860px"></div>',
+        f'<script>const RESET_CHART_DATA = {json.dumps(chart_data)};</script>',
         '<div class="tz-toggle">',
         '  <label><input type="radio" name="tz" value="local" checked> Local time</label>',
         '  <label><input type="radio" name="tz" value="utc"> UTC</label>',
@@ -393,6 +426,8 @@ def update_overview_html(state: dict) -> None:
     if hosts:
         parts += [
             "<h2>Host History</h2>",
+            '<div id="hist-chart" style="position:relative;margin-bottom:1.5rem;max-width:860px"></div>',
+            f'<script>const HIST_DATA = {json.dumps(hist_data)};</script>',
             "<table>",
             "  <thead><tr>",
             "    <th>Host</th><th>Total Resets</th><th>Failures</th>"
@@ -458,6 +493,138 @@ def update_overview_html(state: dict) -> None:
         "    rows.forEach(r => tbody.appendChild(r));",
         "  }",
         "  document.querySelectorAll('th').forEach(th => th.addEventListener('click', () => sortTable(th)));",
+        "  (function() {",
+        "    const data = RESET_CHART_DATA;",
+        "    const W = 600, H = 65, PAD_B = 16, BAR_GAP = 2;",
+        "    const maxVal = Math.max(...data.map(d => d.total), 1);",
+        "    const barW = (W - BAR_GAP * (data.length - 1)) / data.length;",
+        "    const svgNS = 'http://www.w3.org/2000/svg';",
+        "    const svg = document.createElementNS(svgNS, 'svg');",
+        "    svg.setAttribute('viewBox', `0 0 ${W} ${H + PAD_B}`);",
+        "    svg.setAttribute('width', '100%');",
+        "    svg.setAttribute('preserveAspectRatio', 'none');",
+        "    svg.style.display = 'block';",
+        "    data.forEach((d, i) => {",
+        "      const barH = d.total > 0 ? Math.max(2, (d.total / maxVal) * H) : 2;",
+        "      const x = i * (barW + BAR_GAP);",
+        "      const rect = document.createElementNS(svgNS, 'rect');",
+        "      rect.setAttribute('x', x);",
+        "      rect.setAttribute('y', H - barH);",
+        "      rect.setAttribute('width', barW);",
+        "      rect.setAttribute('height', barH);",
+        "      rect.setAttribute('fill', d.total > 0 ? '#4c4' : '#333');",
+        "      rect.dataset.date = d.date;",
+        "      rect.dataset.hosts = JSON.stringify(d.hosts);",
+        "      rect.dataset.total = d.total;",
+        "      svg.appendChild(rect);",
+        "      const hit = document.createElementNS(svgNS, 'rect');",
+        "      hit.setAttribute('x', x); hit.setAttribute('y', 0);",
+        "      hit.setAttribute('width', barW); hit.setAttribute('height', H);",
+        "      hit.setAttribute('fill', 'transparent');",
+        "      hit.dataset.date = d.date; hit.dataset.hosts = JSON.stringify(d.hosts); hit.dataset.total = d.total;",
+        "      svg.appendChild(hit);",
+        "      if (i % 5 === 0 || i === data.length - 1) {",
+        "        const txt = document.createElementNS(svgNS, 'text');",
+        "        txt.setAttribute('x', x + barW / 2);",
+        "        txt.setAttribute('y', H + PAD_B - 2);",
+        "        txt.setAttribute('text-anchor', 'middle');",
+        "        txt.setAttribute('font-size', '9');",
+        "        txt.setAttribute('fill', '#666');",
+        "        txt.setAttribute('font-family', 'monospace');",
+        "        txt.textContent = d.date.slice(5);",
+        "        svg.appendChild(txt);",
+        "      }",
+        "    });",
+        "    const tip = document.createElement('div');",
+        "    tip.className = 'chart-tip';",
+        "    const container = document.getElementById('reset-chart');",
+        "    container.appendChild(svg);",
+        "    container.appendChild(tip);",
+        "    svg.addEventListener('mousemove', e => {",
+        "      const rect = e.target.closest('rect');",
+        "      if (!rect) { tip.style.display = 'none'; return; }",
+        "      const hosts = JSON.parse(rect.dataset.hosts);",
+        "      const total = parseInt(rect.dataset.total, 10);",
+        "      const sorted = Object.entries(hosts).sort((a, b) => b[1] - a[1]);",
+        "      const lines = sorted.map(([h, n]) => n > 1 ? `${h} ×${n}` : h).join(', ');",
+        "      tip.innerHTML = `<strong>${rect.dataset.date} — ${total} reset${total !== 1 ? 's' : ''}</strong>${lines ? '<br>' + lines : ''}`;",
+        "      const cr = container.getBoundingClientRect();",
+        "      const x = e.clientX - cr.left + 8;",
+        "      const y = e.clientY - cr.top - 10;",
+        "      tip.style.left = (x + 150 > cr.width ? x - 160 : x) + 'px';",
+        "      tip.style.top = Math.max(0, y) + 'px';",
+        "      tip.style.display = 'block';",
+        "    });",
+        "    svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; });",
+        "  })();",
+        "  (function() {",
+        "    const data = HIST_DATA;",
+        "    if (!data.length) return;",
+        "    const W = 600, H = 65, PAD_B = 16, BAR_GAP = 2;",
+        "    const maxCount = Math.max(...data.map(d => d.count), 1);",
+        "    const maxResets = Math.max(...data.map(d => d.resets), 1);",
+        "    const barW = Math.max(6, (W - BAR_GAP * (data.length - 1)) / data.length);",
+        "    const svgW = barW * data.length + BAR_GAP * (data.length - 1);",
+        "    const svgNS = 'http://www.w3.org/2000/svg';",
+        "    const svg = document.createElementNS(svgNS, 'svg');",
+        "    svg.setAttribute('viewBox', `0 0 ${svgW} ${H + PAD_B}`);",
+        "    svg.setAttribute('width', '100%');",
+        "    svg.setAttribute('preserveAspectRatio', 'none');",
+        "    svg.style.display = 'block';",
+        "    data.forEach((d, i) => {",
+        "      const barH = d.count > 0 ? Math.max(2, (d.count / maxCount) * H) : 0;",
+        "      const x = i * (barW + BAR_GAP);",
+        "      const hue = Math.round(120 * (1 - d.resets / maxResets));",
+        "      const fill = `hsl(${hue},65%,42%)`;",
+        "      if (barH > 0) {",
+        "        const rect = document.createElementNS(svgNS, 'rect');",
+        "        rect.setAttribute('x', x);",
+        "        rect.setAttribute('y', H - barH);",
+        "        rect.setAttribute('width', barW);",
+        "        rect.setAttribute('height', barH);",
+        "        rect.setAttribute('fill', fill);",
+        "        rect.dataset.resets = d.resets;",
+        "        rect.dataset.count = d.count;",
+        "        rect.dataset.hosts = JSON.stringify(d.hosts);",
+        "        svg.appendChild(rect);",
+        "      }",
+        "      const hit = document.createElementNS(svgNS, 'rect');",
+        "      hit.setAttribute('x', x); hit.setAttribute('y', 0);",
+        "      hit.setAttribute('width', barW); hit.setAttribute('height', H);",
+        "      hit.setAttribute('fill', 'transparent');",
+        "      hit.dataset.resets = d.resets; hit.dataset.count = d.count; hit.dataset.hosts = JSON.stringify(d.hosts);",
+        "      svg.appendChild(hit);",
+        "      const txt = document.createElementNS(svgNS, 'text');",
+        "      txt.setAttribute('x', x + barW / 2);",
+        "      txt.setAttribute('y', H + PAD_B - 2);",
+        "      txt.setAttribute('text-anchor', 'middle');",
+        "      txt.setAttribute('font-size', '9');",
+        "      txt.setAttribute('fill', '#666');",
+        "      txt.setAttribute('font-family', 'monospace');",
+        "      txt.textContent = d.resets;",
+        "      svg.appendChild(txt);",
+        "    });",
+        "    const tip = document.createElement('div');",
+        "    tip.className = 'chart-tip';",
+        "    const container = document.getElementById('hist-chart');",
+        "    container.appendChild(svg);",
+        "    container.appendChild(tip);",
+        "    svg.addEventListener('mousemove', e => {",
+        "      const rect = e.target.closest('rect');",
+        "      if (!rect) { tip.style.display = 'none'; return; }",
+        "      const hosts = JSON.parse(rect.dataset.hosts);",
+        "      const count = parseInt(rect.dataset.count, 10);",
+        "      const resets = rect.dataset.resets;",
+        "      tip.innerHTML = `<strong>${resets} reset${resets !== '1' ? 's' : ''} — ${count} host${count !== 1 ? 's' : ''}</strong><br>` + hosts.join(', ');",
+        "      const cr = container.getBoundingClientRect();",
+        "      const x = e.clientX - cr.left + 8;",
+        "      const y = e.clientY - cr.top - 10;",
+        "      tip.style.left = (x + 150 > cr.width ? x - 160 : x) + 'px';",
+        "      tip.style.top = Math.max(0, y) + 'px';",
+        "      tip.style.display = 'block';",
+        "    });",
+        "    svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; });",
+        "  })();",
         "</script>",
         "</body>", "</html>", "",
     ]
