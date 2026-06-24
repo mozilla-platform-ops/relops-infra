@@ -134,6 +134,27 @@ def short_label(hostname: str) -> str:
     return base
 
 
+def is_moonshot_host_token(token: str) -> bool:
+    """Return True if token is a host form Medic is allowed to reset."""
+    return bool(re.fullmatch(
+        r'(?:ms-?\d+|t-linux64-ms-\d+(?:\.test\.releng\.mdc[12]\.mozilla\.com)?)',
+        token.strip(),
+        re.IGNORECASE,
+    ))
+
+
+def parse_bad_hosts(raw: str) -> tuple[list[str], list[str]]:
+    """Parse fleetroll's hostname-only output, returning valid tokens and ignored words."""
+    hosts: list[str] = []
+    ignored: list[str] = []
+    for token in raw.split():
+        if is_moonshot_host_token(token):
+            hosts.append(token)
+        else:
+            ignored.append(token)
+    return hosts, ignored
+
+
 # --- SSH probe ---
 
 def ssh_is_online(fqdn: str, timeout: int = 10) -> bool:
@@ -379,6 +400,9 @@ def update_overview_html(state: dict) -> None:
         "  .warn { color: #f90; }",
         "  .chart-tip { position:absolute; background:#222; border:1px solid #444; padding:.4rem .6rem; font-size:.8rem; color:#ccc; pointer-events:none; display:none; z-index:10; max-width:320px; }",
         "  .chart-tip strong { color:#fff; }",
+        "  .summary-box { background:#1a1a1a; border:1px solid #444; border-radius:3px; padding:.6rem 1rem; margin-bottom:1.2rem; display:inline-block; }",
+        "  .summary-box .stat { color:#fff; font-size:.95rem; }",
+        "  .summary-box .stat + .stat { margin-top:.2rem; }",
         "</style>",
         "</head>",
         "<body>",
@@ -388,16 +412,18 @@ def update_overview_html(state: dict) -> None:
         '<span style="color:#888;font-size:.75rem;letter-spacing:.15em"> OVERVIEW</span>',
         "</pre>",
         f'<p class="generated">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
-        (f'<p class="generated">{total_resets} reset{"s" if total_resets != 1 else ""} across {unique_hosts} unique host{"s" if unique_hosts != 1 else ""} — {resets_24h} in last 24h, {resets_7d} in last 7 days'
-         + (f", {never_reset_pct}% of fleet never reset" if never_reset_pct is not None else "")
-         + ".</p>") if hosts else "",
-        "<h2>Reset Frequency (last 30 days)</h2>",
-        '<div id="reset-chart" style="position:relative;margin-bottom:1.5rem;max-width:860px"></div>',
-        f'<script>const RESET_CHART_DATA = {json.dumps(chart_data)};</script>',
         '<div class="tz-toggle">',
         '  <label><input type="radio" name="tz" value="local" checked> Local time</label>',
         '  <label><input type="radio" name="tz" value="utc"> UTC</label>',
         '</div>',
+        '<h2>Summary</h2>' if hosts else "",
+        ('<div class="summary-box"><span class="stat">'
+         + f'{total_resets} reset{"s" if total_resets != 1 else ""} &nbsp;·&nbsp; {unique_hosts} unique host{"s" if unique_hosts != 1 else ""} &nbsp;·&nbsp; {resets_24h} last 24h &nbsp;·&nbsp; {resets_7d} last 7d'
+         + (f' &nbsp;·&nbsp; {never_reset_pct}% never reset' if never_reset_pct is not None else "")
+         + '</span></div>') if hosts else "",
+        "<h2>Reset Frequency (last 30 days)</h2>",
+        '<div id="reset-chart" style="position:relative;margin-bottom:1.5rem;max-width:860px"></div>',
+        f'<script>const RESET_CHART_DATA = {json.dumps(chart_data)};</script>',
     ]
 
     counts = daily_counts()
@@ -670,7 +696,8 @@ VOICE_HOUR_END = 18
 def say(msg: str) -> None:
     if not _voice_enabled:
         return
-    if not _voice_all_hours and not (VOICE_HOUR_START <= datetime.datetime.now().hour < VOICE_HOUR_END):
+    now = datetime.datetime.now()
+    if not _voice_all_hours and not (now.weekday() < 5 and VOICE_HOUR_START <= now.hour < VOICE_HOUR_END):
         return
     subprocess.run(["say", "-v", "Rocko", "-r", "220", msg], check=False)
 
@@ -684,6 +711,11 @@ def run(cmd: list, *, cwd: Path | None = None, check: bool = True) -> subprocess
 def capture(cmd: list, *, cwd: Path | None = None, check: bool = True) -> str:
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
     return (result.stdout + result.stderr).strip()
+
+
+def capture_stdout(cmd: list, *, cwd: Path | None = None, check: bool = True) -> tuple[str, str]:
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
+    return result.stdout.strip(), result.stderr.strip()
 
 
 # --- per-host collection ---
@@ -754,6 +786,8 @@ def parse_args() -> argparse.Namespace:
                         help="Minutes to sleep between auto runs (default: 15).")
     parser.add_argument("--freshness-min-pct", type=int, default=FRESHNESS_MIN_PCT, metavar="PCT",
                         help=f"Minimum %% of hosts with fresh fleetroll data required (default: {FRESHNESS_MIN_PCT}).")
+    parser.add_argument("--update-report", action="store_true",
+                        help="Regenerate OVERVIEW.html and OVERVIEW.md from existing state, then exit.")
     return parser.parse_args()
 
 
@@ -770,6 +804,13 @@ def main() -> None:
     if args.freshness_requirement is not None and args.freshness_requirement < 1:
         err("--freshness-requirement must be at least 1 minute.")
         sys.exit(1)
+
+    if args.update_report:
+        state = load_state()
+        update_overview_html(state)
+        update_overview_md(state)
+        info(f"Report updated: {OVERVIEW_HTML_FILE}")
+        return
 
     signal.signal(signal.SIGINT, _sigint_handler)
 
@@ -796,8 +837,12 @@ def main() -> None:
             err(f"Fleetroll data is stale (older than {stale_threshold}s). Refresh it before previewing.")
             sys.exit(1)
         info("Fetching bad-host list to preview run...")
-        raw = capture(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False)
-        preview_hosts = raw.split() if raw else []
+        raw, raw_err = capture_stdout(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False)
+        if raw_err:
+            warn(f"Ignoring stderr from fleetroll bad-host list: {raw_err}")
+        preview_hosts, ignored_hosts = parse_bad_hosts(raw)
+        if ignored_hosts:
+            warn(f"Ignoring {len(ignored_hosts)} non-host token(s) from fleetroll stdout: {' '.join(ignored_hosts)}")
         n = min(len(preview_hosts), AUTO_BATCH_SIZE)
         print()
         if n:
@@ -842,6 +887,7 @@ def main() -> None:
             if r.returncode != 0:
                 print()
                 warn(f"Fleetroll data is stale (older than {stale_threshold}s) — will retry next loop.")
+                say("Stale Fleetroll data")
                 stale = True
                 last_failed = True
 
@@ -849,7 +895,13 @@ def main() -> None:
         if not stale:
             if args.auto:
                 info("Fetching bad-host list from fleetroll...")
-                hosts = [worker_fqdn(h) for h in capture(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False).split()]
+                raw, raw_err = capture_stdout(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False)
+                if raw_err:
+                    warn(f"Ignoring stderr from fleetroll bad-host list: {raw_err}")
+                host_tokens, ignored_hosts = parse_bad_hosts(raw)
+                if ignored_hosts:
+                    warn(f"Ignoring {len(ignored_hosts)} non-host token(s) from fleetroll stdout: {' '.join(ignored_hosts)}")
+                hosts = [worker_fqdn(h) for h in host_tokens]
             elif args.hostname:
                 hosts = [worker_fqdn(h) for h in args.hostname]
             else:

@@ -61,6 +61,41 @@ class TestWorkerFqdn:
         assert ".mdc2." in mm.worker_fqdn("ms-346")
 
 
+class TestParseBadHosts:
+    def test_accepts_short_and_fqdn_forms(self):
+        raw = "ms001 ms-002 t-linux64-ms-003 t-linux64-ms-004.test.releng.mdc1.mozilla.com"
+        hosts, ignored = mm.parse_bad_hosts(raw)
+
+        assert hosts == [
+            "ms001",
+            "ms-002",
+            "t-linux64-ms-003",
+            "t-linux64-ms-004.test.releng.mdc1.mozilla.com",
+        ]
+        assert ignored == []
+
+    def test_rejects_uv_warning_words(self):
+        raw = (
+            "warning: `VIRTUAL_ENV=/Users/aerickson/git/relops-infra/moonshot/.venv` "
+            "does not match the project environment path `.venv` and will be ignored; "
+            "use `--active` to target the active environment instead"
+        )
+        hosts, ignored = mm.parse_bad_hosts(raw)
+
+        assert hosts == []
+        assert ignored == raw.split()
+
+    def test_keeps_valid_hosts_when_noise_is_present(self):
+        raw = "ms025 warning: t-linux64-ms-026.test.releng.mdc1.mozilla.com ignored;"
+        hosts, ignored = mm.parse_bad_hosts(raw)
+
+        assert hosts == [
+            "ms025",
+            "t-linux64-ms-026.test.releng.mdc1.mozilla.com",
+        ]
+        assert ignored == ["warning:", "ignored;"]
+
+
 class TestHostEntry:
     def test_creates_default_entry(self):
         state = _state()
