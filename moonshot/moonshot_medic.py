@@ -309,6 +309,10 @@ def _never_reset_summary(hosts: dict) -> tuple[int, int, int, str] | None:
     return len(never_reset), len(fleet_hosts), pct, source
 
 
+def announce_overview_report() -> None:
+    info(f"Overview report: {OVERVIEW_HTML_FILE}")
+
+
 def _resets_since(hosts: dict, hours: int) -> int:
     cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)).isoformat()
     return sum(
@@ -949,6 +953,8 @@ def main() -> None:
         state = load_state()
         update_overview_md(state)
         update_overview_html(state)
+    if args.auto:
+        announce_overview_report()
 
     last_failed = False
     first_run = True

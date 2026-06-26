@@ -310,3 +310,12 @@ class TestOverviewHtml:
         assert '<link rel="icon" href="favicon.svg" type="image/svg+xml">' in html
         assert "<svg" in favicon
         assert "Moonshot" not in favicon
+
+    def test_announce_overview_report_prints_html_path(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(mm, "OVERVIEW_HTML_FILE", tmp_path / "OVERVIEW.html")
+
+        mm.announce_overview_report()
+
+        out = capsys.readouterr().out
+        assert "Overview report:" in out
+        assert str(tmp_path / "OVERVIEW.html") in out
