@@ -3,6 +3,7 @@
 older/
 # generated overview files
 OVERVIEW*
+favicon.svg
 # generated reports
 _analysis/
 # moonshot medic state

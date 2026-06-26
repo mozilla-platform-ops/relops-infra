@@ -33,6 +33,7 @@ SCRIPT_VOICE_NAME = "Moonshot Medic"
 STATE_FILE = RESULTS_BASE / "state.json"
 OVERVIEW_FILE = RESULTS_BASE / "OVERVIEW.md"
 OVERVIEW_HTML_FILE = RESULTS_BASE / "OVERVIEW.html"
+FAVICON_FILE = RESULTS_BASE / "favicon.svg"
 SKIP_THRESHOLD_CONSECUTIVE = 3
 SKIP_DURATION_HOURS = 6
 FRESHNESS_MIN_PCT = 65
@@ -388,6 +389,17 @@ def update_overview_md(state: dict) -> None:
     OVERVIEW_FILE.write_text("\n".join(lines) + "\n")
 
 
+def update_favicon() -> None:
+    RESULTS_BASE.mkdir(parents=True, exist_ok=True)
+    FAVICON_FILE.write_text("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="10" fill="#111"/>
+  <path d="M12 44V18h8l12 15 12-15h8v26h-8V30L34 43h-4L20 30v14z" fill="#0ff"/>
+  <circle cx="50" cy="14" r="6" fill="#f90"/>
+  <path d="M10 52h44" stroke="#444" stroke-width="4" stroke-linecap="round"/>
+</svg>
+""")
+
+
 def update_overview_html(state: dict) -> None:
     now = datetime.datetime.now(datetime.timezone.utc)
     hosts = state.get("hosts", {})
@@ -445,6 +457,7 @@ def update_overview_html(state: dict) -> None:
         "<head>",
         '<meta charset="utf-8">',
         '<meta http-equiv="refresh" content="60">',
+        '<link rel="icon" href="favicon.svg" type="image/svg+xml">',
         "<title>Moonshot Medic: Overview</title>",
         "<style>",
         "  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }",
@@ -724,6 +737,7 @@ def update_overview_html(state: dict) -> None:
     ]
 
     RESULTS_BASE.mkdir(parents=True, exist_ok=True)
+    update_favicon()
     OVERVIEW_HTML_FILE.write_text("\n".join(parts))
 
 

@@ -294,3 +294,19 @@ class TestFleetDenominator:
             50,
             "SSH-observed Linux Moonshots",
         )
+
+
+class TestOverviewHtml:
+    def test_writes_favicon_and_links_it(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mm, "RESULTS_BASE", tmp_path)
+        monkeypatch.setattr(mm, "OVERVIEW_HTML_FILE", tmp_path / "OVERVIEW.html")
+        monkeypatch.setattr(mm, "FAVICON_FILE", tmp_path / "favicon.svg")
+        monkeypatch.setattr(mm, "_report_fleet_hosts", lambda: ({FQDN}, "SSH-observed Linux Moonshots"))
+
+        mm.update_overview_html({"hosts": {FQDN: {"total_resets": 1, "reset_timestamps": []}}})
+
+        html = (tmp_path / "OVERVIEW.html").read_text()
+        favicon = (tmp_path / "favicon.svg").read_text()
+        assert '<link rel="icon" href="favicon.svg" type="image/svg+xml">' in html
+        assert "<svg" in favicon
+        assert "Moonshot" not in favicon
