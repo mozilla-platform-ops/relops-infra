@@ -36,6 +36,8 @@ OVERVIEW_HTML_FILE = RESULTS_BASE / "OVERVIEW.html"
 SKIP_THRESHOLD_CONSECUTIVE = 3
 SKIP_DURATION_HOURS = 6
 FRESHNESS_MIN_PCT = 65
+MOONSHOT_HOST_RE = re.compile(r'^t-linux64-ms-\d+\.test\.releng\.mdc[12]\.mozilla\.com$', re.IGNORECASE)
+MOONSHOT_OBSERVED_FILTER = "host~t-linux64-ms os=L sort:host:asc"
 
 SSH_OPTS = [
     "-o", "StrictHostKeyChecking=accept-new",
@@ -123,6 +125,14 @@ def worker_fqdn(hostname: str) -> str:
         c = (i - 1) // 45 + 1
     dc = "mdc2" if c > 7 else "mdc1"
     return f"{prefix}{slot_str.zfill(3)}.test.releng.{dc}.mozilla.com"
+
+
+def canonical_moonshot_fqdn(hostname: str) -> str | None:
+    """Return a canonical Moonshot FQDN, or None for non-Moonshot input."""
+    fqdn = worker_fqdn(hostname.strip())
+    if MOONSHOT_HOST_RE.fullmatch(fqdn):
+        return fqdn
+    return None
 
 
 def short_label(hostname: str) -> str:
@@ -235,12 +245,67 @@ def is_skipped(state: dict, fqdn: str) -> bool:
     return datetime.datetime.fromisoformat(skip_until) > datetime.datetime.now(datetime.timezone.utc)
 
 
-def _fleet_size() -> int:
-    host_list = FLEETROLL_DIR / "configs/host-lists/linux/all.list"
+def _configured_linux_moonshot_hosts() -> set[str]:
+    host_list = FLEETROLL_DIR / "configs/host-lists/linux/all_moonshots.list"
     if not host_list.exists():
-        return 0
-    return sum(1 for line in host_list.read_text().splitlines()
-               if line.strip() and not line.startswith("#"))
+        host_list = FLEETROLL_DIR / "configs/host-lists/linux/all.list"
+    if not host_list.exists():
+        return set()
+    hosts = set()
+    for line in host_list.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fqdn = canonical_moonshot_fqdn(line)
+        if fqdn:
+            hosts.add(fqdn)
+    return hosts
+
+
+def _ssh_observed_linux_moonshot_hosts() -> set[str] | None:
+    host_list = FLEETROLL_DIR / "configs/host-lists/linux/all_moonshots.list"
+    if not host_list.exists():
+        return None
+    cmd = [
+        "uv", "run", "fleetroll", "host-monitor", str(host_list),
+        "--once", "--hostname-only", "--filter", MOONSHOT_OBSERVED_FILTER,
+    ]
+    result = subprocess.run(cmd, cwd=FLEETROLL_DIR, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        warn(f"Could not query SSH-observed Moonshot fleet from fleetroll CLI: {detail}")
+        return None
+    hosts = set()
+    ignored = []
+    for line in result.stdout.splitlines():
+        fqdn = canonical_moonshot_fqdn(line)
+        if fqdn:
+            hosts.add(fqdn)
+        elif line.strip():
+            ignored.append(line.strip())
+    if ignored:
+        warn(f"Ignoring {len(ignored)} non-Moonshot line(s) from fleetroll CLI output")
+    return hosts
+
+
+def _report_fleet_hosts() -> tuple[set[str], str]:
+    hosts = _ssh_observed_linux_moonshot_hosts()
+    if hosts:
+        return hosts, "SSH-observed Linux Moonshots"
+    return _configured_linux_moonshot_hosts(), "configured Linux Moonshots fallback"
+
+
+def _never_reset_summary(hosts: dict) -> tuple[int, int, int, str] | None:
+    fleet_hosts, source = _report_fleet_hosts()
+    if not fleet_hosts:
+        return None
+    reset_hosts = {
+        fqdn for fqdn, h in hosts.items()
+        if h.get("total_resets", 0) > 0 and canonical_moonshot_fqdn(fqdn)
+    }
+    never_reset = fleet_hosts - reset_hosts
+    pct = round(100 * len(never_reset) / len(fleet_hosts))
+    return len(never_reset), len(fleet_hosts), pct, source
 
 
 def _resets_since(hosts: dict, hours: int) -> int:
@@ -276,10 +341,12 @@ def update_overview_md(state: dict) -> None:
     unique_hosts = sum(1 for h in hosts.values() if h.get("total_resets", 0) > 0)
     resets_24h = _resets_since(hosts, 24)
     resets_7d = _resets_since(hosts, 24 * 7)
-    fleet_size = _fleet_size()
-    never_reset_pct = round(100 * (fleet_size - unique_hosts) / fleet_size) if fleet_size else None
+    never_reset = _never_reset_summary(hosts)
     if hosts:
-        never_reset_str = f", {never_reset_pct}% of fleet never reset" if never_reset_pct is not None else ""
+        never_reset_str = ""
+        if never_reset is not None:
+            never_count, fleet_size, never_pct, source = never_reset
+            never_reset_str = f", {never_count} of {fleet_size} {source} never reset ({never_pct}%)"
         lines.append(f"_{total_resets} reset{'s' if total_resets != 1 else ''} across {unique_hosts} unique host{'s' if unique_hosts != 1 else ''} — {resets_24h} in last 24h, {resets_7d} in last 7 days{never_reset_str}._")
         lines.append("")
 
@@ -341,8 +408,12 @@ def update_overview_html(state: dict) -> None:
     unique_hosts = sum(1 for h in hosts.values() if h.get("total_resets", 0) > 0)
     resets_24h = _resets_since(hosts, 24)
     resets_7d = _resets_since(hosts, 24 * 7)
-    fleet_size = _fleet_size()
-    never_reset_pct = round(100 * (fleet_size - unique_hosts) / fleet_size) if fleet_size else None
+    fleet_hosts, fleet_source = _report_fleet_hosts()
+    never_reset_hosts = fleet_hosts - {
+        fqdn for fqdn, h in hosts.items()
+        if h.get("total_resets", 0) > 0 and canonical_moonshot_fqdn(fqdn)
+    }
+    never_reset_pct = round(100 * len(never_reset_hosts) / len(fleet_hosts)) if fleet_hosts else None
 
     from collections import defaultdict
     _buckets: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
@@ -359,13 +430,9 @@ def update_overview_html(state: dict) -> None:
     _reset_counts: dict[int, list[str]] = defaultdict(list)
     for _fqdn, _h in hosts.items():
         _reset_counts[_h.get("total_resets", 0)].append(short_label(_fqdn))
-    _host_list_path = FLEETROLL_DIR / "configs/host-lists/linux/all.list"
-    if _host_list_path.exists():
-        _known = {_fqdn for _fqdn in hosts}
-        for _line in _host_list_path.read_text().splitlines():
-            _line = _line.strip()
-            if _line and not _line.startswith("#") and _line not in _known:
-                _reset_counts[0].append(short_label(_line))
+    _known = {_fqdn for _fqdn in hosts}
+    for _fqdn in fleet_hosts - _known:
+        _reset_counts[0].append(short_label(_fqdn))
     _max_bucket = max(_reset_counts.keys(), default=0)
     hist_data = [
         {"resets": i, "count": len(_reset_counts[i]), "hosts": sorted(_reset_counts[i])}
@@ -419,7 +486,7 @@ def update_overview_html(state: dict) -> None:
         '<h2>Summary</h2>' if hosts else "",
         ('<div class="summary-box"><span class="stat">'
          + f'{total_resets} reset{"s" if total_resets != 1 else ""} &nbsp;·&nbsp; {unique_hosts} unique host{"s" if unique_hosts != 1 else ""} &nbsp;·&nbsp; {resets_24h} last 24h &nbsp;·&nbsp; {resets_7d} last 7d'
-         + (f' &nbsp;·&nbsp; {never_reset_pct}% never reset' if never_reset_pct is not None else "")
+         + (f' &nbsp;·&nbsp; {len(never_reset_hosts)} of {len(fleet_hosts)} {fleet_source} never reset ({never_reset_pct}%)' if never_reset_pct is not None else "")
          + '</span></div>') if hosts else "",
         "<h2>Reset Frequency (last 30 days)</h2>",
         '<div id="reset-chart" style="position:relative;margin-bottom:1.5rem;max-width:860px"></div>',

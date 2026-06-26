@@ -228,3 +228,69 @@ class TestResetsSince:
     def test_missing_reset_timestamps_key(self):
         hosts = {FQDN: {}}
         assert mm._resets_since(hosts, hours=24) == 0
+
+
+class TestFleetDenominator:
+    def test_canonical_moonshot_fqdn_accepts_short_label(self):
+        assert mm.canonical_moonshot_fqdn("ms025") == FQDN
+
+    def test_canonical_moonshot_fqdn_rejects_non_moonshot_text(self):
+        assert mm.canonical_moonshot_fqdn("warning:") is None
+
+    def test_ssh_observed_hosts_uses_fleetroll_cli(self, monkeypatch, tmp_path):
+        host_list = tmp_path / "configs/host-lists/linux/all_moonshots.list"
+        host_list.parent.mkdir(parents=True)
+        host_list.write_text(FQDN + "\n")
+        monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+
+        def fake_run(cmd, *, cwd, capture_output, text, check):
+            assert cmd[:4] == ["uv", "run", "fleetroll", "host-monitor"]
+            assert cwd == tmp_path
+            assert "--hostname-only" in cmd
+            assert mm.MOONSHOT_OBSERVED_FILTER in cmd
+            return mm.subprocess.CompletedProcess(cmd, 0, stdout=f"{FQDN}\nnot-a-host\n", stderr="")
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+
+        assert mm._ssh_observed_linux_moonshot_hosts() == {FQDN}
+
+    def test_ssh_observed_hosts_returns_none_when_cli_fails(self, monkeypatch, tmp_path):
+        host_list = tmp_path / "configs/host-lists/linux/all_moonshots.list"
+        host_list.parent.mkdir(parents=True)
+        host_list.write_text(FQDN + "\n")
+        monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+
+        def fake_run(cmd, *, cwd, capture_output, text, check):
+            return mm.subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+
+        assert mm._ssh_observed_linux_moonshot_hosts() is None
+
+    def test_configured_hosts_falls_back_to_all_list(self, monkeypatch, tmp_path):
+        host_list = tmp_path / "configs/host-lists/linux/all.list"
+        host_list.parent.mkdir(parents=True)
+        host_list.write_text(f"# comment\n{FQDN}\nnot-a-host\n")
+        monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+
+        assert mm._configured_linux_moonshot_hosts() == {FQDN}
+
+    def test_never_reset_summary_uses_set_difference(self, monkeypatch):
+        fqdn2 = "t-linux64-ms-026.test.releng.mdc1.mozilla.com"
+        fqdn3 = "t-linux64-ms-027.test.releng.mdc1.mozilla.com"
+        state_hosts = {
+            FQDN: {"total_resets": 2},
+            fqdn3: {"total_resets": 1},
+        }
+        monkeypatch.setattr(
+            mm,
+            "_report_fleet_hosts",
+            lambda: ({FQDN, fqdn2}, "SSH-observed Linux Moonshots"),
+        )
+
+        assert mm._never_reset_summary(state_hosts) == (
+            1,
+            2,
+            50,
+            "SSH-observed Linux Moonshots",
+        )
