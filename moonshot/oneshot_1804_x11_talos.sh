@@ -6,6 +6,8 @@ set -e
 # Check for --confirm flag
 CONFIRM=false
 for arg in "$@"; do
+  # A non-breaking space is easy to paste after --confirm from formatted text.
+  arg="${arg//$'\u00a0'/}"
   if [[ "$arg" == "--confirm" ]]; then
     CONFIRM=true
     break
@@ -14,6 +16,7 @@ done
 
 POSITIONAL_ARGS=()
 for arg in "$@"; do
+  arg="${arg//$'\u00a0'/}"
   [[ "$arg" != "--confirm" ]] && POSITIONAL_ARGS+=("$arg")
 done
 
