@@ -78,8 +78,6 @@ HOST_NUMBER="$3"
 ROLE="$4"
 OS_VERSION="$5"
 
-# calculated
-HOSTNAME="t-linux64-ms-${HOST_NUMBER}.test.releng.mdc1.mozilla.com"
 # 18.04 uses root, newer versions use relops
 if [[ "$OS_VERSION" == "1804" ]]; then
   SSH_USER="root"
@@ -93,6 +91,24 @@ if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" || -z "$ROLE" || -z 
   echo "Example: $0 1 3 023 gecko_t_linux_2404_talos 2404"
   exit 1
 fi
+
+if [[ ! "$HOST_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "Error: host_number must be the numeric worker ID (for example, 046), not a hostname or FQDN." >&2
+  exit 1
+fi
+
+if [[ ! "$CHASSIS" =~ ^[0-9]+$ ]]; then
+  echo "Error: chassis must be numeric." >&2
+  exit 1
+fi
+
+# calculated
+if (( CHASSIS > 7 )); then
+  DATACENTER="mdc2"
+else
+  DATACENTER="mdc1"
+fi
+HOSTNAME="t-linux64-ms-${HOST_NUMBER}.test.releng.${DATACENTER}.mozilla.com"
 
 # get the calling script's info for ascii art display
 #
