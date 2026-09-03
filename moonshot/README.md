@@ -57,6 +57,15 @@ Checks the power status of moonshot cartridges by sending an ILO command (`show 
 ./check_power.sh
 ```
 
+### check_power_supplies.py
+
+Checks every reported power supply in each of the seven mdc1 Moonshot chassis over iLO SSH. It uses the `relops` iLO SSH key already loaded in `ssh-agent` and the legacy algorithms required by the chassis. Use `--host` to check only one chassis.
+
+```bash
+./check_power_supplies.py
+./check_power_supplies.py --host 6
+```
+
 ### moon_command.sh
 
 Executes generic commands on the Moonshot chassis iLO.
