@@ -57,6 +57,15 @@ Checks the power status of moonshot cartridges by sending an ILO command (`show 
 ./check_power.sh
 ```
 
+### check_power_supplies.py
+
+Checks every reported power supply in each of the seven mdc1 Moonshot chassis over iLO SSH. It uses the `relops` iLO SSH key already loaded in `ssh-agent` and the legacy algorithms required by the chassis. Use `--host` to check only one chassis.
+
+```bash
+./check_power_supplies.py
+./check_power_supplies.py --host 6
+```
+
 ### moon_command.sh
 
 Executes generic commands on the Moonshot chassis iLO.
@@ -156,12 +165,20 @@ of what would happen.
 ./oneshot_1804_x11_talos.sh <chassis> <cartridge> <host_number>
 
 # Ubuntu 18.04 X11 Talos (actual execution)
+# The wrapper derives chassis and cartridge from the worker number or hostname.
+./oneshot_1804_x11_talos.sh <host_number_or_hostname> --confirm
+# Example: ./oneshot_1804_x11_talos.sh 229 --confirm
+# The original explicit form remains supported:
 ./oneshot_1804_x11_talos.sh <chassis> <cartridge> <host_number> --confirm
-# Example: ./oneshot_1804_x11_talos.sh 1 3 023 --confirm
 
 # Ubuntu 24.04 X11 Talos (actual execution)
+# The wrapper derives chassis and cartridge from the worker number or hostname.
+./oneshot_2404_x11_talos.sh <host_number_or_hostname> --confirm
+# Example: ./oneshot_2404_x11_talos.sh 229 --confirm
+# Full hostnames work too:
+./oneshot_2404_x11_talos.sh t-linux64-ms-229.test.releng.mdc1.mozilla.com --confirm
+# The original explicit form remains supported:
 ./oneshot_2404_x11_talos.sh <chassis> <cartridge> <host_number> --confirm
-# Example: ./oneshot_2404_x11_talos.sh 1 3 023 --confirm
 ```
 
 ### Configuration for Oneshot Scripts
