@@ -16,6 +16,7 @@ Usage:
 import argparse
 import datetime
 import json
+import math
 import re
 import signal
 import socket
@@ -193,7 +194,12 @@ def check_fleet_reset_circuit_breaker(
         f"({candidate_pct:.1f}%; maximum {max_reset_pct:g}%)"
     )
     if candidate_pct > max_reset_pct:
-        return False, candidates, f"Circuit breaker tripped — {summary}"
+        required_pct = math.ceil(candidate_pct)
+        return False, candidates, (
+            f"Circuit breaker tripped — {summary}. "
+            "After reviewing the candidate list, run an attended one-time recovery with "
+            f"--auto --once --confirm --max-fleet-reset-pct {required_pct}"
+        )
     return True, candidates, summary
 
 

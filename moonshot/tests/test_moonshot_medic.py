@@ -221,6 +221,7 @@ class TestFleetResetCircuitBreaker:
         assert allowed is False
         assert len(candidates) == 11
         assert summary.startswith("Circuit breaker tripped")
+        assert "--auto --once --confirm --max-fleet-reset-pct 11" in summary
 
     def test_deduplicates_before_calculating_percentage(self, monkeypatch):
         fleet = {mm.worker_fqdn(f"ms{i:03d}") for i in range(1, 11)}
