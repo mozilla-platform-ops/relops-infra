@@ -23,6 +23,107 @@ def _past(hours=24):
 FQDN = "t-linux64-ms-025.test.releng.mdc1.mozilla.com"
 
 
+def _freshness_report():
+    return {
+        "schema_version": 2,
+        "status": "fresh",
+        "host_source": "configs/host-lists/linux/all.list",
+        "hosts_total": 280,
+        "required_sources": ["host", "tc"],
+        "sources": {
+            "host": {"status": "fresh", "hosts_fresh": 270, "hosts_total": 280},
+            "tc": {"status": "fresh", "hosts_fresh": 269, "hosts_total": 280},
+        },
+        "failures": [],
+    }
+
+
+class TestFleetrollFreshness:
+    def test_accepts_fresh_schema_v2_report(self):
+        valid, messages = mm.validate_fleetroll_freshness(
+            mm.json.dumps(_freshness_report()), 0,
+        )
+
+        assert valid is True
+        assert messages == ["host: fresh (270/280 hosts)", "tc: fresh (269/280 hosts)"]
+
+    def test_rejects_nonempty_failures_even_if_status_is_fresh(self):
+        report = _freshness_report()
+        report["failures"] = [{"source": "tc", "reason": "collector failed"}]
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 0)
+
+        assert valid is False
+        assert "Fleetroll tc freshness failure: collector failed" in messages
+
+    @pytest.mark.parametrize("schema", [None, 1, 3])
+    def test_rejects_unknown_or_missing_schema(self, schema):
+        report = _freshness_report()
+        report["schema_version"] = schema
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 0)
+
+        assert valid is False
+        assert any("Unsupported Fleetroll freshness schema" in message for message in messages)
+
+    def test_rejects_missing_required_tc_source(self):
+        report = _freshness_report()
+        report["required_sources"] = ["host"]
+        del report["sources"]["tc"]
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 0)
+
+        assert valid is False
+        assert "Fleetroll freshness report is missing required source(s): tc" in messages
+
+    def test_rejects_malformed_required_sources_without_crashing(self):
+        report = _freshness_report()
+        report["required_sources"] = ["host", {"source": "tc"}]
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 0)
+
+        assert valid is False
+        assert "Fleetroll freshness required_sources contains non-string values" in messages
+        assert "Fleetroll freshness report is missing required source(s): tc" in messages
+
+    def test_rejects_stale_source_and_failure(self):
+        report = _freshness_report()
+        report["status"] = "stale"
+        report["sources"]["tc"]["status"] = "stale"
+        report["failures"] = [{"source": "tc", "reason": "coverage is 10%"}]
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 1)
+
+        assert valid is False
+        assert "Fleetroll tc data is 'stale' (269/280 hosts fresh)" in messages
+        assert "Fleetroll tc freshness failure: coverage is 10%" in messages
+        assert "Fleetroll overall freshness status is 'stale'" in messages
+        assert "Fleetroll freshness command exited with status 1" in messages
+
+    def test_rejects_invalid_json(self):
+        valid, messages = mm.validate_fleetroll_freshness("not-json", 1)
+
+        assert valid is False
+        assert messages[0].startswith("Fleetroll returned invalid freshness JSON:")
+
+    def test_command_requests_json_and_requires_fresh(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+
+        def fake_run(cmd, *, cwd, capture_output, text, check):
+            assert cwd == tmp_path
+            assert "--json" in cmd
+            assert "--require-fresh" in cmd
+            assert cmd[cmd.index("--stale-threshold") + 1] == "900"
+            assert cmd[cmd.index("--min-fresh-pct") + 1] == "65"
+            return mm.subprocess.CompletedProcess(
+                cmd, 0, stdout=mm.json.dumps(_freshness_report()), stderr="",
+            )
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+
+        assert mm.check_fleetroll_data_freshness(900, 65) is True
+
+
 class TestShortLabel:
     def test_fqdn(self):
         assert mm.short_label(FQDN) == "ms025"
@@ -94,6 +195,85 @@ class TestParseBadHosts:
             "t-linux64-ms-026.test.releng.mdc1.mozilla.com",
         ]
         assert ignored == ["warning:", "ignored;"]
+
+
+class TestFleetResetCircuitBreaker:
+    def test_allows_candidates_at_limit(self, monkeypatch):
+        fleet = {mm.worker_fqdn(f"ms{i:03d}") for i in range(1, 101)}
+        monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: fleet)
+
+        allowed, candidates, summary = mm.check_fleet_reset_circuit_breaker(
+            [f"ms{i:03d}" for i in range(1, 11)], 10,
+        )
+
+        assert allowed is True
+        assert len(candidates) == 10
+        assert "10/100 (10.0%; maximum 10%)" in summary
+
+    def test_trips_above_limit(self, monkeypatch):
+        fleet = {mm.worker_fqdn(f"ms{i:03d}") for i in range(1, 101)}
+        monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: fleet)
+
+        allowed, candidates, summary = mm.check_fleet_reset_circuit_breaker(
+            [f"ms{i:03d}" for i in range(1, 12)], 10,
+        )
+
+        assert allowed is False
+        assert len(candidates) == 11
+        assert summary.startswith("Circuit breaker tripped")
+
+    def test_deduplicates_before_calculating_percentage(self, monkeypatch):
+        fleet = {mm.worker_fqdn(f"ms{i:03d}") for i in range(1, 11)}
+        monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: fleet)
+
+        allowed, candidates, _summary = mm.check_fleet_reset_circuit_breaker(
+            ["ms001", "ms001"], 10,
+        )
+
+        assert allowed is True
+        assert candidates == [mm.worker_fqdn("ms001")]
+
+    def test_rejects_host_outside_inventory(self, monkeypatch):
+        monkeypatch.setattr(
+            mm, "_configured_linux_moonshot_hosts", lambda: {mm.worker_fqdn("ms001")},
+        )
+
+        allowed, _candidates, summary = mm.check_fleet_reset_circuit_breaker(
+            ["ms999"], 100,
+        )
+
+        assert allowed is False
+        assert "outside configured inventory: ms999" in summary
+
+    def test_fails_closed_without_inventory(self, monkeypatch):
+        monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: set())
+
+        allowed, candidates, summary = mm.check_fleet_reset_circuit_breaker(["ms001"], 10)
+
+        assert allowed is False
+        assert candidates == []
+        assert "Cannot load configured Moonshot inventory" in summary
+
+
+class TestCircuitBreakerArgs:
+    def test_once_requires_auto(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["moonshot_medic.py", "--once"])
+
+        with pytest.raises(SystemExit) as exc:
+            mm.main()
+
+        assert exc.value.code == 1
+
+    def test_raised_limit_requires_once(self, monkeypatch):
+        monkeypatch.setattr(
+            sys, "argv",
+            ["moonshot_medic.py", "--auto", "--confirm", "--max-fleet-reset-pct", "11"],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            mm.main()
+
+        assert exc.value.code == 1
 
 
 class TestHostEntry:

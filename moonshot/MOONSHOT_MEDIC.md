@@ -22,9 +22,11 @@ The loop is:
    polls fleetroll on a configurable interval (default 15 min) and fetches
    the current bad-host list.
 
-2. **Gate** — Before acting, Medic checks that fleetroll's underlying data is
-   fresh (≥65% of hosts have reported within the loop interval). Stale data
-   means fleetroll itself may be broken, so the run is skipped rather than
+2. **Gate** — Before acting, Medic checks Fleetroll's versioned JSON freshness
+   report and requires both host observations and Taskcluster observations to
+   be fresh (≥65% coverage within the loop interval). It also requires the
+   expected schema and a clean failure list. Stale, malformed, or incomplete
+   data means Fleetroll itself may be broken, so the run is skipped rather than
    resetting hosts that might be fine.
 
 3. **Reset** — Each bad host is cold-reset via iLO (`reset_moonshot.py`). Medic
@@ -66,6 +68,21 @@ Resets and collects from the named hosts. Short labels (`ms025`) or FQDNs both w
 Polls fleetroll every 30 minutes and processes whatever bad hosts it finds.
 `--confirm` is required as a safeguard against accidental automation.
 
+Automatic selection is also protected by a fleet-wide circuit breaker. If the
+raw, deduplicated candidate list exceeds 10% of configured Moonshot inventory,
+Medic resets nothing and exits so an operator can investigate. Recency filtering
+happens after this check, preventing a systemic bad classification from slowly
+resetting the fleet across multiple loops.
+
+For an exceptional, attended recovery, raise the limit in a single-iteration run:
+
+```
+./bin/moonshot_medic.py --auto --once --confirm --max-fleet-reset-pct 25
+```
+
+Limits above the 10% default require `--once`, so an elevated blast radius
+cannot remain active in the long-running daemon.
+
 ### Skip reset (host already rebooted)
 
 ```
@@ -81,7 +98,10 @@ manually rebooted or just came back from maintenance.
 |---|---|---|
 | `--auto` | off | Pull bad-host list from fleetroll |
 | `--loop-interval N` | 15 min | Sleep between auto runs |
+| `--once` | off | Run one auto-mode iteration and exit |
+| `--max-fleet-reset-pct N` | 10 | Maximum percentage of configured fleet selected for automatic reset; values above 10 require `--once` |
 | `--freshness-requirement N` | same as loop-interval | Max acceptable fleetroll data age |
+| `--freshness-min-pct N` | 65 | Minimum host and Taskcluster freshness coverage |
 | `--no-reset` / `-n` | off | Skip iLO reboot |
 | `--ignore-recency` | off | Re-process hosts collected in the last 60 min |
 | `--no-voice` / `-q` | off | Suppress macOS `say` announcements |
