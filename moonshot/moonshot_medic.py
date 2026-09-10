@@ -6,7 +6,7 @@ Usage:
 
   --auto                    Fetch bad-host list from fleetroll instead of reading argv/stdin (requires --confirm).
   --once                    Run one auto-mode iteration, then exit.
-  --max-fleet-reset-pct     Maximum auto-selected percentage of configured fleet (default: 10).
+  --max-fleet-reset-pct     Maximum auto-selected percentage of configured fleet (default: 20).
   --no-reset                Skip iLO reboot (host already freshly rebooted).
   --freshness-requirement   Max acceptable age of fleetroll data in minutes (default: loop-interval).
   --ignore-recency          Process hosts even if collected within the last RECENCY_MINUTES minutes.
@@ -40,7 +40,7 @@ FAVICON_FILE = RESULTS_BASE / "favicon.svg"
 SKIP_THRESHOLD_CONSECUTIVE = 3
 SKIP_DURATION_HOURS = 6
 FRESHNESS_MIN_PCT = 65
-DEFAULT_MAX_FLEET_RESET_PCT = 10.0
+DEFAULT_MAX_FLEET_RESET_PCT = 20.0
 FLEETROLL_FRESHNESS_SCHEMA_VERSION = 2
 FLEETROLL_FRESHNESS_REQUIRED_SOURCES = {"host", "tc"}
 MOONSHOT_HOST_RE = re.compile(r'^t-linux64-ms-\d+\.test\.releng\.mdc[12]\.mozilla\.com$', re.IGNORECASE)

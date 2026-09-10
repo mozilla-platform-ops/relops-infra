@@ -268,7 +268,7 @@ class TestCircuitBreakerArgs:
     def test_raised_limit_requires_once(self, monkeypatch):
         monkeypatch.setattr(
             sys, "argv",
-            ["moonshot_medic.py", "--auto", "--confirm", "--max-fleet-reset-pct", "11"],
+            ["moonshot_medic.py", "--auto", "--confirm", "--max-fleet-reset-pct", "21"],
         )
 
         with pytest.raises(SystemExit) as exc:

@@ -69,7 +69,7 @@ Polls fleetroll every 30 minutes and processes whatever bad hosts it finds.
 `--confirm` is required as a safeguard against accidental automation.
 
 Automatic selection is also protected by a fleet-wide circuit breaker. If the
-raw, deduplicated candidate list exceeds 10% of configured Moonshot inventory,
+raw, deduplicated candidate list exceeds 20% of configured Moonshot inventory,
 Medic resets nothing and exits so an operator can investigate. Recency filtering
 happens after this check, preventing a systemic bad classification from slowly
 resetting the fleet across multiple loops.
@@ -80,7 +80,7 @@ For an exceptional, attended recovery, raise the limit in a single-iteration run
 ./bin/moonshot_medic.py --auto --once --confirm --max-fleet-reset-pct 25
 ```
 
-Limits above the 10% default require `--once`, so an elevated blast radius
+Limits above the 20% default require `--once`, so an elevated blast radius
 cannot remain active in the long-running daemon.
 
 ### Skip reset (host already rebooted)
@@ -99,7 +99,7 @@ manually rebooted or just came back from maintenance.
 | `--auto` | off | Pull bad-host list from fleetroll |
 | `--loop-interval N` | 15 min | Sleep between auto runs |
 | `--once` | off | Run one auto-mode iteration and exit |
-| `--max-fleet-reset-pct N` | 10 | Maximum percentage of configured fleet selected for automatic reset; values above 10 require `--once` |
+| `--max-fleet-reset-pct N` | 20 | Maximum percentage of configured fleet selected for automatic reset; values above 20 require `--once` |
 | `--freshness-requirement N` | same as loop-interval | Max acceptable fleetroll data age |
 | `--freshness-min-pct N` | 65 | Minimum host and Taskcluster freshness coverage |
 | `--no-reset` / `-n` | off | Skip iLO reboot |
