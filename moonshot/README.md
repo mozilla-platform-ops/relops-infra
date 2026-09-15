@@ -181,6 +181,22 @@ of what would happen.
 ./oneshot_2404_x11_talos.sh <chassis> <cartridge> <host_number> --confirm
 ```
 
+### oneshot_2404_netperf.sh
+
+Reimages and converges Ubuntu 24.04 Netperf hosts using the
+`gecko_t_linux_2404_netperf` Puppet role. Accepts a worker number, hostname,
+or explicit chassis/cartridge/worker number, like the Talos wrappers above.
+
+```bash
+# Dry run
+./oneshot_2404_netperf.sh <host_number_or_hostname>
+
+# Reimage and converge
+./oneshot_2404_netperf.sh <host_number_or_hostname> --confirm
+# Explicit form:
+./oneshot_2404_netperf.sh <chassis> <cartridge> <host_number> --confirm
+```
+
 ### Configuration for Oneshot Scripts
 
 **Environment Variables:**
@@ -214,7 +230,7 @@ Runs on the worker itself (as root via systemd). If disk usage exceeds 70%, clea
 4. OS installation proceeds via netboot.xyz
 
 **Oneshot Workflow:**
-1. Wrapper scripts (`oneshot_*_x11_talos.sh`) call `oneshot_linux.sh` with pre-configured parameters
+1. Wrapper scripts (`oneshot_*_x11_talos.sh` and `oneshot_2404_netperf.sh`) call `oneshot_linux.sh` with pre-configured parameters
 2. `oneshot_linux.sh` orchestrates the full workflow:
    - Reimage the host (calls appropriate `reimage_*.sh`)
    - Wait for OS installation to complete (10 minutes)
