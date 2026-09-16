@@ -8,6 +8,72 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import moonshot_medic as mm
 
 
+class TestAnnouncements:
+    @pytest.mark.parametrize("output,returncode,meeting", [
+        ('{"meeting_assessment": "likely"}', 0, True),
+        ('{"meeting_assessment": "unknown"}', 0, False),
+        ('{"meeting_assessment": "likely"}', 1, False),
+        ('invalid JSON', 0, False),
+        ('{}', 0, False),
+        ('null', 0, False),
+        ('[]', 0, False),
+    ])
+    def test_slack_status(self, monkeypatch, output, returncode, meeting):
+        def fake_run(cmd, **kwargs):
+            assert cmd == ["slack-status"]
+            assert kwargs == dict(capture_output=True, text=True, check=False, timeout=5)
+            return mm.subprocess.CompletedProcess(cmd, returncode, stdout=output)
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+        assert mm.in_slack_meeting() is meeting
+
+    @pytest.mark.parametrize("error", [
+        FileNotFoundError(), PermissionError(),
+        mm.subprocess.TimeoutExpired("slack-status", 5),
+    ])
+    def test_unavailable_status(self, monkeypatch, error):
+        def fake_run(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+        assert mm.in_slack_meeting() is False
+
+    @pytest.mark.parametrize("day,hour,enabled,all_hours,meeting,speaks,checks_slack", [
+        (14, 10, True, False, False, True, True),
+        (14, 17, True, False, True, False, True),
+        (14, 9, True, False, False, False, False),
+        (14, 18, True, False, False, False, False),
+        (19, 12, True, False, False, False, False),
+        (20, 12, True, False, False, False, False),
+        (14, 12, False, True, False, False, False),
+        (19, 22, True, True, False, True, True),
+        (19, 22, True, True, True, False, True),
+    ])
+    def test_speech_rules(self, monkeypatch, day, hour, enabled, all_hours,
+                          meeting, speaks, checks_slack):
+        class Clock(datetime.datetime):
+            @classmethod
+            def now(cls):
+                return cls(2026, 9, day, hour)
+
+        monkeypatch.setattr(mm.datetime, "datetime", Clock)
+        monkeypatch.setattr(mm, "_voice_enabled", enabled)
+        monkeypatch.setattr(mm, "_voice_all_hours", all_hours)
+        checks = []
+        calls = []
+
+        def check_meeting():
+            checks.append(True)
+            return meeting
+
+        monkeypatch.setattr(mm, "in_slack_meeting", check_meeting)
+        monkeypatch.setattr(mm.subprocess, "run", lambda *a, **kw: calls.append((a, kw)))
+        mm.say("Hello")
+        assert bool(checks) is checks_slack
+        assert calls == ([((["say", "-v", "Rocko", "-r", "220", "Hello"],),
+                          {"check": False})] if speaks else [])
+
+
 def _state():
     return {"hosts": {}}
 

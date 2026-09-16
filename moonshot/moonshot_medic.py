@@ -815,11 +815,27 @@ VOICE_HOUR_START = 10
 VOICE_HOUR_END = 18
 
 
+def in_slack_meeting() -> bool:
+    """Suppress speech only when the optional slack-status command reports a meeting."""
+    try:
+        result = subprocess.run(
+            ["slack-status"], capture_output=True, text=True, check=False, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        status = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return isinstance(status, dict) and status.get("meeting_assessment") == "likely"
+
+
 def say(msg: str) -> None:
     if not _voice_enabled:
         return
     now = datetime.datetime.now()
     if not _voice_all_hours and not (now.weekday() < 5 and VOICE_HOUR_START <= now.hour < VOICE_HOUR_END):
+        return
+    if in_slack_meeting():
         return
     subprocess.run(["say", "-v", "Rocko", "-r", "220", msg], check=False)
 
@@ -1003,7 +1019,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-q", "--no-voice", action="store_true",
                         help="Suppress spoken announcements.")
     parser.add_argument("--voice-all-hours", action="store_true",
-                        help=f"Speak outside working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00).")
+                        help=f"Speak outside working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00); "
+                             "still suppress speech when slack-status reports a meeting.")
     parser.add_argument("-l", "--loop-interval", type=int, default=15, metavar="MINUTES",
                         help="Minutes to sleep between auto runs (default: 15).")
     parser.add_argument("--once", action="store_true",
