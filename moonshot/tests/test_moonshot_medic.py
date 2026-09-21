@@ -104,6 +104,34 @@ def _freshness_report():
     }
 
 
+class TestSshReadiness:
+    def test_requires_authenticated_remote_command(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return mm.subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+
+        assert mm.ssh_is_online(FQDN, timeout=12) is True
+        cmd, kwargs = calls[0]
+        assert cmd[0] == "ssh"
+        assert "BatchMode=yes" in cmd
+        assert "ConnectTimeout=12" in cmd
+        assert cmd[-2:] == [FQDN, "true"]
+        assert kwargs["timeout"] == 17
+
+    def test_returns_false_when_session_cannot_start(self, monkeypatch):
+        monkeypatch.setattr(
+            mm.subprocess,
+            "run",
+            lambda *args, **kwargs: mm.subprocess.CompletedProcess(args[0], 255),
+        )
+
+        assert mm.ssh_is_online(FQDN) is False
+
+
 class TestFleetrollFreshness:
     def test_accepts_fresh_schema_v2_report(self):
         valid, messages = mm.validate_fleetroll_freshness(

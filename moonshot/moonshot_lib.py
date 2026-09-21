@@ -159,11 +159,32 @@ def ping_host(fqdn: str) -> bool:
     return result.returncode == 0
 
 
-def ssh_port_open(fqdn: str, timeout: float = 5.0) -> bool:
+def ssh_ready(fqdn: str, timeout: float = 10.0) -> bool:
+    """Return whether sshd can authenticate and start a remote command.
+
+    A successful TCP connection to port 22 is not sufficient during boot: the
+    listener can appear before sshd is ready to send its banner or service a
+    session.  Exercising a complete non-interactive SSH session also matches
+    what callers such as scp need.
+    """
     try:
-        with socket.create_connection((fqdn, 22), timeout=timeout):
-            return True
-    except OSError:
+        result = subprocess.run(
+            [
+                "ssh",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={max(1, int(timeout))}",
+                "-o", "ConnectionAttempts=1",
+                fqdn,
+                "true",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout + 5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -185,7 +206,7 @@ def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10) -> b
     print(f"  [{fqdn}] Ping OK. Waiting for SSH...", flush=True)
 
     while time.monotonic() < deadline:
-        if ssh_port_open(fqdn):
+        if ssh_ready(fqdn):
             break
         time.sleep(poll_interval)
     else:

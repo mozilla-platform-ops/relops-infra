@@ -19,7 +19,6 @@ import json
 import math
 import re
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -206,11 +205,25 @@ def check_fleet_reset_circuit_breaker(
 # --- SSH probe ---
 
 def ssh_is_online(fqdn: str, timeout: int = 10) -> bool:
+    """Check that SSH can authenticate and execute a command, as scp requires."""
     try:
-        sock = socket.create_connection((fqdn, 22), timeout=timeout)
-        sock.close()
-        return True
-    except (socket.timeout, OSError):
+        result = subprocess.run(
+            [
+                "ssh",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                "-o", "ConnectionAttempts=1",
+                fqdn,
+                "true",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout + 5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
