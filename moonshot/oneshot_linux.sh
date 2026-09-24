@@ -7,9 +7,6 @@ trap 'echo "Error at line $LINENO. Aborting."; exit 1' ERR
 # oneshot script:
 #   reimages and converges a linux moonshot hardware host
 
-# TODO: handle override file generation somehow... gross currently.
-#  - deliver.sh shouldn't use implicit path, have to pass in path for override
-
 # user settings
 RONIN_PUPPET_REPO_PATH="$HOME/git/ronin_puppet"
 
@@ -72,11 +69,29 @@ run_remote_script() {
 # main
 
 # args
+if [[ $# -lt 5 || $# -gt 7 ]]; then
+  echo "Usage: $0 <chassis> <cartridge> <host_number> <role> <os_version> [--ronin-settings <path>]" >&2
+  echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host." >&2
+  exit 1
+fi
 CHASSIS="$1"
 CARTRIDGE="$2"
 HOST_NUMBER="$3"
 ROLE="$4"
 OS_VERSION="$5"
+RONIN_SETTINGS_PATH=""
+if [[ $# -gt 5 ]]; then
+  if [[ $# -ne 7 || "$6" != "--ronin-settings" || -z "$7" ]]; then
+    echo "Usage: $0 <chassis> <cartridge> <host_number> <role> <os_version> [--ronin-settings <path>]" >&2
+    echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host." >&2
+    exit 1
+  fi
+  if [[ ! -f "$7" || ! -r "$7" ]]; then
+    echo "Error: ronin_settings file is not readable: $7" >&2
+    exit 1
+  fi
+  RONIN_SETTINGS_PATH="$(cd "$(dirname "$7")" && pwd -P)/$(basename "$7")"
+fi
 
 # 18.04 uses root, newer versions use relops
 if [[ "$OS_VERSION" == "1804" ]]; then
@@ -87,7 +102,8 @@ fi
 
 # TODO: show usage if any args are missing
 if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" || -z "$ROLE" || -z "$OS_VERSION" ]]; then
-  echo "Usage: $0 <chassis> <cartridge> <host_number> <role> <os_version>"
+  echo "Usage: $0 <chassis> <cartridge> <host_number> <role> <os_version> [--ronin-settings <path>]"
+  echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host."
   echo "Example: $0 1 3 023 gecko_t_linux_2404_talos 2404"
   exit 1
 fi
@@ -173,15 +189,11 @@ else
   echo "pv command not found, using built-in countdown for waits."
 fi
 
-# if there is a 'ronin-settings' file at RONIN_PUPPET_REPO_PATH/provisioners/linux,
-#  then source it to override the defaults below
-if [ -f "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings" ]; then
-  echo "Sourcing ronin-settings file to override default settings..."
+# Source the selected settings file so its bootstrap variables apply locally too.
+if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
+  echo "Sourcing ronin_settings file: $RONIN_SETTINGS_PATH"
   # shellcheck source=/dev/null
-  source "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings"
-  # TODO: sort of dangerous, we don't fully control what comes in...
-# else
-#   echo "No ronin_settings file found at ${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings, using default settings."
+  source "$RONIN_SETTINGS_PATH"
 fi
 
 # show all of the options we are using
@@ -192,6 +204,7 @@ echo "HOSTNAME (uses HOST_NUMBER):    $HOSTNAME"
 echo "ROLE:                           $ROLE"
 echo "ONESHOT_PUPPET_REPO:            ${ONESHOT_PUPPET_REPO:-}"
 echo "ONESHOT_PUPPET_BRANCH:          ${ONESHOT_PUPPET_BRANCH:-}"
+echo "RONIN_SETTINGS_PATH:            ${RONIN_SETTINGS_PATH:-<none>}"
 echo ""
 
 # if skip_reimage is set, inform user
@@ -201,8 +214,8 @@ if [[ -n "${SKIP_REIMAGE:-}" ]]; then
 fi
 
 #
-if [ -f "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/ronin_settings" ]; then
-  echo "NOTE: ronin_settings file found. It will be sent out to hosts."
+if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
+  echo "NOTE: The selected ronin_settings file will be sent to the host."
   echo ""
 fi
 
@@ -275,8 +288,22 @@ set -x
 # deliver the bootstrap script to the host
 #   e.g. ./deliver_linux.sh t-linux64-ms-023.test.releng.mdc1.mozilla.com gecko_t_linux_2404_talos
 echo "Delivering bootstrap script to host..."
-cd ${RONIN_PUPPET_REPO_PATH}/provisioners/linux
-./deliver_linux.sh "${HOSTNAME}" "${ROLE}"
+# deliver_linux.sh reads bootstrap_linux.sh and ronin_settings from its working
+# directory. Stage links outside the checkout so it sees only the selected file.
+DELIVERY_DIR=$(mktemp -d)
+cleanup_delivery_dir() {
+  [[ ! -L "$DELIVERY_DIR/bootstrap_linux.sh" ]] || unlink "$DELIVERY_DIR/bootstrap_linux.sh"
+  [[ ! -L "$DELIVERY_DIR/ronin_settings" ]] || unlink "$DELIVERY_DIR/ronin_settings"
+  rmdir "$DELIVERY_DIR"
+}
+trap cleanup_delivery_dir EXIT
+ln -s "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/bootstrap_linux.sh" "$DELIVERY_DIR/bootstrap_linux.sh"
+if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
+  ln -s "$RONIN_SETTINGS_PATH" "$DELIVERY_DIR/ronin_settings"
+fi
+(cd "$DELIVERY_DIR" && "${RONIN_PUPPET_REPO_PATH}/provisioners/linux/deliver_linux.sh" "${HOSTNAME}" "${ROLE}")
+cleanup_delivery_dir
+trap - EXIT
 
 read -r -d '' REMOTE_SCRIPT <<EOF || true
 #!/usr/bin/env bash

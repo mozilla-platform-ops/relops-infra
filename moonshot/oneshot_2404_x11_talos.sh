@@ -3,22 +3,44 @@
 set -e
 # set -x
 
-# Check for --confirm flag
 CONFIRM=false
-for arg in "$@"; do
-  # A non-breaking space is easy to paste after --confirm from formatted text.
-  arg="${arg//$'\u00a0'/}"
-  if [[ "$arg" == "--confirm" ]]; then
-    CONFIRM=true
-    break
-  fi
+RONIN_SETTINGS_PATH=""
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  arg="${1//$'\u00a0'/}"
+  case "$arg" in
+    --confirm)
+      CONFIRM=true
+      shift
+      ;;
+    --ronin-settings)
+      if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+        echo "Error: --ronin-settings requires a file path." >&2
+        exit 1
+      fi
+      RONIN_SETTINGS_PATH="$2"
+      shift 2
+      ;;
+    --*)
+      echo "Error: unknown option: $arg" >&2
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
+      ;;
+  esac
 done
 
-POSITIONAL_ARGS=()
-for arg in "$@"; do
-  arg="${arg//$'\u00a0'/}"
-  [[ "$arg" != "--confirm" ]] && POSITIONAL_ARGS+=("$arg")
-done
+if [[ -n "$RONIN_SETTINGS_PATH" && ( ! -f "$RONIN_SETTINGS_PATH" || ! -r "$RONIN_SETTINGS_PATH" ) ]]; then
+  echo "Error: ronin_settings file is not readable: $RONIN_SETTINGS_PATH" >&2
+  exit 1
+fi
+
+SETTINGS_ARGS=()
+if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
+  SETTINGS_ARGS=(--ronin-settings "$RONIN_SETTINGS_PATH")
+fi
 
 if [[ ${#POSITIONAL_ARGS[@]} -eq 1 ]]; then
   # A worker number, short hostname, or FQDN is enough to locate a cartridge.
@@ -60,11 +82,12 @@ elif [[ ${#POSITIONAL_ARGS[@]} -eq 3 ]]; then
   HOST_NUMBER="${POSITIONAL_ARGS[2]}"
   EXECUTE_ARGS="$CHASSIS $CARTRIDGE $HOST_NUMBER"
 else
-  echo "Usage: $0 <host_number_or_hostname> [--confirm]"
-  echo "   or: $0 <chassis> <cartridge> <host_number> [--confirm]"
+  echo "Usage: $0 <host_number_or_hostname> [--ronin-settings <path>] [--confirm]"
+  echo "   or: $0 <chassis> <cartridge> <host_number> [--ronin-settings <path>] [--confirm]"
   echo "Example: $0 229 --confirm"
   echo ""
   echo "Note: --confirm flag is required to execute. Without it, shows dry run."
+  echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host."
   exit 1
 fi
 
@@ -86,22 +109,44 @@ HOSTNAME="t-linux64-ms-${HOST_NUMBER}.test.releng.${DATACENTER}.mozilla.com"
 if [[ "$CONFIRM" == false ]]; then
   echo "=== DRY RUN MODE ==="
   echo "This is a dry run. To execute, add --confirm flag."
+  echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host."
   echo ""
-  echo "Would reimage and converge:"
+  if [[ -n "${SKIP_REIMAGE:-}" ]]; then
+    echo "Would skip reimage and converge:"
+  else
+    echo "Would reimage and converge:"
+  fi
   echo "  Hostname:     $HOSTNAME"
   echo "  Chassis:      $CHASSIS"
   echo "  Cartridge:    $CARTRIDGE"
   echo "  Host Number:  $HOST_NUMBER"
   echo "  OS Version:   Ubuntu $OS_VERSION (24.04)"
   echo "  Puppet Role:  $ROLE"
+  echo "  Settings:     ${RONIN_SETTINGS_PATH:-<none>}"
   echo ""
   echo "Command that would run:"
-  echo "  ./oneshot_linux.sh \"$CHASSIS\" \"$CARTRIDGE\" \"$HOST_NUMBER\" \"$ROLE\" \"$OS_VERSION\""
+  printf '  '
+  if [[ -n "${SKIP_REIMAGE:-}" ]]; then
+    printf 'SKIP_REIMAGE=%q ' "$SKIP_REIMAGE"
+  fi
+  printf './oneshot_linux.sh %q %q %q %q %q' "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION"
+  if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
+    printf ' --ronin-settings %q' "$RONIN_SETTINGS_PATH"
+  fi
+  printf '\n'
   echo ""
   echo "To execute, run:"
-  echo "  $0 $EXECUTE_ARGS --confirm"
+  printf '  '
+  if [[ -n "${SKIP_REIMAGE:-}" ]]; then
+    printf 'SKIP_REIMAGE=%q ' "$SKIP_REIMAGE"
+  fi
+  printf '%q %s' "$0" "$EXECUTE_ARGS"
+  if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
+    printf ' --ronin-settings %q' "$RONIN_SETTINGS_PATH"
+  fi
+  printf ' --confirm\n'
   exit 0
 fi
 
 # export ROLE="gecko_t_linux_2404_talos"
-./oneshot_linux.sh "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION"
+./oneshot_linux.sh "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION" "${SETTINGS_ARGS[@]}"

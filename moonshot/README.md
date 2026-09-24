@@ -150,7 +150,7 @@ run Puppet bootstrap → converge host. Uses file locking to serialize reimage o
 Given a chassis, cartridge, host number, Puppet role, and OS version, it: (1) acquires a per-chassis lock, (2) reimages via the appropriate `reimage_*.sh`, (3) waits for install to complete (14–18 min), (4) waits for SSH to come up, (5) delivers and runs the Ronin Puppet bootstrap script to converge the host.
 
 ```bash
-./oneshot_linux.sh <chassis> <cartridge> <host_number> <role> <os_version>
+./oneshot_linux.sh <chassis> <cartridge> <host_number> <role> <os_version> [--ronin-settings <path>]
 # Example: ./oneshot_linux.sh 1 3 023 gecko_t_linux_2404_talos 2404
 ```
 
@@ -179,6 +179,8 @@ of what would happen.
 ./oneshot_2404_x11_talos.sh t-linux64-ms-229.test.releng.mdc1.mozilla.com --confirm
 # The original explicit form remains supported:
 ./oneshot_2404_x11_talos.sh <chassis> <cartridge> <host_number> --confirm
+# Supply a settings file from outside the Ronin Puppet checkout:
+./oneshot_2404_x11_talos.sh 229 --ronin-settings ~/overrides/ronin_settings --confirm
 ```
 
 ### oneshot_2404_netperf.sh
@@ -195,20 +197,34 @@ or explicit chassis/cartridge/worker number, like the Talos wrappers above.
 ./oneshot_2404_netperf.sh <host_number_or_hostname> --confirm
 # Explicit form:
 ./oneshot_2404_netperf.sh <chassis> <cartridge> <host_number> --confirm
+# Optional settings file:
+./oneshot_2404_netperf.sh 229 --ronin-settings ~/overrides/ronin_settings --confirm
 ```
 
 ### Configuration for Oneshot Scripts
 
-**Environment Variables:**
-- `RONIN_PUPPET_REPO_PATH` - Path to ronin_puppet repository (default: `$HOME/git/ronin_puppet`)
-- `SKIP_REIMAGE` - (Optional) Set to skip the reimage step (useful for testing convergence only)
+**Local Ronin Puppet checkout**
 
+Oneshot uses `$HOME/git/ronin_puppet`, as set by `RONIN_PUPPET_REPO_PATH` near the top of `oneshot_linux.sh`. It reads two files from that checkout:
+
+- `provisioners/linux/deliver_linux.sh` runs locally to prepare the host.
+- `provisioners/linux/bootstrap_linux.sh` is copied to the host as `/tmp/bootstrap.sh` and run there.
+
+The delivery script also reads `$HOME/vault.yaml`, which is outside the checkout. The bootstrap script fetches the Puppet code on the host from the configured repository and branch (by default, `mozilla-platform-ops/ronin_puppet` on `master`). Local changes to Puppet manifests or modules in the checkout are not used for convergence; local changes to the two scripts above are.
+
+**Skip reimaging**
+
+Set `SKIP_REIMAGE=1` to skip the reimage step while still delivering and running bootstrap. The delivery script requires a host without an existing Puppet role:
+
+```bash
+SKIP_REIMAGE=1 ./oneshot_2404_x11_talos.sh 229 --confirm
+```
 
 **Optional Override File**
 
-If you'd like to have the newly imaged host use an override file immediately after initial convergence, place your override at `$RONIN_PUPPET_REPO_PATH/provisioners/linux/ronin_settings` the script will deploy it to the host.
+Pass `--ronin-settings <path>` to any oneshot wrapper (or to `oneshot_linux.sh`) to deploy that file to the host before bootstrap. The file can live outside the Ronin Puppet checkout. Without this option, oneshot does not deploy a settings file, even if one exists in the checkout.
 
-**Optional Environment Variables**
+**Optional Bootstrap Environment Variables**
 
 If the override file has an effect too late in the process (e.g. you want to test initial convergence) you can set these variables and it will use the values in the bootstrap script.
 
@@ -233,7 +249,7 @@ Runs on the worker itself (as root via systemd). If disk usage exceeds 70%, clea
 1. Wrapper scripts (`oneshot_*_x11_talos.sh` and `oneshot_2404_netperf.sh`) call `oneshot_linux.sh` with pre-configured parameters
 2. `oneshot_linux.sh` orchestrates the full workflow:
    - Reimage the host (calls appropriate `reimage_*.sh`)
-   - Wait for OS installation to complete (10 minutes)
+   - Wait for OS installation to complete (14–18 minutes)
    - Poll for SSH connectivity
    - Upload and execute Puppet bootstrap script
    - Converge host with specified Puppet role
