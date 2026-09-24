@@ -72,6 +72,7 @@ run_remote_script() {
 if [[ $# -lt 5 || $# -gt 7 ]]; then
   echo "Usage: $0 <chassis> <cartridge> <host_number> <role> <os_version> [--ronin-settings <path>]" >&2
   echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host." >&2
+  echo "Set SKIP_CONVERGE=1 to stop after imaging and SSH checks." >&2
   exit 1
 fi
 CHASSIS="$1"
@@ -84,6 +85,7 @@ if [[ $# -gt 5 ]]; then
   if [[ $# -ne 7 || "$6" != "--ronin-settings" || -z "$7" ]]; then
     echo "Usage: $0 <chassis> <cartridge> <host_number> <role> <os_version> [--ronin-settings <path>]" >&2
     echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host." >&2
+    echo "Set SKIP_CONVERGE=1 to stop after imaging and SSH checks." >&2
     exit 1
   fi
   if [[ ! -f "$7" || ! -r "$7" ]]; then
@@ -104,6 +106,7 @@ fi
 if [[ -z "$CHASSIS" || -z "$CARTRIDGE" || -z "$HOST_NUMBER" || -z "$ROLE" || -z "$OS_VERSION" ]]; then
   echo "Usage: $0 <chassis> <cartridge> <host_number> <role> <os_version> [--ronin-settings <path>]"
   echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host."
+  echo "Set SKIP_CONVERGE=1 to stop after imaging and SSH checks."
   echo "Example: $0 1 3 023 gecko_t_linux_2404_talos 2404"
   exit 1
 fi
@@ -190,7 +193,7 @@ else
 fi
 
 # Source the selected settings file so its bootstrap variables apply locally too.
-if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
+if [[ -n "$RONIN_SETTINGS_PATH" && -z "${SKIP_CONVERGE:-}" ]]; then
   echo "Sourcing ronin_settings file: $RONIN_SETTINGS_PATH"
   # shellcheck source=/dev/null
   source "$RONIN_SETTINGS_PATH"
@@ -213,9 +216,18 @@ if [[ -n "${SKIP_REIMAGE:-}" ]]; then
   echo ""
 fi
 
+if [[ -n "${SKIP_CONVERGE:-}" ]]; then
+  echo "NOTE: SKIP_CONVERGE is set; delivery and Puppet bootstrap will be skipped."
+  echo ""
+fi
+
 #
 if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
-  echo "NOTE: The selected ronin_settings file will be sent to the host."
+  if [[ -n "${SKIP_CONVERGE:-}" ]]; then
+    echo "NOTE: The selected ronin_settings file will not be sent while SKIP_CONVERGE is set."
+  else
+    echo "NOTE: The selected ronin_settings file will be sent to the host."
+  fi
   echo ""
 fi
 
@@ -270,18 +282,39 @@ done
 echo "SSH connectivity to ${HOSTNAME} verified."
 echo ""
 
-# remove old host key from known_hosts (host was just reimaged)
-echo "Removing old host key from known_hosts..."
-ssh-keygen -R "${HOSTNAME}" >/dev/null 2>&1 || true
-echo ""
+# Remove the old host key only after a reimage. Warn if cleanup fails (for
+# example, because of malformed unrelated known_hosts lines); the SSH check
+# below reports a changed key as an error instead of retrying forever.
+if [[ -z "${SKIP_REIMAGE:-}" ]]; then
+  echo "Removing old host key from known_hosts..."
+  if ! ssh-keygen -R "${HOSTNAME}" >/dev/null; then
+    echo "Warning: could not remove the old SSH host key for ${HOSTNAME}." >&2
+  fi
+  echo ""
+fi
 
 # check that a simple ssh command works (try forever until it works)
-while ! ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 ${SSH_USER}@"${HOSTNAME}" "echo 2>&1" && false; do
+while true; do
+  if SSH_OUTPUT=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 ${SSH_USER}@"${HOSTNAME}" true 2>&1); then
+    break
+  fi
+  if [[ "$SSH_OUTPUT" == *"REMOTE HOST IDENTIFICATION HAS CHANGED"* || "$SSH_OUTPUT" == *"Host key verification failed"* ]]; then
+    printf '%s\n' "$SSH_OUTPUT" >&2
+    echo "SSH host key verification failed for ${HOSTNAME}; fix known_hosts before continuing." >&2
+    exit 1
+  fi
+  printf '%s\n' "$SSH_OUTPUT" >&2
   echo "SSH command check for ${HOSTNAME} failed, retrying in 30 seconds..."
   countdown 30
 done
 echo "SSH command functionality to ${HOSTNAME} verified."
 echo ""
+
+if [[ -n "${SKIP_CONVERGE:-}" ]]; then
+  echo "SKIP_CONVERGE is set; ${HOSTNAME} is ready for manual work."
+  echo "To deliver and converge later, run the oneshot wrapper with SKIP_REIMAGE=1."
+  exit 0
+fi
 
 set -x
 

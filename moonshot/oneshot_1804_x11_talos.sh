@@ -88,6 +88,7 @@ else
   echo ""
   echo "Note: --confirm flag is required to execute. Without it, shows dry run."
   echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host."
+  echo "Set SKIP_CONVERGE=1 to stop after imaging and SSH checks."
   exit 1
 fi
 
@@ -110,8 +111,13 @@ if [[ "$CONFIRM" == false ]]; then
   echo "=== DRY RUN MODE ==="
   echo "This is a dry run. To execute, add --confirm flag."
   echo "Set SKIP_REIMAGE=1 to skip reimaging and only converge the host."
+  echo "Set SKIP_CONVERGE=1 to stop after imaging and SSH checks."
   echo ""
-  if [[ -n "${SKIP_REIMAGE:-}" ]]; then
+  if [[ -n "${SKIP_CONVERGE:-}" && -n "${SKIP_REIMAGE:-}" ]]; then
+    echo "Would check SSH readiness without reimaging or converging:"
+  elif [[ -n "${SKIP_CONVERGE:-}" ]]; then
+    echo "Would reimage and wait for SSH readiness:"
+  elif [[ -n "${SKIP_REIMAGE:-}" ]]; then
     echo "Would skip reimage and converge:"
   else
     echo "Would reimage and converge:"
@@ -129,6 +135,9 @@ if [[ "$CONFIRM" == false ]]; then
   if [[ -n "${SKIP_REIMAGE:-}" ]]; then
     printf 'SKIP_REIMAGE=%q ' "$SKIP_REIMAGE"
   fi
+  if [[ -n "${SKIP_CONVERGE:-}" ]]; then
+    printf 'SKIP_CONVERGE=%q ' "$SKIP_CONVERGE"
+  fi
   printf './oneshot_linux.sh %q %q %q %q %q' "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION"
   if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
     printf ' --ronin-settings %q' "$RONIN_SETTINGS_PATH"
@@ -139,6 +148,9 @@ if [[ "$CONFIRM" == false ]]; then
   printf '  '
   if [[ -n "${SKIP_REIMAGE:-}" ]]; then
     printf 'SKIP_REIMAGE=%q ' "$SKIP_REIMAGE"
+  fi
+  if [[ -n "${SKIP_CONVERGE:-}" ]]; then
+    printf 'SKIP_CONVERGE=%q ' "$SKIP_CONVERGE"
   fi
   printf '%q %s' "$0" "$EXECUTE_ARGS"
   if [[ -n "$RONIN_SETTINGS_PATH" ]]; then

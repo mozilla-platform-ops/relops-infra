@@ -212,13 +212,17 @@ Oneshot uses `$HOME/git/ronin_puppet`, as set by `RONIN_PUPPET_REPO_PATH` near t
 
 The delivery script also reads `$HOME/vault.yaml`, which is outside the checkout. The bootstrap script fetches the Puppet code on the host from the configured repository and branch (by default, `mozilla-platform-ops/ronin_puppet` on `master`). Local changes to Puppet manifests or modules in the checkout are not used for convergence; local changes to the two scripts above are.
 
-**Skip reimaging**
+**Pause between imaging and convergence**
 
-Set `SKIP_REIMAGE=1` to skip the reimage step while still delivering and running bootstrap. The delivery script requires a host without an existing Puppet role:
+Set `SKIP_CONVERGE=1` to reimage a host, wait for SSH access, then stop before delivering the Puppet role, vault file, settings file, or bootstrap script. After your manual work, use `SKIP_REIMAGE=1` to skip the reimage step while still delivering and running bootstrap. The delivery script requires a host without an existing Puppet role:
 
 ```bash
+SKIP_CONVERGE=1 ./oneshot_2404_x11_talos.sh 229 --confirm
+# Perform manual work on the host.
 SKIP_REIMAGE=1 ./oneshot_2404_x11_talos.sh 229 --confirm
 ```
+
+The second command prompts for confirmation again and checks SSH before delivery. `SKIP_CONVERGE` also works with `--ronin-settings`, but the settings file is only sent during the convergence run.
 
 **Optional Override File**
 
