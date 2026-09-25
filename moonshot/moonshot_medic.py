@@ -846,7 +846,7 @@ def say(msg: str) -> None:
     if not _voice_enabled:
         return
     now = datetime.datetime.now()
-    if not _voice_all_hours and now.weekday() < 5 and VOICE_HOUR_START <= now.hour < VOICE_HOUR_END:
+    if not _voice_all_hours and not (now.weekday() < 5 and VOICE_HOUR_START <= now.hour < VOICE_HOUR_END):
         return
     if in_slack_meeting():
         return
@@ -1032,7 +1032,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-q", "--no-voice", action="store_true",
                         help="Suppress spoken announcements.")
     parser.add_argument("--voice-all-hours", action="store_true",
-                        help=f"Speak during working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00) too; "
+                        help=f"Speak outside working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00); "
                              "still suppress speech when slack-status reports a meeting.")
     parser.add_argument("-l", "--loop-interval", type=int, default=15, metavar="MINUTES",
                         help="Minutes to sleep between auto runs (default: 15).")
