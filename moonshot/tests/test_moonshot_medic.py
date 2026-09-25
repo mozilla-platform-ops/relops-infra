@@ -39,13 +39,14 @@ class TestAnnouncements:
         assert mm.in_slack_meeting() is False
 
     @pytest.mark.parametrize("day,hour,enabled,all_hours,meeting,speaks,checks_slack", [
-        (14, 10, True, False, False, True, True),
-        (14, 17, True, False, True, False, True),
-        (14, 9, True, False, False, False, False),
-        (14, 18, True, False, False, False, False),
-        (19, 12, True, False, False, False, False),
-        (20, 12, True, False, False, False, False),
+        (14, 10, True, False, False, False, False),
+        (14, 17, True, False, True, False, False),
+        (14, 9, True, False, False, True, True),
+        (14, 18, True, False, False, True, True),
+        (19, 12, True, False, False, True, True),
+        (20, 12, True, False, False, True, True),
         (14, 12, False, True, False, False, False),
+        (14, 12, True, True, False, True, True),
         (19, 22, True, True, False, True, True),
         (19, 22, True, True, True, False, True),
     ])
