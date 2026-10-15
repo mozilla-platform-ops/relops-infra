@@ -293,10 +293,29 @@ if [[ -z "${SKIP_REIMAGE:-}" ]]; then
   echo ""
 fi
 
-# check that a simple ssh command works (try forever until it works)
+# During reimaging, the installer and installed OS may expose different host
+# keys. Do not persist an unauthenticated installer's key while waiting for the
+# installed account. Retry mode keeps normal strict checking of known hosts.
 while true; do
-  if SSH_OUTPUT=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 ${SSH_USER}@"${HOSTNAME}" true 2>&1); then
+  SSH_CHECK_OPTIONS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5)
+  SSH_CANDIDATE_HOSTS=""
+  if [[ -z "${SKIP_REIMAGE:-}" ]]; then
+    SSH_CANDIDATE_HOSTS=$(mktemp "${TMPDIR:-/tmp}/moonshot-host-key.XXXXXX")
+    SSH_CHECK_OPTIONS+=(-o "UserKnownHostsFile=${SSH_CANDIDATE_HOSTS}")
+  fi
+  if SSH_OUTPUT=$(ssh "${SSH_CHECK_OPTIONS[@]}" "${SSH_USER}@${HOSTNAME}" true 2>&1); then
+    if [[ -n "$SSH_CANDIDATE_HOSTS" ]]; then
+      if ! cat "$SSH_CANDIDATE_HOSTS" >> "$HOME/.ssh/known_hosts"; then
+        rm -f -- "$SSH_CANDIDATE_HOSTS"
+        echo "Could not save the authenticated host's SSH key." >&2
+        exit 1
+      fi
+      rm -f -- "$SSH_CANDIDATE_HOSTS"
+    fi
     break
+  fi
+  if [[ -n "$SSH_CANDIDATE_HOSTS" ]]; then
+    rm -f -- "$SSH_CANDIDATE_HOSTS"
   fi
   if [[ "$SSH_OUTPUT" == *"REMOTE HOST IDENTIFICATION HAS CHANGED"* || "$SSH_OUTPUT" == *"Host key verification failed"* ]]; then
     printf '%s\n' "$SSH_OUTPUT" >&2
