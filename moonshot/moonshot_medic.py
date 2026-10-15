@@ -2,9 +2,11 @@
 """Automated triage for hung t-linux64-ms-* Moonshot cartridges: resets via iLO, collects hang diagnostics, and tracks repeat offenders.
 
 Usage:
-  moonshot_medic.py [--auto] [--no-reset] [--no-freshness] [--ignore-recency] [HOST ...]
+  moonshot_medic.py [--auto] [--once] [--no-reset] [--ignore-recency] [HOST ...]
 
   --auto                    Fetch bad-host list from fleetroll instead of reading argv/stdin (requires --confirm).
+  --once                    Run one auto-mode iteration, then exit.
+  --max-fleet-reset-pct     Maximum auto-selected percentage of configured fleet (default: 20).
   --no-reset                Skip iLO reboot (host already freshly rebooted).
   --freshness-requirement   Max acceptable age of fleetroll data in minutes (default: loop-interval).
   --ignore-recency          Process hosts even if collected within the last RECENCY_MINUTES minutes.
@@ -14,9 +16,9 @@ Usage:
 import argparse
 import datetime
 import json
+import math
 import re
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -37,6 +39,9 @@ FAVICON_FILE = RESULTS_BASE / "favicon.svg"
 SKIP_THRESHOLD_CONSECUTIVE = 3
 SKIP_DURATION_HOURS = 6
 FRESHNESS_MIN_PCT = 65
+DEFAULT_MAX_FLEET_RESET_PCT = 20.0
+FLEETROLL_FRESHNESS_SCHEMA_VERSION = 2
+FLEETROLL_FRESHNESS_REQUIRED_SOURCES = {"host", "tc"}
 MOONSHOT_HOST_RE = re.compile(r'^t-linux64-ms-\d+\.test\.releng\.mdc[12]\.mozilla\.com$', re.IGNORECASE)
 MOONSHOT_OBSERVED_FILTER = "host~t-linux64-ms os=L sort:host:asc"
 
@@ -166,14 +171,59 @@ def parse_bad_hosts(raw: str) -> tuple[list[str], list[str]]:
     return hosts, ignored
 
 
+def check_fleet_reset_circuit_breaker(
+    hosts: list[str], max_reset_pct: float,
+) -> tuple[bool, list[str], str]:
+    """Validate auto-selected hosts against configured inventory and blast radius."""
+    configured_hosts = _configured_linux_moonshot_hosts()
+    if not configured_hosts:
+        return False, [], "Cannot load configured Moonshot inventory; refusing automatic resets"
+
+    # Preserve Fleetroll's order while ensuring duplicates cannot inflate work or
+    # cause the same host to be reset more than once in a run.
+    candidates = list(dict.fromkeys(worker_fqdn(host) for host in hosts))
+    unknown_hosts = set(candidates) - configured_hosts
+    if unknown_hosts:
+        labels = " ".join(sorted(short_label(host) for host in unknown_hosts))
+        return False, candidates, f"Fleetroll returned host(s) outside configured inventory: {labels}"
+
+    candidate_pct = 100.0 * len(candidates) / len(configured_hosts)
+    summary = (
+        f"Fleet reset candidates: {len(candidates)}/{len(configured_hosts)} "
+        f"({candidate_pct:.1f}%; maximum {max_reset_pct:g}%)"
+    )
+    if candidate_pct > max_reset_pct:
+        required_pct = math.ceil(candidate_pct)
+        return False, candidates, (
+            f"Circuit breaker tripped — {summary}. "
+            "After reviewing the candidate list, run an attended one-time recovery with "
+            f"--auto --once --confirm --max-fleet-reset-pct {required_pct}"
+        )
+    return True, candidates, summary
+
+
 # --- SSH probe ---
 
 def ssh_is_online(fqdn: str, timeout: int = 10) -> bool:
+    """Check that SSH can authenticate and execute a command, as scp requires."""
     try:
-        sock = socket.create_connection((fqdn, 22), timeout=timeout)
-        sock.close()
-        return True
-    except (socket.timeout, OSError):
+        result = subprocess.run(
+            [
+                "ssh",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                "-o", "ConnectionAttempts=1",
+                fqdn,
+                "true",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout + 5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -778,11 +828,27 @@ VOICE_HOUR_START = 10
 VOICE_HOUR_END = 18
 
 
+def in_slack_meeting() -> bool:
+    """Suppress speech only when the optional slack-status command reports a meeting."""
+    try:
+        result = subprocess.run(
+            ["slack-status"], capture_output=True, text=True, check=False, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        status = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return isinstance(status, dict) and status.get("meeting_assessment") == "likely"
+
+
 def say(msg: str) -> None:
     if not _voice_enabled:
         return
     now = datetime.datetime.now()
     if not _voice_all_hours and not (now.weekday() < 5 and VOICE_HOUR_START <= now.hour < VOICE_HOUR_END):
+        return
+    if in_slack_meeting():
         return
     subprocess.run(["say", "-v", "Rocko", "-r", "220", msg], check=False)
 
@@ -801,6 +867,106 @@ def capture(cmd: list, *, cwd: Path | None = None, check: bool = True) -> str:
 def capture_stdout(cmd: list, *, cwd: Path | None = None, check: bool = True) -> tuple[str, str]:
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
     return result.stdout.strip(), result.stderr.strip()
+
+
+def validate_fleetroll_freshness(raw: str, returncode: int) -> tuple[bool, list[str]]:
+    """Validate Fleetroll's versioned freshness response, failing closed."""
+    messages: list[str] = []
+    try:
+        report = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        return False, [f"Fleetroll returned invalid freshness JSON: {exc}"]
+
+    if not isinstance(report, dict):
+        return False, ["Fleetroll freshness JSON is not an object"]
+
+    if report.get("schema_version") != FLEETROLL_FRESHNESS_SCHEMA_VERSION:
+        messages.append(
+            "Unsupported Fleetroll freshness schema: "
+            f"expected {FLEETROLL_FRESHNESS_SCHEMA_VERSION}, "
+            f"got {report.get('schema_version')!r}"
+        )
+
+    required_sources = report.get("required_sources")
+    if not isinstance(required_sources, list):
+        messages.append("Fleetroll freshness report has no valid required_sources list")
+        required_sources = []
+    else:
+        invalid_sources = [source for source in required_sources if not isinstance(source, str)]
+        if invalid_sources:
+            messages.append("Fleetroll freshness required_sources contains non-string values")
+        required_sources = [source for source in required_sources if isinstance(source, str)]
+        missing = FLEETROLL_FRESHNESS_REQUIRED_SOURCES - set(required_sources)
+        if missing:
+            messages.append(
+                f"Fleetroll freshness report is missing required source(s): {', '.join(sorted(missing))}"
+            )
+
+    sources = report.get("sources")
+    if not isinstance(sources, dict):
+        messages.append("Fleetroll freshness report has no valid sources object")
+        sources = {}
+
+    for source_name in required_sources:
+        source = sources.get(source_name)
+        if not isinstance(source, dict):
+            messages.append(f"Fleetroll freshness source {source_name!r} is missing")
+            continue
+        status = source.get("status")
+        coverage = ""
+        if "hosts_fresh" in source and "hosts_total" in source:
+            coverage = f" ({source['hosts_fresh']}/{source['hosts_total']} hosts fresh)"
+        if status != "fresh":
+            messages.append(f"Fleetroll {source_name} data is {status!r}{coverage}")
+
+    failures = report.get("failures")
+    if not isinstance(failures, list):
+        messages.append("Fleetroll freshness report has no valid failures list")
+    elif failures:
+        for failure in failures:
+            if isinstance(failure, dict):
+                source = failure.get("source", "unknown")
+                reason = failure.get("reason", "unspecified failure")
+                messages.append(f"Fleetroll {source} freshness failure: {reason}")
+            else:
+                messages.append(f"Fleetroll freshness failure: {failure}")
+
+    if report.get("status") != "fresh":
+        messages.append(f"Fleetroll overall freshness status is {report.get('status')!r}")
+    if returncode != 0:
+        messages.append(f"Fleetroll freshness command exited with status {returncode}")
+
+    if messages:
+        return False, messages
+
+    summaries = []
+    for source_name in required_sources:
+        source = sources[source_name]
+        summaries.append(
+            f"{source_name}: fresh "
+            f"({source.get('hosts_fresh', '?')}/{source.get('hosts_total', '?')} hosts)"
+        )
+    return True, summaries
+
+
+def check_fleetroll_data_freshness(stale_threshold: int, min_fresh_pct: int) -> bool:
+    """Run and strictly validate Fleetroll's host and Taskcluster freshness check."""
+    cmd = [
+        "uv", "run", "fleetroll", "data-freshness",
+        "configs/host-lists/linux/all.list",
+        "--stale-threshold", str(stale_threshold),
+        "--min-fresh-pct", str(min_fresh_pct),
+        "--json", "--require-fresh",
+    ]
+    result = subprocess.run(
+        cmd, cwd=FLEETROLL_DIR, capture_output=True, text=True, check=False,
+    )
+    valid, messages = validate_fleetroll_freshness(result.stdout, result.returncode)
+    for message in messages:
+        _emit(f"  {_c('2', message)}")
+    if result.stderr.strip():
+        warn(f"Fleetroll freshness stderr: {result.stderr.strip()}")
+    return valid
 
 
 # --- per-host collection ---
@@ -866,9 +1032,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-q", "--no-voice", action="store_true",
                         help="Suppress spoken announcements.")
     parser.add_argument("--voice-all-hours", action="store_true",
-                        help=f"Speak outside working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00).")
+                        help=f"Speak outside working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00); "
+                             "still suppress speech when slack-status reports a meeting.")
     parser.add_argument("-l", "--loop-interval", type=int, default=15, metavar="MINUTES",
                         help="Minutes to sleep between auto runs (default: 15).")
+    parser.add_argument("--once", action="store_true",
+                        help="Run one auto-mode iteration, then exit.")
+    parser.add_argument("--max-fleet-reset-pct", type=float,
+                        default=DEFAULT_MAX_FLEET_RESET_PCT, metavar="PCT",
+                        help=f"Maximum percentage of the configured fleet that auto mode may reset "
+                             f"(default: {DEFAULT_MAX_FLEET_RESET_PCT:g}).")
     parser.add_argument("--freshness-min-pct", type=int, default=FRESHNESS_MIN_PCT, metavar="PCT",
                         help=f"Minimum %% of hosts with fresh fleetroll data required (default: {FRESHNESS_MIN_PCT}).")
     parser.add_argument("--update-report", action="store_true",
@@ -888,6 +1061,16 @@ def main() -> None:
         sys.exit(1)
     if args.freshness_requirement is not None and args.freshness_requirement < 1:
         err("--freshness-requirement must be at least 1 minute.")
+        sys.exit(1)
+    if args.once and not args.auto:
+        err("--once requires --auto.")
+        sys.exit(1)
+    if not 0 < args.max_fleet_reset_pct <= 100:
+        err("--max-fleet-reset-pct must be greater than 0 and at most 100.")
+        sys.exit(1)
+    if args.max_fleet_reset_pct > DEFAULT_MAX_FLEET_RESET_PCT and not args.once:
+        err(f"Raising --max-fleet-reset-pct above {DEFAULT_MAX_FLEET_RESET_PCT:g}% "
+            "requires --once.")
         sys.exit(1)
 
     if args.update_report:
@@ -913,13 +1096,9 @@ def main() -> None:
     if args.auto and not args.confirm:
         stale_threshold = freshness_mins * 60
         info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
-        r = subprocess.run(["uv", "run", "fleetroll", "data-freshness", "configs/host-lists/linux/all.list", "--stale-threshold", str(stale_threshold), "--min-fresh-pct", str(args.freshness_min_pct)],
-                           cwd=FLEETROLL_DIR, capture_output=True, text=True)
-        freshness_out = (r.stdout + r.stderr).strip()
-        for line in freshness_out.splitlines():
-            _emit(f"  {_c('2', re.sub(r'^=+>\s*', '', line))}")
-        if r.returncode != 0:
-            err(f"Fleetroll data is stale (older than {stale_threshold}s). Refresh it before previewing.")
+        if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
+            err("Fleetroll host or Taskcluster data failed freshness validation. "
+                "Refresh it before previewing.")
             sys.exit(1)
         info("Fetching bad-host list to preview run...")
         raw, raw_err = capture_stdout(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False)
@@ -928,6 +1107,14 @@ def main() -> None:
         preview_hosts, ignored_hosts = parse_bad_hosts(raw)
         if ignored_hosts:
             warn(f"Ignoring {len(ignored_hosts)} non-host token(s) from fleetroll stdout: {' '.join(ignored_hosts)}")
+        circuit_ok, preview_hosts, circuit_summary = check_fleet_reset_circuit_breaker(
+            preview_hosts, args.max_fleet_reset_pct,
+        )
+        if not circuit_ok:
+            err(circuit_summary)
+            say("Moonshot Medic circuit breaker tripped")
+            sys.exit(1)
+        info(circuit_summary)
         n = min(len(preview_hosts), AUTO_BATCH_SIZE)
         print()
         if n:
@@ -966,14 +1153,10 @@ def main() -> None:
         if args.auto:
             stale_threshold = freshness_mins * 60
             info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
-            r = subprocess.run(["uv", "run", "fleetroll", "data-freshness", "configs/host-lists/linux/all.list", "--stale-threshold", str(stale_threshold), "--min-fresh-pct", str(args.freshness_min_pct)],
-                               cwd=FLEETROLL_DIR, capture_output=True, text=True)
-            freshness_out = (r.stdout + r.stderr).strip()
-            for line in freshness_out.splitlines():
-                _emit(f"  {_c('2', re.sub(r'^=+>\s*', '', line))}")
-            if r.returncode != 0:
+            if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
                 print()
-                warn(f"Fleetroll data is stale (older than {stale_threshold}s) — will retry next loop.")
+                warn("Fleetroll host or Taskcluster data failed freshness validation "
+                     "— will retry next loop.")
                 say("Stale Fleetroll data")
                 stale = True
                 last_failed = True
@@ -988,7 +1171,15 @@ def main() -> None:
                 host_tokens, ignored_hosts = parse_bad_hosts(raw)
                 if ignored_hosts:
                     warn(f"Ignoring {len(ignored_hosts)} non-host token(s) from fleetroll stdout: {' '.join(ignored_hosts)}")
-                hosts = [worker_fqdn(h) for h in host_tokens]
+                circuit_ok, hosts, circuit_summary = check_fleet_reset_circuit_breaker(
+                    host_tokens, args.max_fleet_reset_pct,
+                )
+                if not circuit_ok:
+                    err(circuit_summary)
+                    say("Moonshot Medic circuit breaker tripped")
+                    last_failed = True
+                    break
+                info(circuit_summary)
             elif args.hostname:
                 hosts = [worker_fqdn(h) for h in args.hostname]
             else:
@@ -1135,7 +1326,7 @@ def main() -> None:
 
         first_run = False
 
-        if not args.auto or _interrupt_count:
+        if not args.auto or args.once or _interrupt_count:
             break
 
         info(f"Next run in {args.loop_interval} minute{'s' if args.loop_interval != 1 else ''}. "

@@ -13,6 +13,8 @@ from moonshot_lib import (
     make_headers,
     normalize_node,
     send_reboot,
+    ssh_ready,
+    wait_for_online,
     worker_fqdn,
 )
 
@@ -172,3 +174,31 @@ class TestSendReboot:
             send_reboot("https://host/rest/v1/Systems/c1n1", {"Authorization": "Basic x"}, verbose=True)
             out = capsys.readouterr().out
             assert "[VERBOSE]" in out
+
+
+class TestSshReadiness:
+    def test_runs_remote_command_in_batch_mode(self):
+        completed = MagicMock(returncode=0)
+        with patch("moonshot_lib.subprocess.run", return_value=completed) as mock_run:
+            assert ssh_ready("worker.example.com", timeout=7) is True
+
+        cmd = mock_run.call_args.args[0]
+        assert cmd[0] == "ssh"
+        assert "BatchMode=yes" in cmd
+        assert "ConnectTimeout=7" in cmd
+        assert cmd[-2:] == ["worker.example.com", "true"]
+
+    def test_rejects_open_ssh_that_cannot_start_session(self):
+        completed = MagicMock(returncode=255)
+        with patch("moonshot_lib.subprocess.run", return_value=completed):
+            assert ssh_ready("worker.example.com") is False
+
+    def test_wait_for_online_retries_until_full_ssh_session_is_ready(self):
+        with (
+            patch("moonshot_lib.ping_host", return_value=True),
+            patch("moonshot_lib.ssh_ready", side_effect=[False, True]) as ready,
+            patch("moonshot_lib.time.sleep"),
+        ):
+            assert wait_for_online("worker.example.com", timeout=60, poll_interval=1) is True
+
+        assert ready.call_count == 2

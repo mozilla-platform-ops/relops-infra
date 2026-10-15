@@ -8,6 +8,72 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import moonshot_medic as mm
 
 
+class TestAnnouncements:
+    @pytest.mark.parametrize("output,returncode,meeting", [
+        ('{"meeting_assessment": "likely"}', 0, True),
+        ('{"meeting_assessment": "unknown"}', 0, False),
+        ('{"meeting_assessment": "likely"}', 1, False),
+        ('invalid JSON', 0, False),
+        ('{}', 0, False),
+        ('null', 0, False),
+        ('[]', 0, False),
+    ])
+    def test_slack_status(self, monkeypatch, output, returncode, meeting):
+        def fake_run(cmd, **kwargs):
+            assert cmd == ["slack-status"]
+            assert kwargs == dict(capture_output=True, text=True, check=False, timeout=5)
+            return mm.subprocess.CompletedProcess(cmd, returncode, stdout=output)
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+        assert mm.in_slack_meeting() is meeting
+
+    @pytest.mark.parametrize("error", [
+        FileNotFoundError(), PermissionError(),
+        mm.subprocess.TimeoutExpired("slack-status", 5),
+    ])
+    def test_unavailable_status(self, monkeypatch, error):
+        def fake_run(*args, **kwargs):
+            raise error
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+        assert mm.in_slack_meeting() is False
+
+    @pytest.mark.parametrize("day,hour,enabled,all_hours,meeting,speaks,checks_slack", [
+        (14, 10, True, False, False, True, True),
+        (14, 17, True, False, True, False, True),
+        (14, 9, True, False, False, False, False),
+        (14, 18, True, False, False, False, False),
+        (19, 12, True, False, False, False, False),
+        (20, 12, True, False, False, False, False),
+        (14, 12, False, True, False, False, False),
+        (19, 22, True, True, False, True, True),
+        (19, 22, True, True, True, False, True),
+    ])
+    def test_speech_rules(self, monkeypatch, day, hour, enabled, all_hours,
+                          meeting, speaks, checks_slack):
+        class Clock(datetime.datetime):
+            @classmethod
+            def now(cls):
+                return cls(2026, 9, day, hour)
+
+        monkeypatch.setattr(mm.datetime, "datetime", Clock)
+        monkeypatch.setattr(mm, "_voice_enabled", enabled)
+        monkeypatch.setattr(mm, "_voice_all_hours", all_hours)
+        checks = []
+        calls = []
+
+        def check_meeting():
+            checks.append(True)
+            return meeting
+
+        monkeypatch.setattr(mm, "in_slack_meeting", check_meeting)
+        monkeypatch.setattr(mm.subprocess, "run", lambda *a, **kw: calls.append((a, kw)))
+        mm.say("Hello")
+        assert bool(checks) is checks_slack
+        assert calls == ([((["say", "-v", "Rocko", "-r", "220", "Hello"],),
+                          {"check": False})] if speaks else [])
+
+
 def _state():
     return {"hosts": {}}
 
@@ -21,6 +87,135 @@ def _past(hours=24):
 
 
 FQDN = "t-linux64-ms-025.test.releng.mdc1.mozilla.com"
+
+
+def _freshness_report():
+    return {
+        "schema_version": 2,
+        "status": "fresh",
+        "host_source": "configs/host-lists/linux/all.list",
+        "hosts_total": 280,
+        "required_sources": ["host", "tc"],
+        "sources": {
+            "host": {"status": "fresh", "hosts_fresh": 270, "hosts_total": 280},
+            "tc": {"status": "fresh", "hosts_fresh": 269, "hosts_total": 280},
+        },
+        "failures": [],
+    }
+
+
+class TestSshReadiness:
+    def test_requires_authenticated_remote_command(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return mm.subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+
+        assert mm.ssh_is_online(FQDN, timeout=12) is True
+        cmd, kwargs = calls[0]
+        assert cmd[0] == "ssh"
+        assert "BatchMode=yes" in cmd
+        assert "ConnectTimeout=12" in cmd
+        assert cmd[-2:] == [FQDN, "true"]
+        assert kwargs["timeout"] == 17
+
+    def test_returns_false_when_session_cannot_start(self, monkeypatch):
+        monkeypatch.setattr(
+            mm.subprocess,
+            "run",
+            lambda *args, **kwargs: mm.subprocess.CompletedProcess(args[0], 255),
+        )
+
+        assert mm.ssh_is_online(FQDN) is False
+
+
+class TestFleetrollFreshness:
+    def test_accepts_fresh_schema_v2_report(self):
+        valid, messages = mm.validate_fleetroll_freshness(
+            mm.json.dumps(_freshness_report()), 0,
+        )
+
+        assert valid is True
+        assert messages == ["host: fresh (270/280 hosts)", "tc: fresh (269/280 hosts)"]
+
+    def test_rejects_nonempty_failures_even_if_status_is_fresh(self):
+        report = _freshness_report()
+        report["failures"] = [{"source": "tc", "reason": "collector failed"}]
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 0)
+
+        assert valid is False
+        assert "Fleetroll tc freshness failure: collector failed" in messages
+
+    @pytest.mark.parametrize("schema", [None, 1, 3])
+    def test_rejects_unknown_or_missing_schema(self, schema):
+        report = _freshness_report()
+        report["schema_version"] = schema
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 0)
+
+        assert valid is False
+        assert any("Unsupported Fleetroll freshness schema" in message for message in messages)
+
+    def test_rejects_missing_required_tc_source(self):
+        report = _freshness_report()
+        report["required_sources"] = ["host"]
+        del report["sources"]["tc"]
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 0)
+
+        assert valid is False
+        assert "Fleetroll freshness report is missing required source(s): tc" in messages
+
+    def test_rejects_malformed_required_sources_without_crashing(self):
+        report = _freshness_report()
+        report["required_sources"] = ["host", {"source": "tc"}]
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 0)
+
+        assert valid is False
+        assert "Fleetroll freshness required_sources contains non-string values" in messages
+        assert "Fleetroll freshness report is missing required source(s): tc" in messages
+
+    def test_rejects_stale_source_and_failure(self):
+        report = _freshness_report()
+        report["status"] = "stale"
+        report["sources"]["tc"]["status"] = "stale"
+        report["failures"] = [{"source": "tc", "reason": "coverage is 10%"}]
+
+        valid, messages = mm.validate_fleetroll_freshness(mm.json.dumps(report), 1)
+
+        assert valid is False
+        assert "Fleetroll tc data is 'stale' (269/280 hosts fresh)" in messages
+        assert "Fleetroll tc freshness failure: coverage is 10%" in messages
+        assert "Fleetroll overall freshness status is 'stale'" in messages
+        assert "Fleetroll freshness command exited with status 1" in messages
+
+    def test_rejects_invalid_json(self):
+        valid, messages = mm.validate_fleetroll_freshness("not-json", 1)
+
+        assert valid is False
+        assert messages[0].startswith("Fleetroll returned invalid freshness JSON:")
+
+    def test_command_requests_json_and_requires_fresh(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+
+        def fake_run(cmd, *, cwd, capture_output, text, check):
+            assert cwd == tmp_path
+            assert "--json" in cmd
+            assert "--require-fresh" in cmd
+            assert cmd[cmd.index("--stale-threshold") + 1] == "900"
+            assert cmd[cmd.index("--min-fresh-pct") + 1] == "65"
+            return mm.subprocess.CompletedProcess(
+                cmd, 0, stdout=mm.json.dumps(_freshness_report()), stderr="",
+            )
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+
+        assert mm.check_fleetroll_data_freshness(900, 65) is True
 
 
 class TestShortLabel:
@@ -94,6 +289,86 @@ class TestParseBadHosts:
             "t-linux64-ms-026.test.releng.mdc1.mozilla.com",
         ]
         assert ignored == ["warning:", "ignored;"]
+
+
+class TestFleetResetCircuitBreaker:
+    def test_allows_candidates_at_limit(self, monkeypatch):
+        fleet = {mm.worker_fqdn(f"ms{i:03d}") for i in range(1, 101)}
+        monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: fleet)
+
+        allowed, candidates, summary = mm.check_fleet_reset_circuit_breaker(
+            [f"ms{i:03d}" for i in range(1, 11)], 10,
+        )
+
+        assert allowed is True
+        assert len(candidates) == 10
+        assert "10/100 (10.0%; maximum 10%)" in summary
+
+    def test_trips_above_limit(self, monkeypatch):
+        fleet = {mm.worker_fqdn(f"ms{i:03d}") for i in range(1, 101)}
+        monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: fleet)
+
+        allowed, candidates, summary = mm.check_fleet_reset_circuit_breaker(
+            [f"ms{i:03d}" for i in range(1, 12)], 10,
+        )
+
+        assert allowed is False
+        assert len(candidates) == 11
+        assert summary.startswith("Circuit breaker tripped")
+        assert "--auto --once --confirm --max-fleet-reset-pct 11" in summary
+
+    def test_deduplicates_before_calculating_percentage(self, monkeypatch):
+        fleet = {mm.worker_fqdn(f"ms{i:03d}") for i in range(1, 11)}
+        monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: fleet)
+
+        allowed, candidates, _summary = mm.check_fleet_reset_circuit_breaker(
+            ["ms001", "ms001"], 10,
+        )
+
+        assert allowed is True
+        assert candidates == [mm.worker_fqdn("ms001")]
+
+    def test_rejects_host_outside_inventory(self, monkeypatch):
+        monkeypatch.setattr(
+            mm, "_configured_linux_moonshot_hosts", lambda: {mm.worker_fqdn("ms001")},
+        )
+
+        allowed, _candidates, summary = mm.check_fleet_reset_circuit_breaker(
+            ["ms999"], 100,
+        )
+
+        assert allowed is False
+        assert "outside configured inventory: ms999" in summary
+
+    def test_fails_closed_without_inventory(self, monkeypatch):
+        monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: set())
+
+        allowed, candidates, summary = mm.check_fleet_reset_circuit_breaker(["ms001"], 10)
+
+        assert allowed is False
+        assert candidates == []
+        assert "Cannot load configured Moonshot inventory" in summary
+
+
+class TestCircuitBreakerArgs:
+    def test_once_requires_auto(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["moonshot_medic.py", "--once"])
+
+        with pytest.raises(SystemExit) as exc:
+            mm.main()
+
+        assert exc.value.code == 1
+
+    def test_raised_limit_requires_once(self, monkeypatch):
+        monkeypatch.setattr(
+            sys, "argv",
+            ["moonshot_medic.py", "--auto", "--confirm", "--max-fleet-reset-pct", "21"],
+        )
+
+        with pytest.raises(SystemExit) as exc:
+            mm.main()
+
+        assert exc.value.code == 1
 
 
 class TestHostEntry:

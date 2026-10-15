@@ -82,7 +82,15 @@ def main():
 
     child = pexpect.spawn(
         "ssh",
-        ["-o", "StrictHostKeyChecking=no", f"relops@{chassis_fqdn}"],
+        # Keep algorithm lists minimal for the chassis's legacy SSH implementation.
+        [
+            "-oKexAlgorithms=diffie-hellman-group14-sha1",
+            "-oHostKeyAlgorithms=ssh-rsa",
+            "-oCiphers=aes128-cbc",
+            "-oMACs=hmac-sha1",
+            "-oStrictHostKeyChecking=no",
+            f"relops@{chassis_fqdn}",
+        ],
         encoding="utf-8",
         timeout=30,
     )
