@@ -48,7 +48,8 @@ if [[ ${#POSITIONAL_ARGS[@]} -eq 1 ]]; then
   HOST_INPUT="${POSITIONAL_ARGS[0]}"
   HOST_PART="${HOST_INPUT%%.*}"
   if [[ "$HOST_PART" =~ ([0-9]+)$ ]]; then
-    HOST_NUMBER=$(printf '%03d' "${BASH_REMATCH[1]}")
+    # Bash printf treats a leading zero as octal unless converted first.
+    HOST_NUMBER=$(printf '%03d' "$((10#${BASH_REMATCH[1]}))")
   else
     echo "Error: expected a Moonshot worker number or hostname, got: $HOST_INPUT" >&2
     exit 1
