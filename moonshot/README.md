@@ -183,6 +183,23 @@ of what would happen.
 ./oneshot_2404_x11_talos.sh 229 --ronin-settings ~/overrides/ronin_settings --confirm
 ```
 
+### oneshot_2404_wayland_talos.sh
+
+Reimages and converges Ubuntu 24.04 Wayland Talos hosts using the
+`gecko_t_linux_2404_talos_wayland` Puppet role. Accepts the same arguments,
+`--ronin-settings`, and `SKIP_REIMAGE` / `SKIP_CONVERGE` options as the X11 wrapper.
+
+```bash
+# Dry run for ms-001 (chassis 1, cartridge 1)
+./oneshot_2404_wayland_talos.sh 001
+
+# Reimage and converge
+./oneshot_2404_wayland_talos.sh 001 --confirm
+
+# Explicit chassis/cartridge/worker number
+./oneshot_2404_wayland_talos.sh 1 1 001 --confirm
+```
+
 ### oneshot_2404_netperf.sh
 
 Reimages and converges Ubuntu 24.04 Netperf hosts using the
