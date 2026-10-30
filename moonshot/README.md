@@ -245,12 +245,29 @@ The second command prompts for confirmation again and checks SSH before delivery
 
 Pass `--ronin-settings <path>` to any oneshot wrapper (or to `oneshot_linux.sh`) to deploy that file to the host before bootstrap. The file can live outside the Ronin Puppet checkout. Without this option, oneshot does not deploy a settings file, even if one exists in the checkout.
 
+Deploying the file alone does not select the Puppet repository or branch for the initial converge. Bootstrap does not source `/etc/puppet/ronin_settings`; it selects its code from `PUPPET_REPO` and `PUPPET_BRANCH`, which oneshot supplies through the variables below. The deployed settings file controls subsequent Puppet runs.
+
 **Optional Bootstrap Environment Variables**
 
-If the override file has an effect too late in the process (e.g. you want to test initial convergence) you can set these variables and it will use the values in the bootstrap script.
+To use a custom Puppet repository or branch during the initial converge, set **both** variables:
 
 - `ONESHOT_PUPPET_REPO` - Override default Puppet repository for bootstrap script
 - `ONESHOT_PUPPET_BRANCH` - Override default Puppet branch for bootstrap script
+
+Oneshot only forwards these bootstrap overrides when both are nonempty. Otherwise, bootstrap uses its defaults (`mozilla-platform-ops/ronin_puppet`, branch `master`). Keep these values consistent with the settings file when the initial converge and subsequent runs should use the same code.
+
+For example, converge an already imaged ms-001 using the Wayland errata branch for the initial converge and deploy its override file for subsequent runs:
+
+```bash
+SKIP_REIMAGE=1 \
+ONESHOT_PUPPET_REPO=https://github.com/mozilla-platform-ops/ronin_puppet.git \
+ONESHOT_PUPPET_BRANCH=20261030-2404_wayland_errata \
+./oneshot_2404_wayland_talos.sh 001 \
+  --ronin-settings /Users/aerickson/git/fleetroll_mvp/configs/overrides/20261030-2404_wayland_errata.override \
+  --confirm
+```
+
+Omit `SKIP_REIMAGE=1` to reimage first. Omitting `--confirm` previews the wrapper's target and settings path; it does not run bootstrap or verify the branch or the settings file's contents.
 
 
 ## On-Host Maintenance
