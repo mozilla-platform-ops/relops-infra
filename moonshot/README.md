@@ -113,6 +113,7 @@ Reimages a moonshot cartridge with Ubuntu 18.04 or 24.04.
 > These scripts use expect automation to connect to the Moonshot chassis iLO (HP Lights-Out),
 configure PXE boot, power cycle the cartridge, and initiate OS installation via netboot.xyz.
 Each script calls its corresponding `.exp` expect script to handle the interactive iLO session.
+Reimage logs are saved in the `logs/` subfolder, which is ignored by Git.
 
 ```bash
 # Reimage with Ubuntu 18.04

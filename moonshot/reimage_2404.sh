@@ -18,6 +18,8 @@ shift
 boot_params=""
 
 MAX_RETRIES=3
+log_dir="$(dirname "$0")/logs"
+mkdir -p "$log_dir"
 
 for node in $@; do
     echo $node
@@ -25,7 +27,7 @@ for node in $@; do
     while [ $attempt -lt $MAX_RETRIES ]; do
         attempt=$((attempt + 1))
         if ./reimage_2404.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
-                | tee ${0%%.sh}.$chassis.$node.$(date +"%H:%M:%S").log; then
+                | tee "$log_dir/$(basename "$0" .sh).$chassis.$node.$(date +"%H:%M:%S").log"; then
             break
         fi
         echo "Attempt $attempt/$MAX_RETRIES failed."
