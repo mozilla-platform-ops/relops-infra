@@ -270,6 +270,12 @@ ONESHOT_PUPPET_BRANCH=20261030-2404_wayland_errata \
 
 Omit `SKIP_REIMAGE=1` to reimage first. Omitting `--confirm` previews the wrapper's target and settings path; it does not run bootstrap or verify the branch or the settings file's contents.
 
+**Bootstrap completion and reboot disconnects**
+
+Oneshot saves bootstrap output to a local temporary file and prints its path. A successful bootstrap exit shows a success banner. SSH exit status 255 also shows the banner when the captured output contains bootstrap's `Success. Rebooting...` message; this is treated as an expected reboot disconnect. The banner confirms bootstrap completion, not that the host has finished rebooting.
+
+If SSH disconnects before that message, oneshot exits with an error and reports that convergence success is unconfirmed. Check the host and the saved output before retrying. Other bootstrap failures remain errors, even if the success message appeared.
+
 
 ## On-Host Maintenance
 

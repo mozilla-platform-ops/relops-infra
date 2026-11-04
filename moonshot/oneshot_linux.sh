@@ -55,14 +55,54 @@ run_remote_script() {
 
   # Create remote temp path (no pipeline; no subshell)
   local remote_tmp
-  remote_tmp=$(ssh "$host" 'mktemp /tmp/remote_script.XXXXXX.sh')
+  remote_tmp=$(ssh "$host" 'mktemp /tmp/remote_script.XXXXXX.sh') || return $?
   echo "Uploading and running on $host:$remote_tmp"
 
   # Stream the local script into the remote file, then run it
   # Read the local script in this shell to keep /dev/fd/* valid.
-  ssh "$host" "cat > '$remote_tmp' && chmod +x '$remote_tmp' && bash '$remote_tmp'" < "$script"
+  ssh "$host" "cat > '$remote_tmp' && chmod +x '$remote_tmp' && bash '$remote_tmp'" < "$script" || return $?
 
   echo "Remote script kept at: $host:$remote_tmp"
+}
+
+run_bootstrap() {
+  if [[ -n "${ONESHOT_PUPPET_REPO:-}" && -n "${ONESHOT_PUPPET_BRANCH:-}" ]]; then
+    run_remote_script "${SSH_USER}@${HOSTNAME}" <(echo "$REMOTE_SCRIPT")
+  else
+    ssh "${SSH_USER}@${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
+  fi
+}
+
+finish_bootstrap() {
+  local bootstrap_log bootstrap_status tee_status
+  local -a pipeline_status
+  bootstrap_log=$(mktemp "${TMPDIR:-/tmp}/moonshot-bootstrap.XXXXXX") || return $?
+  echo "Bootstrap output log: $bootstrap_log"
+  # Capture both statuses immediately; SSH commonly returns 255 during reboot.
+  if run_bootstrap 2>&1 | tee "$bootstrap_log"; then
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+  bootstrap_status=${pipeline_status[0]}
+  tee_status=${pipeline_status[1]}
+  if (( tee_status != 0 )); then
+    echo "Could not capture bootstrap output; log: $bootstrap_log" >&2
+    return "$tee_status"
+  fi
+  if (( bootstrap_status == 255 )) && grep -Eq '^Success\. Rebooting\.\.\.[[:space:]]*$' "$bootstrap_log"; then
+    echo "Bootstrap reported success; SSH disconnected during the requested reboot."
+  elif (( bootstrap_status != 0 )); then
+    echo "Bootstrap exited with status $bootstrap_status; convergence success is unconfirmed." >&2
+    echo "Check the host and bootstrap output before retrying: $bootstrap_log" >&2
+    return "$bootstrap_status"
+  fi
+
+  if [[ "$PYFIGLET_PRESENT" == true ]]; then
+    pyfiglet -f smslant "$HOST_NUMBER complete" || true
+  fi
+  printf '\n=== SUCCESS: %s bootstrap complete ===\n' "$HOSTNAME"
+  echo "The host may still be rebooting. Bootstrap output: $bootstrap_log"
 }
 
 
@@ -368,19 +408,5 @@ EOF
 
 # run the script to converge the host
 echo "Running bootstrap script on host to converge..."
-# if ONESHOT_PUPPET_REPO and ONESHOT_PUPPET_BRANCH are defined, run this
-if [[ -n "${ONESHOT_PUPPET_REPO:-}" && -n "${ONESHOT_PUPPET_BRANCH:-}" ]]; then
-  run_remote_script "${SSH_USER}@${HOSTNAME}" <(echo "$REMOTE_SCRIPT")
-else
-  ssh ${SSH_USER}@"${HOSTNAME}" sudo bash -c "/tmp/bootstrap.sh"
-fi
-
 set +x
-
-if [[ "$PYFIGLET_PRESENT" == true ]]; then
-  echo ""
-  pyfiglet -f smslant "$HOST_NUMBER complete"
-fi
-
-echo ""
-echo "Reimage and converge of ${HOSTNAME} complete."
+finish_bootstrap
