@@ -110,9 +110,86 @@ def test_ssh_probe_failures_and_command(monkeypatch, probe, outcome):
             stderr="sensitive remote error",
         )
     monkeypatch.setattr(mm.subprocess, "run", run)
-    result = mm.diagnose_worker(HOST, startup_grace_seconds=900)
+    result = mm.diagnose_worker_probe(HOST, startup_grace_seconds=900)
     assert result["worker_state"] == ("zombie" if outcome == "success" else "unverified")
     assert "sensitive" not in json.dumps(result)
+
+
+@pytest.fixture
+def fleetroll_report():
+    return {"schema_version": 1, "host": HOST, "ok": True,
+            "collection_status": "completed", "health": "unhealthy", "os_type": "Linux",
+            "checked_at": NOW.isoformat(), "gwhc_ts": NOW.isoformat(),
+            "contract_status": "legacy", "gwhc_exit_code": 1,
+            "zombie": {"status": "unknown"},
+            "checks": [{"name": "generic_worker_process", "status": "fail",
+                        "data": {"zombie_pids": [100], "nested": {"preserved": True}}}],
+            "stderr": "sensitive stderr", "error": "sensitive exception",
+            "gwhc": {"secret": "sensitive raw report"}}
+
+
+@pytest.mark.parametrize("status,state", [("confirmed", "zombie"), ("absent", "not_zombie")])
+def test_fleetroll_definitive_result_precedes_probe(monkeypatch, fleetroll_report, status, state):
+    fleetroll_report["zombie"]["status"] = status
+    def run(command, **kwargs):
+        assert command == ["uv", "run", "fleetroll", "host", "diagnose", HOST, "--json"]
+        assert kwargs["timeout"] == 45 and kwargs["check"] is False
+        assert kwargs["cwd"] == mm.FLEETROLL_DIR
+        return mm.subprocess.CompletedProcess(command, 0, json.dumps(fleetroll_report), "sensitive stderr")
+    monkeypatch.setattr(mm.subprocess, "run", run)
+    monkeypatch.setattr(mm, "diagnose_worker_probe", lambda *a, **kw: pytest.fail("definitive result overridden"))
+    result = mm.diagnose_worker(HOST, startup_grace_seconds=900)
+    assert result["worker_state"] == state
+    assert result["source"] == "fleetroll_host_diagnose"
+    assert result["report"]["checks"] == fleetroll_report["checks"]
+    assert result["report"]["gwhc_exit_code"] == 1
+    assert "sensitive" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("failure", [
+    "unknown", "new_status", "missing_status", "schema", "bool_schema", "host", "failed",
+    "nonzero", "stale", "naive", "future", "unsupported", "malformed", "oversized",
+    "timeout", "missing_command", "not_object",
+])
+def test_fleetroll_fallback_preserves_probe_and_evidence(monkeypatch, fleetroll_report, failure):
+    fleetroll_report["zombie"]["status"] = "confirmed"
+    changes = {
+        "unknown": {"zombie": {"status": "unknown"}},
+        "new_status": {"zombie": {"status": "new_value"}},
+        "missing_status": {"zombie": None}, "schema": {"schema_version": 2},
+        "bool_schema": {"schema_version": True}, "host": {"host": mm.worker_fqdn("ms026")},
+        "failed": {"ok": False}, "unsupported": {"contract_status": "unsupported"},
+        "stale": {"gwhc_ts": (NOW - datetime.timedelta(hours=2)).isoformat()},
+        "naive": {"checked_at": "2026-11-05T10:00:00"},
+        "future": {"checked_at": (NOW + datetime.timedelta(hours=2)).isoformat()},
+    }
+    fleetroll_report.update(changes.get(failure, {}))
+    def run(command, **kwargs):
+        if failure == "timeout":
+            raise mm.subprocess.TimeoutExpired(command, 45, stderr="sensitive stderr")
+        if failure == "missing_command":
+            raise FileNotFoundError("sensitive error")
+        output = {"malformed": "bad", "oversized": "x" * 262145, "not_object": "[]"}.get(
+            failure, json.dumps(fleetroll_report))
+        return mm.subprocess.CompletedProcess(command, int(failure == "nonzero"), output, "sensitive stderr")
+    monkeypatch.setattr(mm.subprocess, "run", run)
+    calls = []
+    def probe(host, **kwargs):
+        calls.append((host, kwargs))
+        return {"source": "medic_proc_v1", "worker_state": "held", "operator_hold": True}
+    monkeypatch.setattr(mm, "diagnose_worker_probe", probe)
+    result = mm.diagnose_worker(HOST, startup_grace_seconds=123)
+    assert calls == [(HOST, {"startup_grace_seconds": 123})]
+    assert result["worker_state"] == "held" and result["operator_hold"] is True
+    assert result["fleetroll"]["worker_state"] == "unverified"
+    if failure not in ("malformed", "oversized", "timeout", "missing_command", "not_object"):
+        assert result["fleetroll"]["report"]["checks"] == fleetroll_report["checks"]
+    assert "sensitive" not in json.dumps(result)
+
+
+def test_invalid_target_never_collects_diagnosis(monkeypatch):
+    monkeypatch.setattr(mm.subprocess, "run", lambda *a, **kw: pytest.fail("invalid target queried"))
+    assert mm.diagnose_worker("invalid", startup_grace_seconds=900)["worker_state"] == "unverified"
 
 
 @pytest.fixture

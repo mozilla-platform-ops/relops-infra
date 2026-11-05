@@ -1339,7 +1339,7 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
         return []
 
 
-# Temporary evidence source: replace this probe with gwhc v1 once deployed.
+# Fallback evidence source until Fleetroll supplies a supported zombie diagnosis.
 # Never read cmdline or worker configuration: either may contain credentials.
 WORKER_PROCESS_PROBE = r'''
 import datetime
@@ -1448,7 +1448,61 @@ def classify_worker_probe(raw: object, *, started: datetime.datetime,
         return {**unknown, "reason": str(exc)}
 
 
+def fleetroll_worker_diagnosis(fqdn: str, *, started: datetime.datetime) -> dict:
+    """Collect bounded diagnostic evidence without forwarding remote stderr."""
+    evidence = {"source": "fleetroll_host_diagnose", "worker_state": "unverified"}
+    try:
+        result = subprocess.run(
+            ["uv", "run", "fleetroll", "host", "diagnose", fqdn, "--json"],
+            cwd=FLEETROLL_DIR, capture_output=True, text=True, check=False, timeout=45,
+        )
+        if len(result.stdout) > 262144:
+            raise ValueError("oversized Fleetroll diagnosis")
+        raw = json.loads(result.stdout)
+        if not isinstance(raw, dict):
+            raise ValueError("invalid Fleetroll diagnosis")
+        # Retain structured checks, including nested data, but omit raw reports,
+        # stderr and exception text which may contain sensitive remote output.
+        evidence["report"] = {key: raw[key] for key in (
+            "schema_version", "host", "ts", "checked_at", "os_type", "ok",
+            "collection_status", "reason", "health", "gwhc_exit_code",
+            "gwhc_schema_version", "contract_status", "gwhc_ts", "zombie", "checks",
+        ) if key in raw}
+        if (result.returncode != 0 or type(raw.get("schema_version")) is not int
+                or raw["schema_version"] != 1 or raw.get("host") != fqdn
+                or raw.get("ok") is not True or raw.get("collection_status") != "completed"
+                or raw.get("os_type") != "Linux" or raw.get("health") not in ("healthy", "unhealthy")
+                or raw.get("contract_status") in ("unknown", "unsupported")):
+            raise ValueError("unsupported or unavailable Fleetroll diagnosis")
+        now = datetime.datetime.now(datetime.UTC)
+        for key in ("checked_at", "gwhc_ts"):
+            stamp = _evidence_timestamp(raw.get(key))
+            if not started - datetime.timedelta(seconds=60) <= stamp <= now + datetime.timedelta(seconds=60):
+                raise ValueError("Fleetroll evidence clock outside check window")
+        zombie = raw.get("zombie")
+        status = zombie.get("status") if isinstance(zombie, dict) else None
+        # Absence of zombies does not establish worker presence or task health.
+        if status == "confirmed":
+            return {**evidence, "worker_state": "zombie", "reason": "Fleetroll confirmed zombie"}
+        if status == "absent":
+            return {**evidence, "worker_state": "not_zombie", "reason": "Fleetroll confirmed no zombie"}
+        raise ValueError("Fleetroll zombie diagnosis inconclusive")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, OverflowError):
+        return {**evidence, "reason": "Fleetroll diagnosis unavailable or inconclusive"}
+
+
 def diagnose_worker(fqdn: str, *, startup_grace_seconds: int) -> dict:
+    if canonical_moonshot_fqdn(fqdn) != fqdn:
+        return {"source": "medic_proc_v1", "worker_state": "unverified",
+                "reason": "invalid Moonshot target"}
+    fleetroll = fleetroll_worker_diagnosis(fqdn, started=datetime.datetime.now(datetime.UTC))
+    if fleetroll["worker_state"] != "unverified":
+        return fleetroll
+    return {**diagnose_worker_probe(fqdn, startup_grace_seconds=startup_grace_seconds),
+            "fleetroll": fleetroll}
+
+
+def diagnose_worker_probe(fqdn: str, *, startup_grace_seconds: int) -> dict:
     started = datetime.datetime.now(datetime.UTC)
     try:
         if canonical_moonshot_fqdn(fqdn) != fqdn:

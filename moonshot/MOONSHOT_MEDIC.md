@@ -172,7 +172,24 @@ freshness gates and the maximum identity age still apply.
 candidates never enter recovery. Deferred hosts and their reasons appear in the
 report; rerun after reviewing them or adjust the limit for an attended scan.
 
-The temporary SSH probe uses `sudo -n python3` to read `/proc` process names and
+Medic first runs `fleetroll host diagnose HOST --json`, with a 45-second timeout
+and a 256 KiB report limit. It accepts completed Linux diagnoses for the requested
+host in Fleetroll envelope version 1, with collection and gwhc timestamps within
+the live check window (60 seconds of clock tolerance). A recognized normalized
+`zombie.status` takes precedence over the fallback probe: `confirmed` produces
+`worker_state: zombie`; `absent` produces `worker_state: not_zombie`, which does
+not establish worker presence or task health. These are Medic's expected status
+values for rollout; Fleetroll currently only documents `unknown`. Verify those
+names against the agreed upstream contract before relying on rollout activation.
+Medic does not classify zombies from legacy nested check data or aggregate health.
+
+Unavailable, failed, unsupported, stale, or inconclusive Fleetroll diagnoses use
+the existing SSH probe automatically, without a configuration switch. Structured
+Fleetroll checks (including nested data) and selected envelope fields are retained
+under `report` for a definitive diagnosis, or `fleetroll.report` alongside the
+fallback result. Raw upstream reports, stderr, and exception text are omitted.
+
+The fallback SSH probe uses `sudo -n python3` to read `/proc` process names and
 states, PID/parent PID, boot ID, uptime, the operator hold, and the worker-status
 file modification timestamp. It does not read process arguments, worker
 configuration, or status-file contents. Each SSH command has a 45-second timeout
@@ -193,9 +210,9 @@ are separate fields. A successful exit means the report was produced, including
 any deferred or unverified hosts; it does not mean every worker is healthy.
 Fleet freshness or top-level collection/report failures exit nonzero.
 
-The normalized diagnosis records `source: medic_proc_v1`. Replace this isolated
-evidence source with gwhc schema v1 after its deployment and validation. Automatic
-recovery of reachable zombies remains disabled pending an attended validation.
+The normalized diagnosis records `source: fleetroll_host_diagnose` or
+`source: medic_proc_v1`, according to the evidence used. Automatic recovery of
+reachable zombies remains disabled pending an attended validation.
 
 ### Key flags
 
