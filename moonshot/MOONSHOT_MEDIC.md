@@ -147,6 +147,56 @@ cannot remain active in the long-running daemon.
 Skips the iLO reset and goes straight to collection. Useful when a host was
 manually rebooted or just came back from maintenance.
 
+### Diagnose reachable workers (temporary, read-only)
+
+```
+uv run moonshot_medic.py --auto --diagnose-workers --no-voice
+```
+
+This is a separate, one-shot diagnosis path while zombie-aware gwhc v1 is being
+deployed. It never repairs clocks, resets hosts, collects the normal hang report,
+or updates recovery counters. Do not combine it with `--confirm` or named hosts.
+`--no-reset` is not needed. Existing automatic recovery behavior is unchanged.
+
+Candidates have old TC activity and no Fleetroll note, without requiring old
+observation data. Medic requires configured inventory membership, a successful
+host audit within the freshness requirement, a trusted worker identity, and a new
+exact-identity TC lookup confirming activity over four hours old. Running/pending
+tasks, unknown state for an identified task, identity contradictions, failed
+lookups, recent processing, and failure backoff defer diagnosis. The normal
+four-hour minimum identity age is bypassed only in this diagnosis path; fleet
+freshness gates and the maximum identity age still apply.
+
+`--diagnosis-limit` bounds candidates submitted for fresh TC checks and live probes
+(default 10). This limit is separate from the reset circuit breaker because these
+candidates never enter recovery. Deferred hosts and their reasons appear in the
+report; rerun after reviewing them or adjust the limit for an attended scan.
+
+The temporary SSH probe uses `sudo -n python3` to read `/proc` process names and
+states, PID/parent PID, boot ID, uptime, the operator hold, and the worker-status
+file modification timestamp. It does not read process arguments, worker
+configuration, or status-file contents. Each SSH command has a 45-second timeout
+and accepts at most 32 matching processes. Remote errors are reported as
+unverified without copying remote stderr into the report.
+
+Results distinguish `zombie`, `live`, `startup`, `absent`, `held`, and `unverified`.
+A `Z` process confirms a zombie, even beneath a live parent. A live process does
+not establish task health. An absent process is `startup` below
+`--startup-grace-minutes` (default 15); after that it remains `absent`, since this
+probe does not establish whether Puppet is still provisioning. Neither diagnosis
+authorizes recovery. Holds and incomplete process inspections take precedence.
+
+The command emits `medic_worker_diagnosis` JSON events and saves a separate
+`YYYYMMDD/*-worker-diagnosis.json` report under `moonshot_debugging_results/`.
+Selection reasons, refreshed TC evidence for queried hosts, and live diagnosis
+are separate fields. A successful exit means the report was produced, including
+any deferred or unverified hosts; it does not mean every worker is healthy.
+Fleet freshness or top-level collection/report failures exit nonzero.
+
+The normalized diagnosis records `source: medic_proc_v1`. Replace this isolated
+evidence source with gwhc schema v1 after its deployment and validation. Automatic
+recovery of reachable zombies remains disabled pending an attended validation.
+
 ### Key flags
 
 | Flag | Default | Purpose |

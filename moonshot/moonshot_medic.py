@@ -18,6 +18,7 @@ import datetime
 import json
 import math
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -1217,7 +1218,8 @@ def historical_identity_problem(record: dict, *, now: datetime.datetime,
 
 def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
                                lookup_started: datetime.datetime, freshness_seconds: int,
-                               max_identity_age_hours: int) -> str | None:
+                               max_identity_age_hours: int,
+                               allow_recent_identity: bool = False) -> str | None:
     """Require a fresh successful lookup pinned to this exact historical baseline."""
     problem = historical_identity_problem(
         record, now=now, max_identity_age_hours=max_identity_age_hours,
@@ -1225,7 +1227,8 @@ def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
     if problem:
         return problem
     baseline = record["historical_worker_identity"]
-    if (now - _evidence_timestamp(baseline["observation_ts"])).total_seconds() <= HUNG_SECONDS:
+    if (not allow_recent_identity
+            and (now - _evidence_timestamp(baseline["observation_ts"])).total_seconds() <= HUNG_SECONDS):
         return "host identity was successfully observed within the last four hours"
     tc = record.get("taskcluster")
     if not isinstance(tc, dict) or tc.get("record_status") != "stored_success":
@@ -1268,7 +1271,9 @@ def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
 
 
 def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
-                        max_identity_age_hours: int) -> list[str]:
+                        max_identity_age_hours: int,
+                        allow_recent_identity: bool = False,
+                        decisions: dict | None = None) -> list[str]:
     """Refresh exact identities in one batch; errors authorize no host actions."""
     if not hosts:
         return []
@@ -1286,6 +1291,8 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
                 )
                 if problem:
                     warn(f"Skipping {short_label(host)}: {problem}")
+                    if decisions is not None:
+                        decisions[host] = {"reason": problem}
                 else:
                     eligible.append(host)
             if not eligible:
@@ -1304,7 +1311,22 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
                 after.get(host, {}), now=now, lookup_started=started,
                 freshness_seconds=freshness_seconds,
                 max_identity_age_hours=max_identity_age_hours,
+                allow_recent_identity=allow_recent_identity,
             )
+            if allow_recent_identity and not problem:
+                task = after[host]["taskcluster"]["record"]
+                if task.get("task_id") and task.get("task_state") not in ("completed", "failed", "exception"):
+                    problem = "latest Taskcluster task state is unknown"
+            if decisions is not None:
+                tc = after.get(host, {}).get("taskcluster", {})
+                if not isinstance(tc, dict):
+                    tc = {}
+                decisions[host] = {
+                    "reason": problem or "fresh exact-identity lookup confirms old Taskcluster activity",
+                    "taskcluster": {key: tc.get(key) for key in (
+                        "identity", "observation_ts", "last_date_active", "latest_lookup_status",
+                    )},
+                }
             if problem:
                 warn(f"Skipping {short_label(host)}: {problem}")
             else:
@@ -1312,7 +1334,200 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
         return allowed
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         warn(f"Skipping automatic recovery batch: Fleetroll evidence check failed: {exc}")
+        if decisions is not None:
+            decisions.update({host: {"reason": "Fleetroll evidence check failed"} for host in hosts})
         return []
+
+
+# Temporary evidence source: replace this probe with gwhc v1 once deployed.
+# Never read cmdline or worker configuration: either may contain credentials.
+WORKER_PROCESS_PROBE = r'''
+import datetime
+import json
+import stat
+from pathlib import Path
+
+def collect(root=Path("/proc"), hold=Path("/home/cltbld/operator_hold"),
+            status_file=Path("/tmp/worker-status.json")):
+    result = {"schema_version": 1, "source": "medic_proc_v1",
+              "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "boot_id": (root / "sys/kernel/random/boot_id").read_text().strip(),
+              "uptime_seconds": float((root / "uptime").read_text().split()[0]),
+              "processes": [], "unverified_pids": []}
+    try:
+        result["operator_hold"] = stat.S_ISREG(hold.stat().st_mode)
+    except FileNotFoundError:
+        result["operator_hold"] = False
+    try:
+        result["status_file_mtime"] = status_file.stat().st_mtime
+    except FileNotFoundError:
+        result["status_file_mtime"] = None
+    for entry in root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            name = (entry / "comm").read_text().strip()
+        except FileNotFoundError:
+            continue
+        if name != "generic-worker":
+            continue
+        if len(result["processes"]) + len(result["unverified_pids"]) >= 32:
+            raise ValueError("too many matching processes")
+        pid = int(entry.name)
+        try:
+            fields = dict(line.split(":", 1) for line in (entry / "status").read_text().splitlines()
+                          if ":" in line)
+            state = fields["State"].split()[0]
+            ppid = int(fields["PPid"].strip())
+            result["processes"].append({"pid": pid, "ppid": ppid, "state": state})
+        except (OSError, KeyError, ValueError, IndexError):
+            result["unverified_pids"].append(pid)
+    return result
+
+if __name__ == "__main__":
+    print(json.dumps(collect()))
+'''
+
+
+def classify_worker_probe(raw: object, *, started: datetime.datetime,
+                          now: datetime.datetime, startup_grace_seconds: int) -> dict:
+    """Normalize bounded local process evidence; this never authorizes recovery."""
+    unknown = {"source": "medic_proc_v1", "worker_state": "unverified"}
+    try:
+        if (not isinstance(raw, dict) or type(raw.get("schema_version")) is not int
+                or raw["schema_version"] != 1 or raw.get("source") != "medic_proc_v1"):
+            raise ValueError("unsupported process evidence")
+        stamp = _evidence_timestamp(raw.get("checked_at"))
+        if not started - datetime.timedelta(seconds=60) <= stamp <= now + datetime.timedelta(seconds=60):
+            raise ValueError("process evidence clock outside check window")
+        if not isinstance(raw.get("boot_id"), str) or not re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", raw["boot_id"]):
+            raise ValueError("invalid boot identity")
+        uptime = raw.get("uptime_seconds")
+        if type(uptime) not in (int, float) or not math.isfinite(uptime) or uptime < 0:
+            raise ValueError("invalid uptime")
+        if type(raw.get("operator_hold")) is not bool:
+            raise ValueError("hold state unavailable")
+        processes, unverified = raw.get("processes"), raw.get("unverified_pids")
+        if not isinstance(processes, list) or not isinstance(unverified, list) or len(processes) + len(unverified) > 32:
+            raise ValueError("invalid process evidence")
+        clean = []
+        for process in processes:
+            if (not isinstance(process, dict) or type(process.get("pid")) is not int
+                    or process["pid"] <= 0 or type(process.get("ppid")) is not int or process["ppid"] < 0
+                    or process.get("state") not in tuple("RSDZTtXxKWIP")):
+                raise ValueError("invalid process entry")
+            clean.append({key: process[key] for key in ("pid", "ppid", "state")})
+        if any(type(pid) is not int or pid <= 0 for pid in unverified):
+            raise ValueError("invalid unverified process entry")
+        pids = [p["pid"] for p in clean] + unverified
+        if len(pids) != len(set(pids)):
+            raise ValueError("duplicate process evidence")
+        mtime = raw.get("status_file_mtime")
+        if mtime is not None and (type(mtime) not in (int, float) or not math.isfinite(mtime) or mtime < 0):
+            raise ValueError("invalid status-file timestamp")
+        # Whitelist fields rather than forwarding arbitrary remote output.
+        evidence = {"source": "medic_proc_v1", "checked_at": stamp.isoformat(),
+                    "boot_id": raw["boot_id"], "uptime_seconds": uptime,
+                    "operator_hold": raw["operator_hold"], "processes": clean,
+                    "unverified_pids": unverified, "status_file_mtime": mtime}
+        if raw["operator_hold"]:
+            state, reason = "held", "operator hold active"
+        elif unverified:
+            state, reason = "unverified", "worker process inspection incomplete"
+        elif any(p["state"] == "Z" for p in clean):
+            state, reason = "zombie", "confirmed zombie generic-worker"
+        elif any(p["state"] not in ("X", "x") for p in clean):
+            state, reason = "live", "live worker; task health not established"
+        elif uptime < startup_grace_seconds:
+            state, reason = "startup", "no live worker during startup grace"
+        else:
+            state, reason = "absent", "no live worker; provisioning/task state not established"
+        return {**evidence, "worker_state": state, "reason": reason}
+    except (ValueError, TypeError, OverflowError) as exc:
+        return {**unknown, "reason": str(exc)}
+
+
+def diagnose_worker(fqdn: str, *, startup_grace_seconds: int) -> dict:
+    started = datetime.datetime.now(datetime.UTC)
+    try:
+        if canonical_moonshot_fqdn(fqdn) != fqdn:
+            raise ValueError("invalid Moonshot target")
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", fqdn,
+             "sudo -n python3 -c " + shlex.quote(WORKER_PROCESS_PROBE)],
+            capture_output=True, text=True, check=False, timeout=45,
+        )
+        if result.returncode != 0:
+            raise ValueError("SSH/process probe failed")
+        if len(result.stdout) > 16384:
+            raise ValueError("oversized process evidence")
+        return classify_worker_probe(
+            json.loads(result.stdout), started=started,
+            now=datetime.datetime.now(datetime.UTC),
+            startup_grace_seconds=startup_grace_seconds,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        # Remote stderr can contain sensitive or unbounded output; never persist it.
+        return {"source": "medic_proc_v1", "worker_state": "unverified",
+                "reason": "probe timeout" if isinstance(exc, subprocess.TimeoutExpired) else "process probe unavailable"}
+
+
+def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours: int,
+                               limit: int, startup_grace_seconds: int) -> dict:
+    """A separate, diagnosis-only path. No clock repair, reset, or recovery state writes."""
+    raw = json.loads(_fleetroll_command(
+        "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--json",
+        "--filter", "host~t-linux64-ms tc_act>4h note= sort:host:asc",
+    ))
+    if not isinstance(raw, dict):
+        raise TypeError("Fleetroll snapshot is not a host-keyed object")
+    inventory = _configured_linux_moonshot_hosts()
+    if not inventory or any(canonical_moonshot_fqdn(h) != h or h not in inventory for h in raw):
+        raise ValueError("diagnosis candidates cannot be validated against inventory")
+    now = datetime.datetime.now(datetime.UTC)
+    state = load_state()
+    results, candidates = [], []
+    for host, record in raw.items():
+        reason = None
+        if not isinstance(record, dict) or record.get("host") != host:
+            reason = "invalid host record"
+        elif record.get("ok") is not True:
+            reason = "latest host audit did not succeed"
+        else:
+            try:
+                age = (now - _evidence_timestamp(record.get("ts"))).total_seconds()
+                if not 0 <= age < freshness_seconds:
+                    reason = "successful host audit is stale or future-dated"
+            except (ValueError, TypeError, OverflowError):
+                reason = "invalid host audit timestamp"
+        if not reason:
+            reason = historical_identity_problem(record, now=now, max_identity_age_hours=max_identity_age_hours)
+        if not reason and (recently_processed(short_label(host)) or is_skipped(state, host)):
+            reason = "recent processing or failure backoff"
+        if not reason and len(candidates) >= limit:
+            reason = "diagnosis limit reached"
+        if reason:
+            results.append({"host": host, "selection": "deferred", "reason": reason})
+        else:
+            candidates.append(host)
+    decisions: dict = {}
+    eligible = set(eligible_auto_hosts(
+        candidates, freshness_seconds=freshness_seconds,
+        max_identity_age_hours=max_identity_age_hours, allow_recent_identity=True, decisions=decisions,
+    ))
+    for host in candidates:
+        if host not in eligible:
+            results.append({"host": host, "selection": "deferred",
+                            **decisions.get(host, {"reason": "Taskcluster/identity evidence did not pass"})})
+            continue
+        diagnosis = diagnose_worker(host, startup_grace_seconds=startup_grace_seconds)
+        results.append({"host": host, "selection": "diagnosed",
+                        "host_audit_ts": raw[host]["ts"],
+                        **decisions.get(host, {}), "diagnosis": diagnosis})
+    return {"schema_version": 1, "mode": "diagnosis_only",
+            "checked_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            "results": results}
 
 
 # --- per-host collection ---
@@ -1379,6 +1594,12 @@ def parse_args() -> argparse.Namespace:
                         help="Short (ms025) or FQDN. Reads stdin if omitted.")
     parser.add_argument("--auto", action="store_true",
                         help="Fetch bad-host list from fleetroll.")
+    parser.add_argument("--diagnose-workers", action="store_true",
+                        help="One-shot read-only diagnosis of reachable, TC-inactive workers; requires --auto.")
+    parser.add_argument("--diagnosis-limit", type=int, default=10,
+                        help="Maximum candidates queried for worker diagnosis (default: 10).")
+    parser.add_argument("--startup-grace-minutes", type=int, default=15,
+                        help="Minimum uptime before an absent worker is outside startup grace (default: 15).")
     parser.add_argument("-n", "--no-reset", action="store_true",
                         help="Skip iLO reboot.")
     parser.add_argument("--freshness-requirement", type=int, default=None, metavar="MINUTES",
@@ -1419,6 +1640,13 @@ def main() -> None:
     _voice_enabled = not args.no_voice
     _voice_all_hours = args.voice_all_hours
 
+    if args.diagnose_workers and (not args.auto or args.hostname or args.confirm or args.update_report):
+        err("--diagnose-workers requires --auto and cannot combine with hosts, --confirm, or --update-report.")
+        sys.exit(1)
+    if args.diagnosis_limit < 1 or args.startup_grace_minutes < 1:
+        err("--diagnosis-limit and --startup-grace-minutes must be positive.")
+        sys.exit(1)
+
     if args.loop_interval < 1:
         err("--loop-interval must be at least 1 minute.")
         sys.exit(1)
@@ -1458,6 +1686,28 @@ def main() -> None:
     freshness_label = (f"{freshness_mins}min"
                        if args.freshness_requirement is not None
                        else f"{freshness_mins}min (from loop interval)")
+
+    if args.diagnose_workers:
+        if not check_fleetroll_data_freshness(freshness_mins * 60, args.freshness_min_pct):
+            err("Fleetroll freshness validation failed; diagnosis skipped.")
+            sys.exit(1)
+        try:
+            report = diagnose_reachable_workers(
+                freshness_seconds=freshness_mins * 60,
+                max_identity_age_hours=args.max_identity_age_hours,
+                limit=args.diagnosis_limit, startup_grace_seconds=args.startup_grace_minutes * 60,
+            )
+            run_dir = RESULTS_BASE / datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
+            run_dir.mkdir(parents=True, exist_ok=True)
+            report_path = run_dir / (datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ") + "-worker-diagnosis.json")
+            report_path.write_text(json.dumps(report, indent=2) + "\n")
+            for entry in report["results"]:
+                _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
+            info(f"Diagnosis-only report: {report_path}")
+            return
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+            err(f"Worker diagnosis failed: {exc}")
+            sys.exit(1)
 
     if args.auto and not args.confirm:
         stale_threshold = freshness_mins * 60

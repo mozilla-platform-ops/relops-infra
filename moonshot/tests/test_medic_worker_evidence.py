@@ -148,6 +148,18 @@ def test_baseline_age_policy_does_not_require_fresh_ssh(evidence, age, eligible)
     assert (problem(evidence) is None) is eligible
 
 
+def test_diagnosis_accepts_fresh_identity_without_relaxing_recovery(evidence):
+    baseline = evidence["historical_worker_identity"]
+    baseline["observation_ts"] = stamp(seconds=30)
+    baseline["provenance"]["observation_ts"] = stamp(seconds=30)
+    for obj in (evidence["taskcluster"], evidence["taskcluster"]["latest_lookup"]):
+        obj["historical_baseline"] = deepcopy(baseline["provenance"])
+    assert "within the last four hours" in problem(evidence)
+    assert problem(evidence, allow_recent_identity=True) is None
+    evidence["taskcluster"]["record"]["task_state"] = "running"
+    assert "active Taskcluster task" in problem(evidence, allow_recent_identity=True)
+
+
 def test_slow_query_does_not_make_recent_activity_look_old(evidence):
     # The lookup is fresh at the 15-minute default, but has crossed four hours
     # since last activity only while the query was in flight.
@@ -199,6 +211,30 @@ def test_batch_queries_exact_identity_then_checks_activity(evidence, fleetroll, 
         [HOST], freshness_seconds=900, max_identity_age_hours=168,
     ) == ([] if active else [HOST])
     assert [cmd[:2] for cmd in fleetroll] == [("host", "monitor"), ("gather", "tc"), ("host", "monitor")]
+
+
+@pytest.mark.parametrize("task_state,allowed", [("completed", True), (None, False), ("other", False)])
+def test_diagnosis_records_refreshed_tc_evidence_and_unknown_tasks(evidence, fleetroll, task_state, allowed):
+    evidence["taskcluster"]["record"].update(task_id="test-task", task_state=task_state)
+    decisions = {}
+    result = mm.eligible_auto_hosts(
+        [HOST], freshness_seconds=900, max_identity_age_hours=168,
+        allow_recent_identity=True, decisions=decisions,
+    )
+    assert result == ([HOST] if allowed else [])
+    assert decisions[HOST]["taskcluster"]["identity"] == IDENTITY
+    if not allowed:
+        assert "unknown" in decisions[HOST]["reason"]
+
+
+def test_diagnosis_reports_malformed_tc_instead_of_crashing(evidence, fleetroll):
+    evidence["taskcluster"] = None
+    decisions = {}
+    assert mm.eligible_auto_hosts(
+        [HOST], freshness_seconds=900, max_identity_age_hours=168,
+        allow_recent_identity=True, decisions=decisions,
+    ) == []
+    assert decisions[HOST]["reason"] == "no successful Taskcluster observation"
 
 
 def test_contradicted_baseline_is_not_queried(evidence, fleetroll):
