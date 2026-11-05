@@ -97,6 +97,40 @@ def build_steps(boot: int) -> List[Step]:
             os_match="18.04",
         ),
         Step(
+            "previous boot: first and last DNS failures",
+            "journalctl -b -1 --no-pager | grep -iE "
+            "'lookup .*127\\.0\\.0\\.53|could not resolve hostname|temporary failure in name resolution' "
+            "| awk 'NR <= 20 {print} {lines[NR % 20] = $0} END {if (NR > 40) print \"... omitted ...\"; "
+            "for (i = (NR > 40 ? NR - 19 : 21); i <= NR; i++) print lines[i % 20]}'",
+            os_match="18.04",
+        ),
+        Step(
+            "previous boot: network lifecycle",
+            "journalctl -b -1 --no-pager | grep -iE "
+            "'NetworkManager|Network Manager|dhclient|DHCP(ACK|NAK|REQUEST)|"
+            "link (up|down)|carrier|power key|powering (off|down)' | tail -300",
+            os_match="18.04",
+        ),
+        Step(
+            "previous boot: Puppet startup (first 250 lines)",
+            "journalctl -u run-puppet -b -1 --no-pager | head -250",
+            os_match="18.04",
+        ),
+        Step(
+            "previous boot: SSH service events (last 100)",
+            "journalctl -u ssh -b -1 --no-pager -n 100",
+            os_match="18.04",
+        ),
+        Step(
+            "current boot: DNS and network configuration (post-reboot snapshot)",
+            "printf '%s\\n' '--- resolv.conf ---'; cat /etc/resolv.conf; "
+            "printf '%s\\n' '--- resolved status ---'; systemd-resolve --status; "
+            "printf '%s\\n' '--- addresses ---'; ip -brief address; "
+            "printf '%s\\n' '--- routes ---'; ip route; "
+            "printf '%s\\n' '--- NetworkManager state ---'; systemctl is-active NetworkManager",
+            os_match="18.04",
+        ),
+        Step(
             "journalctl kernel (current boot, 500 lines)",
             "journalctl -k --no-pager | tail -500",
             os_match="18.04",
