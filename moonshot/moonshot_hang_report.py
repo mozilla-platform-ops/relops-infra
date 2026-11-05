@@ -8,6 +8,7 @@ Then paste /tmp/report.md (or stdout) into your chat session.
 
 import argparse
 import datetime
+import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -17,6 +18,33 @@ HANG_PATTERN = (
     r"hung task|soft lockup|call trace|oops|panic|bug:|oom-kill|invoked oom"
     r"|blocked for more than|i/o error|ext4-fs error|nvme|mpt|mce"
 )
+
+SNAPSHOT_REPORT = """
+from pathlib import Path
+from datetime import datetime, timezone
+root = Path('/var/log/network-snapshots')
+files = sorted(root.glob('slot-*.log'), key=lambda p: p.stat().st_mtime)
+if not files:
+    print('(no persistent network snapshots; optional logger may be disabled)')
+else:
+    # Latest twelve samples plus the newest sample in each of the last 48
+    # recorded hours. Keep transition evidence without dumping every minute.
+    hourly = {}
+    for p in files:
+        hourly[int(p.stat().st_mtime // 3600)] = p
+    selected = set(files[-12:]) | set(list(hourly.values())[-48:])
+    budget = 512 * 1024
+    print('Persistent snapshots: newest first, hourly samples plus latest twelve; 512 KiB output limit.')
+    for p in sorted(selected, key=lambda p: p.stat().st_mtime, reverse=True):
+        stamp = datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat()
+        chunk = '\\n--- ' + stamp + ' ' + p.name + ' ---\\n' + p.read_bytes()[:16384].decode('utf-8', errors='replace')
+        encoded = chunk.encode('utf-8')
+        if len(encoded) > budget:
+            print('(snapshot output limit reached)')
+            break
+        print(chunk)
+        budget -= len(encoded)
+"""
 
 
 @dataclass
@@ -167,6 +195,11 @@ def build_steps(boot: int) -> List[Step]:
             os_match="24.04",
         ),
         # --- shared ---
+        Step(
+            "persistent network snapshots (captured before recovery, if enabled)",
+            "python3 -c " + shlex.quote(SNAPSHOT_REPORT),
+            needs_sudo=True,
+        ),
         Step(
             "pstore crash records (survives across reboots)",
             "ls -la /sys/fs/pstore/ 2>/dev/null && cat /sys/fs/pstore/dmesg-erst-* 2>/dev/null || echo '(no pstore crash records)'",
