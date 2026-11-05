@@ -20,7 +20,8 @@ The loop is:
 1. **Detect** — [fleetroll](https://github.com/mozilla-relops/fleetroll_mvp)
    identifies hosts that haven't reported a successful task recently. Medic
    polls fleetroll on a configurable interval (default 15 min) and fetches
-   the current bad-host list.
+   the current candidates using `fleetroll host monitor` with `--once --json`
+   and `--filter-file configs/filters/moonshots-hung.yaml` (worker evidence schema v3).
 
 2. **Gate** — Before acting, Medic checks Fleetroll's versioned JSON freshness
    report and requires both host observations and Taskcluster observations to
@@ -28,6 +29,28 @@ The loop is:
    expected schema and a clean failure list. Stale, malformed, or incomplete
    data means Fleetroll itself may be broken, so the run is skipped rather than
    resetting hosts that might be fine.
+
+   Each automatic batch also requires a complete historical identity from a
+   successful host configuration audit, including its actual override pool.
+   The identity must be between four hours and seven days old, with no known
+   contradictions or uncertainty. A failed latest SSH audit is allowed: a hung
+   host cannot refresh its audit. `--max-identity-age-hours` changes the seven-day
+   maximum; Fleetroll itself retains baselines without expiry.
+
+   Medic runs `fleetroll gather tc --use-historical-identity` for the eligible hosts, then
+   reads a new JSON snapshot. Both the successful TC observation and latest
+   lookup must match all four identity fields and the exact historical provenance.
+   The lookup must have started during this check, remain younger than the
+   configured freshness requirement (and under one hour), and link to the retained
+   successful observation. Activity must be known and more than four hours old
+   at query start, with no running or pending task. Active override workers,
+   missing workers, failed lookups, unverified override changes, and malformed
+   evidence are skipped with a reason; none prove inactivity.
+
+   The check runs before any automatic host action and again after clock triage,
+   immediately before iLO reset. Preview mode uses the same evidence rules and
+   refreshes TC observations without changing hosts. Named-host/manual runs retain
+   their explicit operator selection.
 
 3. **Repair clock or reset** — Before resetting a selected bad host, Medic checks
    its OS and UTC clock over authenticated SSH. Only confirmed Ubuntu 18.04 hosts
@@ -52,7 +75,7 @@ The loop is:
    uploaded and executed remotely via SSH. It captures kernel logs, process
    state, memory pressure, and other hang indicators into a timestamped
    Markdown report saved under `moonshot_debugging_results/YYYYMMDD/`.
-   A fleetroll host-audit is appended to the same file.
+   A `fleetroll gather host` audit is appended to the same file.
 
 5. **Track** — Outcomes are persisted to `moonshot_debugging_results/state.json`.
    After 3 consecutive reset failures on the same host, Medic stops touching
@@ -134,6 +157,7 @@ manually rebooted or just came back from maintenance.
 | `--max-fleet-reset-pct N` | 20 | Maximum percentage of configured fleet selected for automatic reset; values above 20 require `--once` |
 | `--freshness-requirement N` | same as loop-interval | Max acceptable fleetroll data age |
 | `--freshness-min-pct N` | 65 | Minimum host and Taskcluster freshness coverage |
+| `--max-identity-age-hours N` | 168 | Maximum historical worker identity age for automatic recovery |
 | `--no-reset` / `-n` | off | Skip iLO reboot |
 | `--ignore-recency` | off | Re-process hosts collected in the last 60 min |
 | `--no-voice` / `-q` | off | Suppress macOS `say` announcements |
@@ -156,8 +180,8 @@ moonshot_debugging_results/
 
 Medic calls into two sibling repositories that must be checked out locally:
 
-- `~/git/fleetroll_mvp` — provides `fleetroll data-freshness`, `fleetroll host-audit`,
-  and `tools/list_bad_linux_hosts.sh`
+- `~/git/fleetroll_mvp` — provides `fleetroll data freshness`, `fleetroll gather host`,
+  schema v3 `fleetroll host monitor --json`, and `fleetroll gather tc --use-historical-identity`
 - `~/git/relops-infra/moonshot` — provides `reset_moonshot.py` (iLO reboot logic)
 
 SSH access to the cartridges is required, as is network access to the iLO

@@ -21,7 +21,9 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 FLEETROLL_DIR = Path.home() / "git/fleetroll_mvp"
@@ -46,6 +48,10 @@ FLEETROLL_FRESHNESS_SCHEMA_VERSION = 2
 FLEETROLL_FRESHNESS_REQUIRED_SOURCES = {"host", "tc"}
 MOONSHOT_HOST_RE = re.compile(r'^t-linux64-ms-\d+\.test\.releng\.mdc[12]\.mozilla\.com$', re.IGNORECASE)
 MOONSHOT_OBSERVED_FILTER = "host~t-linux64-ms os=L sort:host:asc"
+WORKER_EVIDENCE_SCHEMA_VERSION = 3
+HUNG_SECONDS = 4 * 60 * 60
+DEFAULT_MAX_IDENTITY_AGE_HOURS = 7 * 24
+WORKER_IDENTITY_FIELDS = ("provisioner", "worker_type", "worker_group", "worker_id")
 
 SSH_OPTS = [
     "-o", "StrictHostKeyChecking=accept-new",
@@ -294,10 +300,16 @@ def remediate_clock_skew(fqdn: str, state: dict) -> bool | None:
     return repaired
 
 
-def reset_batch(batch: list[str], state: dict) -> tuple[list[str], list[str]]:
+def reset_batch(batch: list[str], state: dict, *,
+                authorize_reset: Callable[[list[str]], list[str]] | None = None,
+                ) -> tuple[list[str], list[str]]:
     """Repair skew before rebooting; retain repaired hosts for diagnostics."""
     repaired = {host for host in batch if remediate_clock_skew(worker_fqdn(host), state) is True}
     reset_hosts = [host for host in batch if host not in repaired]
+    if authorize_reset and reset_hosts:
+        # Clock repair may take minutes. Refresh TC evidence after that work.
+        reset_hosts = authorize_reset(reset_hosts)
+        batch = [host for host in batch if host in repaired or host in reset_hosts]
     if reset_hosts:
         info("Resetting hosts via iLO (waiting for them to come back online)...")
         run(["uv", "run", "./reset_moonshot.py", "--force"] + reset_hosts,
@@ -427,7 +439,7 @@ def _ssh_observed_linux_moonshot_hosts() -> set[str] | None:
     if not host_list.exists():
         return None
     cmd = [
-        "uv", "run", "fleetroll", "host-monitor", str(host_list),
+        "uv", "run", "fleetroll", "host", "monitor", str(host_list),
         "--once", "--hostname-only", "--filter", MOONSHOT_OBSERVED_FILTER,
     ]
     result = subprocess.run(cmd, cwd=FLEETROLL_DIR, capture_output=True, text=True, check=False)
@@ -1120,7 +1132,7 @@ def validate_fleetroll_freshness(raw: str, returncode: int) -> tuple[bool, list[
 def check_fleetroll_data_freshness(stale_threshold: int, min_fresh_pct: int) -> bool:
     """Run and strictly validate Fleetroll's host and Taskcluster freshness check."""
     cmd = [
-        "uv", "run", "fleetroll", "data-freshness",
+        "uv", "run", "fleetroll", "data", "freshness",
         "configs/host-lists/linux/all.list",
         "--stale-threshold", str(stale_threshold),
         "--min-fresh-pct", str(min_fresh_pct),
@@ -1135,6 +1147,172 @@ def check_fleetroll_data_freshness(stale_threshold: int, min_fresh_pct: int) -> 
     if result.stderr.strip():
         warn(f"Fleetroll freshness stderr: {result.stderr.strip()}")
     return valid
+
+
+# --- automatic recovery evidence ---
+
+def _evidence_timestamp(value: object) -> datetime.datetime:
+    if not isinstance(value, str):
+        raise ValueError("missing evidence timestamp")
+    stamp = datetime.datetime.fromisoformat(value)
+    if stamp.tzinfo is None:
+        raise ValueError("evidence timestamp has no timezone")
+    return stamp
+
+
+def _fleetroll_command(*args: str, timeout: int = 60) -> str:
+    result = subprocess.run(
+        ["uv", "run", "fleetroll", *args], cwd=FLEETROLL_DIR,
+        capture_output=True, text=True, check=True, timeout=timeout,
+    )
+    if result.stderr.strip():
+        warn(f"Fleetroll stderr: {result.stderr.strip()}")
+    return result.stdout
+
+
+def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False) -> dict:
+    args = ["host", "monitor", host_source, "--once", "--json"]
+    if candidates:
+        args.extend(["--filter-file", "configs/filters/moonshots-hung.yaml"])
+    report = json.loads(_fleetroll_command(*args))
+    if not isinstance(report, dict):
+        raise ValueError("Fleetroll worker snapshot is not a host-keyed object")
+    for host, record in report.items():
+        if (canonical_moonshot_fqdn(host) != host or not isinstance(record, dict)
+                or record.get("host") != host
+                or record.get("worker_evidence_schema_version") != WORKER_EVIDENCE_SCHEMA_VERSION):
+            raise ValueError(f"Invalid Fleetroll v3 worker evidence for {host!r}")
+    return report
+
+
+def historical_identity_problem(record: dict, *, now: datetime.datetime,
+                                max_identity_age_hours: int) -> str | None:
+    """A failed latest SSH audit is allowed; a contradictory baseline is not."""
+    if record.get("worker_evidence_schema_version") != WORKER_EVIDENCE_SCHEMA_VERSION:
+        return "unsupported worker evidence schema"
+    baseline = record.get("historical_worker_identity")
+    if not isinstance(baseline, dict) or baseline.get("status") != "present":
+        return "no historical worker identity"
+    if (baseline.get("collection_status") != "ok"
+            or baseline.get("source") != "host_configuration"
+            or baseline.get("contradiction_status") != "none_known"
+            or baseline.get("reasons") != []):
+        return "historical identity is uncertain or contradicted"
+    identity = {key: baseline.get(key) for key in WORKER_IDENTITY_FIELDS}
+    if not all(isinstance(value, str) and value.strip() for value in identity.values()):
+        return "historical identity is incomplete"
+    provenance = baseline.get("provenance")
+    if (not isinstance(provenance, dict) or provenance.get("identity") != identity
+            or provenance.get("observation_ts") != baseline.get("observation_ts")
+            or provenance.get("source") != "host_configuration"):
+        return "historical identity provenance is incomplete"
+    try:
+        age = (now - _evidence_timestamp(baseline.get("observation_ts"))).total_seconds()
+    except (ValueError, TypeError, OverflowError):
+        return "invalid historical identity timestamp"
+    if not 0 <= age <= max_identity_age_hours * 3600:
+        return "historical identity is too old or future-dated"
+    return None
+
+
+def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
+                               lookup_started: datetime.datetime, freshness_seconds: int,
+                               max_identity_age_hours: int) -> str | None:
+    """Require a fresh successful lookup pinned to this exact historical baseline."""
+    problem = historical_identity_problem(
+        record, now=now, max_identity_age_hours=max_identity_age_hours,
+    )
+    if problem:
+        return problem
+    baseline = record["historical_worker_identity"]
+    if (now - _evidence_timestamp(baseline["observation_ts"])).total_seconds() <= HUNG_SECONDS:
+        return "host identity was successfully observed within the last four hours"
+    tc = record.get("taskcluster")
+    if not isinstance(tc, dict) or tc.get("record_status") != "stored_success":
+        return "no successful Taskcluster observation"
+    attempt = tc.get("latest_lookup")
+    if (not isinstance(attempt, dict) or attempt.get("status") != "success"
+            or tc.get("latest_lookup_status") != "success"
+            or attempt.get("resolution_source") != "historical_worker_identity"):
+        return "latest Taskcluster lookup did not succeed for the historical identity"
+    identity = {key: baseline[key] for key in WORKER_IDENTITY_FIELDS}
+    for evidence in (tc, attempt):
+        if (evidence.get("identity") != identity
+                or evidence.get("historical_identity_match") != "match"
+                or evidence.get("historical_baseline_match") != "match"
+                or evidence.get("historical_baseline") != baseline["provenance"]):
+            return "Taskcluster evidence belongs to a different identity or baseline"
+    if attempt.get("successful_observation_ts") != tc.get("observation_ts"):
+        return "latest lookup is not linked to the retained Taskcluster observation"
+    try:
+        started = _evidence_timestamp(attempt.get("started_ts"))
+        completed = _evidence_timestamp(attempt.get("ts"))
+        observed = _evidence_timestamp(tc.get("observation_ts"))
+        # Fleetroll's gather clock has second resolution. Do not accept an older run.
+        if not lookup_started.replace(microsecond=0) <= started <= observed <= completed <= now:
+            return "Taskcluster lookup does not belong to this recovery check"
+        if (now - started).total_seconds() >= min(freshness_seconds, 3600):
+            return "Taskcluster lookup is stale"
+        active = _evidence_timestamp(tc.get("last_date_active"))
+        # Measure inactivity at query time, not after an unusually slow query.
+        if not (started - active).total_seconds() > HUNG_SECONDS:
+            return "worker is active or activity timestamp is future-dated"
+    except (ValueError, TypeError, OverflowError):
+        return "invalid or missing Taskcluster timestamp"
+    raw = tc.get("record")
+    if not isinstance(raw, dict):
+        return "missing Taskcluster worker record"
+    if raw.get("task_state") in ("running", "pending"):
+        return "worker has an active Taskcluster task"
+    return None
+
+
+def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
+                        max_identity_age_hours: int) -> list[str]:
+    """Refresh exact identities in one batch; errors authorize no host actions."""
+    if not hosts:
+        return []
+    try:
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".list") as host_file:
+            host_file.write("\n".join(hosts) + "\n")
+            host_file.flush()
+            before = fleetroll_worker_snapshot(host_file.name)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            eligible = []
+            for host in hosts:
+                problem = historical_identity_problem(
+                    before.get(host, {}), now=now,
+                    max_identity_age_hours=max_identity_age_hours,
+                )
+                if problem:
+                    warn(f"Skipping {short_label(host)}: {problem}")
+                else:
+                    eligible.append(host)
+            if not eligible:
+                return []
+            host_file.seek(0)
+            host_file.truncate()
+            host_file.write("\n".join(eligible) + "\n")
+            host_file.flush()
+            started = datetime.datetime.now(datetime.timezone.utc)
+            _fleetroll_command("gather", "tc", host_file.name, "--use-historical-identity", timeout=300)
+            after = fleetroll_worker_snapshot(host_file.name)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        allowed = []
+        for host in eligible:
+            problem = automatic_recovery_problem(
+                after.get(host, {}), now=now, lookup_started=started,
+                freshness_seconds=freshness_seconds,
+                max_identity_age_hours=max_identity_age_hours,
+            )
+            if problem:
+                warn(f"Skipping {short_label(host)}: {problem}")
+            else:
+                allowed.append(host)
+        return allowed
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        warn(f"Skipping automatic recovery batch: Fleetroll evidence check failed: {exc}")
+        return []
 
 
 # --- per-host collection ---
@@ -1165,8 +1343,8 @@ def collect_host(fqdn: str, label: str, out_file: Path) -> bool:
         check=False)
 
     if host_ok:
-        section(f"{label}  host-audit")
-        audit = capture(["uv", "run", "fleetroll", "host-audit", fqdn], cwd=FLEETROLL_DIR, check=False)
+        section(f"{label}  gather host")
+        audit = capture(["uv", "run", "fleetroll", "gather", "host", fqdn], cwd=FLEETROLL_DIR, check=False)
         with tmp_file.open("a") as f:
             f.write("\n---\n\n# Fleetroll Host Audit\n\n```\n")
             f.write(audit)
@@ -1225,6 +1403,10 @@ def parse_args() -> argparse.Namespace:
                              f"(default: {DEFAULT_MAX_FLEET_RESET_PCT:g}).")
     parser.add_argument("--freshness-min-pct", type=int, default=FRESHNESS_MIN_PCT, metavar="PCT",
                         help=f"Minimum %% of hosts with fresh fleetroll data required (default: {FRESHNESS_MIN_PCT}).")
+    parser.add_argument("--max-identity-age-hours", type=int,
+                        default=DEFAULT_MAX_IDENTITY_AGE_HOURS, metavar="HOURS",
+                        help="Maximum historical worker identity age for automatic recovery "
+                             "(default: 168 hours).")
     parser.add_argument("--update-report", action="store_true",
                         help="Regenerate OVERVIEW.html and OVERVIEW.md from existing state, then exit.")
     return parser.parse_args()
@@ -1239,6 +1421,9 @@ def main() -> None:
 
     if args.loop_interval < 1:
         err("--loop-interval must be at least 1 minute.")
+        sys.exit(1)
+    if args.max_identity_age_hours < 1:
+        err("--max-identity-age-hours must be at least 1 hour.")
         sys.exit(1)
     if args.freshness_requirement is not None and args.freshness_requirement < 1:
         err("--freshness-requirement must be at least 1 minute.")
@@ -1282,12 +1467,13 @@ def main() -> None:
                 "Refresh it before previewing.")
             sys.exit(1)
         info("Fetching bad-host list to preview run...")
-        raw, raw_err = capture_stdout(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False)
-        if raw_err:
-            warn(f"Ignoring stderr from fleetroll bad-host list: {raw_err}")
-        preview_hosts, ignored_hosts = parse_bad_hosts(raw)
-        if ignored_hosts:
-            warn(f"Ignoring {len(ignored_hosts)} non-host token(s) from fleetroll stdout: {' '.join(ignored_hosts)}")
+        try:
+            preview_hosts = list(fleetroll_worker_snapshot(
+                "configs/host-lists/linux/all.list", candidates=True,
+            ))
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            err(f"Cannot read automatic recovery candidates: {exc}")
+            sys.exit(1)
         circuit_ok, preview_hosts, circuit_summary = check_fleet_reset_circuit_breaker(
             preview_hosts, args.max_fleet_reset_pct,
         )
@@ -1296,6 +1482,10 @@ def main() -> None:
             say("Moonshot Medic circuit breaker tripped")
             sys.exit(1)
         info(circuit_summary)
+        preview_hosts = eligible_auto_hosts(
+            preview_hosts, freshness_seconds=stale_threshold,
+            max_identity_age_hours=args.max_identity_age_hours,
+        )
         n = min(len(preview_hosts), AUTO_BATCH_SIZE)
         print()
         if n:
@@ -1346,12 +1536,14 @@ def main() -> None:
         if not stale:
             if args.auto:
                 info("Fetching bad-host list from fleetroll...")
-                raw, raw_err = capture_stdout(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False)
-                if raw_err:
-                    warn(f"Ignoring stderr from fleetroll bad-host list: {raw_err}")
-                host_tokens, ignored_hosts = parse_bad_hosts(raw)
-                if ignored_hosts:
-                    warn(f"Ignoring {len(ignored_hosts)} non-host token(s) from fleetroll stdout: {' '.join(ignored_hosts)}")
+                try:
+                    host_tokens = list(fleetroll_worker_snapshot(
+                        "configs/host-lists/linux/all.list", candidates=True,
+                    ))
+                except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                    err(f"Cannot read automatic recovery candidates: {exc}")
+                    last_failed = True
+                    break
                 circuit_ok, hosts, circuit_summary = check_fleet_reset_circuit_breaker(
                     host_tokens, args.max_fleet_reset_pct,
                 )
@@ -1442,8 +1634,23 @@ def main() -> None:
 
                             # --- reset batch ---
                             reset_fail_labels: list[str] = []
+                            if args.auto:
+                                batch = eligible_auto_hosts(
+                                    batch, freshness_seconds=stale_threshold,
+                                    max_identity_age_hours=args.max_identity_age_hours,
+                                )
+                                if not batch:
+                                    continue
                             if not args.no_reset:
-                                batch, reset_fail_labels = reset_batch(batch, state)
+                                authorize_reset = None
+                                if args.auto:
+                                    authorize_reset = lambda pending: eligible_auto_hosts(
+                                        pending, freshness_seconds=stale_threshold,
+                                        max_identity_age_hours=args.max_identity_age_hours,
+                                    )
+                                batch, reset_fail_labels = reset_batch(
+                                    batch, state, authorize_reset=authorize_reset,
+                                )
                                 save_state(state)
                                 update_overview_md(state)
                                 update_overview_html(state)

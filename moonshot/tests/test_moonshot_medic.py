@@ -312,6 +312,7 @@ class TestFleetrollFreshness:
 
         def fake_run(cmd, *, cwd, capture_output, text, check):
             assert cwd == tmp_path
+            assert cmd[:5] == ["uv", "run", "fleetroll", "data", "freshness"]
             assert "--json" in cmd
             assert "--require-fresh" in cmd
             assert cmd[cmd.index("--stale-threshold") + 1] == "900"
@@ -626,7 +627,7 @@ class TestFleetDenominator:
         monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
 
         def fake_run(cmd, *, cwd, capture_output, text, check):
-            assert cmd[:4] == ["uv", "run", "fleetroll", "host-monitor"]
+            assert cmd[:5] == ["uv", "run", "fleetroll", "host", "monitor"]
             assert cwd == tmp_path
             assert "--hostname-only" in cmd
             assert mm.MOONSHOT_OBSERVED_FILTER in cmd
