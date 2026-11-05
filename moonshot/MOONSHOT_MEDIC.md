@@ -29,9 +29,24 @@ The loop is:
    data means Fleetroll itself may be broken, so the run is skipped rather than
    resetting hosts that might be fine.
 
-3. **Reset** — Each bad host is cold-reset via iLO (`reset_moonshot.py`). Medic
+3. **Repair clock or reset** — Before resetting a selected bad host, Medic checks
+   its OS and UTC clock over authenticated SSH. Only confirmed Ubuntu 18.04 hosts
+   with clock skew greater than 5 minutes are remediated using
+   `install_clock_fix.py`. The tool installs/enables the boot-time NTP sync service
+   and syncs immediately, including when the service already exists. Medic verifies
+   the clock afterward; a successful repair avoids the iLO reset and proceeds to
+   diagnostics. Other OS versions and unknown OS responses never invoke the clock
+   fix. Probe or repair failures fall back to normal reset triage.
+
+   Each remaining bad host is cold-reset via iLO (`reset_moonshot.py`). Medic
    then waits for SSH port 22 to come back up to confirm the cartridge actually
    recovered. Hosts that don't come back are flagged as reset failures.
+   The clock check also runs before collection, including after reboot and with
+   `--no-reset`. Failed clock repairs mark the host's run as failed while still
+   collecting diagnostics. The latest repair outcome and successful repair count
+   are saved in `state.json` as `last_clock_fix` and `total_clock_fixes`, separately
+   from reset counts. Existing freshness, inventory, circuit-breaker, and recency
+   gates still apply; this does not add a separate fleet-wide scan.
 
 4. **Collect** — Once a host is back online, `moonshot_hang_report.py` is
    uploaded and executed remotely via SSH. It captures kernel logs, process
@@ -43,6 +58,23 @@ The loop is:
    After 3 consecutive reset failures on the same host, Medic stops touching
    it for 6 hours and flags it in the overview as needing human attention.
    This prevents the tool from spinning on a truly broken cartridge.
+
+   Reset, clock-fix, and diagnostics outcomes have separate `action_counts`
+   (success/failure), `last_actions`, and a 30-day `action_history` per host.
+   Each completed attempt also emits a JSON `medic_action` event into the daily
+   run log with its host, action, timestamp, and outcome. Clock events include
+   the original skew, verified skew when available, and duration; diagnostics
+   events include duration and the report path on success. Run summaries count
+   each action separately. Clock correction does not claim the worker has
+   registered with Taskcluster: startup may still wait for Puppet's next
+   10-minute retry, or require starting a failed Puppet service.
+
+   The Markdown and HTML overviews show clock and diagnostics attempts,
+   successes, failures, and latest outcomes separately from reset history.
+   Reset columns explicitly describe resets; daily file counts describe
+   diagnostics collected. New action counters cover outcomes recorded since
+   this tracking was introduced. Existing reset counts retain their meaning,
+   and older state remains readable without backfilling unknown attempts.
 
 6. **Report** — After each run, `OVERVIEW.md` and `OVERVIEW.html` are
    regenerated. The HTML report shows daily collection counts, hosts that need

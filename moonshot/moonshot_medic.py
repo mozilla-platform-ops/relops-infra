@@ -29,6 +29,8 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 RESET_DIR = SCRIPT_DIR
 RESULTS_BASE = SCRIPT_DIR / "moonshot_debugging_results"
 HANG_SCRIPT = SCRIPT_DIR / "moonshot_hang_report.py"
+CLOCK_FIX_SCRIPT = SCRIPT_DIR / "install_clock_fix.py"
+CLOCK_SKEW_SECONDS = 5 * 60
 RECENCY_MINUTES = 60
 AUTO_BATCH_SIZE = 10
 SCRIPT_VOICE_NAME = "Moonshot Medic"
@@ -227,6 +229,94 @@ def ssh_is_online(fqdn: str, timeout: int = 10) -> bool:
         return False
 
 
+# --- Ubuntu 18.04 clock remediation ---
+
+def probe_1804_clock(fqdn: str) -> tuple[float, str] | None:
+    """Return clock skew and SSH username only for confirmed Ubuntu 18.04 hosts."""
+    try:
+        before = time.time()
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", fqdn,
+             '. /etc/os-release && printf "%s\\n" "$ID" "$VERSION_ID" '
+             '&& date -u +%s && id -un'],
+            capture_output=True, text=True, check=False, timeout=45,
+        )
+        after = time.time()
+        if result.returncode != 0:
+            warn(f"[{short_label(fqdn)}] clock probe failed; using normal triage")
+            return None
+        fields = result.stdout.strip().splitlines()
+        if len(fields) != 4 or fields[:2] != ["ubuntu", "18.04"]:
+            return None
+        if not re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]*", fields[3]):
+            return None
+        return int(fields[2]) - (before + after) / 2, fields[3]
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        warn(f"[{short_label(fqdn)}] clock probe unavailable: {exc}")
+        return None
+
+
+def remediate_clock_skew(fqdn: str, state: dict) -> bool | None:
+    """True: verified repair; False: repair failed; None: no applicable skew."""
+    probe = probe_1804_clock(fqdn)
+    if probe is None or abs(probe[0]) <= CLOCK_SKEW_SECONDS:
+        return None
+    skew, user = probe
+    label = short_label(fqdn)
+    warn(f"[{label}] Ubuntu 18.04 clock skew {skew:.0f}s; running clock fix")
+    started = time.monotonic()
+    verified = None
+    try:
+        # Force is intentional: the service may already exist but need another sync.
+        result = subprocess.run(
+            [sys.executable, str(CLOCK_FIX_SCRIPT), "-H", fqdn, "-u", user, "-f", "-v"],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, check=False, timeout=1200,
+        )
+        for output in (result.stdout, result.stderr):
+            if output:
+                _emit(output.rstrip())
+        verified = probe_1804_clock(fqdn) if result.returncode == 0 else None
+        repaired = verified is not None and abs(verified[0]) <= CLOCK_SKEW_SECONDS
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        err(f"[{label}] clock fix failed: {exc}")
+        repaired = False
+    entry = _host_entry(state, fqdn)
+    event = record_action(state, fqdn, "clock_fix", repaired,
+                          skew_seconds=round(skew),
+                          verified_skew_seconds=round(verified[0]) if verified else None,
+                          duration_seconds=round(time.monotonic() - started, 1))
+    entry["last_clock_fix"] = event.copy()
+    if repaired:
+        entry["total_clock_fixes"] = entry.get("total_clock_fixes", 0) + 1
+        ok(f"[{label}] clock correction verified")
+    else:
+        err(f"[{label}] clock correction could not be verified")
+    return repaired
+
+
+def reset_batch(batch: list[str], state: dict) -> tuple[list[str], list[str]]:
+    """Repair skew before rebooting; retain repaired hosts for diagnostics."""
+    repaired = {host for host in batch if remediate_clock_skew(worker_fqdn(host), state) is True}
+    reset_hosts = [host for host in batch if host not in repaired]
+    if reset_hosts:
+        info("Resetting hosts via iLO (waiting for them to come back online)...")
+        run(["uv", "run", "./reset_moonshot.py", "--force"] + reset_hosts,
+            cwd=RESET_DIR, check=False)
+    online_hosts, failed_labels = [], []
+    for host in batch:
+        fqdn, label = worker_fqdn(host), short_label(host)
+        if host in repaired:
+            online_hosts.append(host)
+        elif ssh_is_online(fqdn):
+            online_hosts.append(host)
+            record_reset_success(state, fqdn)
+        else:
+            err(f"[{label}] did not come back online — skipping collection")
+            record_reset_failure(state, fqdn)
+            failed_labels.append(label)
+    return online_hosts, failed_labels
+
+
 # --- persistent host state ---
 
 def load_state() -> dict:
@@ -244,6 +334,8 @@ def save_state(state: dict) -> None:
     for h in state.get("hosts", {}).values():
         if "reset_timestamps" in h:
             h["reset_timestamps"] = [ts for ts in h["reset_timestamps"] if ts >= cutoff]
+        if "action_history" in h:
+            h["action_history"] = [e for e in h["action_history"] if e["timestamp"] >= cutoff]
     RESULTS_BASE.mkdir(parents=True, exist_ok=True)
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2) + "\n")
@@ -262,6 +354,21 @@ def _host_entry(state: dict, fqdn: str) -> dict:
     })
 
 
+def record_action(state: dict, fqdn: str, action: str, success: bool, **details) -> dict:
+    """Record completed actions separately; a clock fix does not imply TC recovery."""
+    entry = _host_entry(state, fqdn)
+    event = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "action": action, "success": success, **details,
+    }
+    entry.setdefault("action_history", []).append(event)
+    counts = entry.setdefault("action_counts", {}).setdefault(action, {"success": 0, "failure": 0})
+    counts["success" if success else "failure"] += 1
+    entry.setdefault("last_actions", {})[action] = event.copy()
+    _emit(json.dumps({"event": "medic_action", "host": fqdn, **event}, sort_keys=True))
+    return event
+
+
 def record_reset_success(state: dict, fqdn: str) -> None:
     h = _host_entry(state, fqdn)
     h["consecutive_reset_failures"] = 0
@@ -270,6 +377,7 @@ def record_reset_success(state: dict, fqdn: str) -> None:
     h["total_resets"] = h.get("total_resets", 0) + 1
     h["skip_until"] = None
     h.setdefault("reset_timestamps", []).append(now_iso)
+    record_action(state, fqdn, "reset", True)
 
 
 def record_reset_failure(state: dict, fqdn: str) -> None:
@@ -277,6 +385,7 @@ def record_reset_failure(state: dict, fqdn: str) -> None:
     h["consecutive_reset_failures"] = h.get("consecutive_reset_failures", 0) + 1
     h["last_failure"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     h["total_failures"] = h.get("total_failures", 0) + 1
+    record_action(state, fqdn, "reset", False)
     if h["consecutive_reset_failures"] >= SKIP_THRESHOLD_CONSECUTIVE:
         skip_until = (
             datetime.datetime.now(datetime.timezone.utc)
@@ -371,6 +480,40 @@ def _resets_since(hosts: dict, hours: int) -> int:
     )
 
 
+def action_report_rows(hosts: dict) -> list[list[str]]:
+    """Report typed outcomes without inferring worker/Taskcluster recovery."""
+    rows = []
+    for fqdn, host in sorted(hosts.items()):
+        counts = host.get("action_counts", {})
+        for action in ("clock_fix", "diagnostics"):
+            totals = counts.get(action, {})
+            last = host.get("last_actions", {}).get(action)
+            # Support state written by the initial clock-fix implementation.
+            if action == "clock_fix" and not last:
+                last = host.get("last_clock_fix")
+                successes = host.get("total_clock_fixes", 0)
+                failures = int(last is not None and not last["success"])
+            else:
+                successes, failures = totals.get("success", 0), totals.get("failure", 0)
+            if not last:
+                continue
+            before, after = last.get("skew_seconds"), last.get("verified_skew_seconds")
+            rows.append([
+                short_label(fqdn), action, str(successes + failures),
+                str(successes), str(failures), last["timestamp"],
+                "success" if last["success"] else "failure",
+                str(before) if before is not None else "",
+                str(after) if after is not None else "",
+            ])
+    return rows
+
+
+ACTION_REPORT_HEADERS = [
+    "Host", "Action", "Recorded Attempts", "Successes", "Failures", "Last Attempt",
+    "Last Outcome", "Skew Before (s)", "Verified Skew (s)",
+]
+
+
 def update_overview_md(state: dict) -> None:
     now = datetime.datetime.now(datetime.timezone.utc)
     hosts = state.get("hosts", {})
@@ -407,7 +550,7 @@ def update_overview_md(state: dict) -> None:
 
     counts = daily_counts()
     if counts:
-        lines += ["## Daily Activity", ""]
+        lines += ["## Diagnostics Collected", ""]
         for date_str, count in counts:
             lines.append(f"- {date_str}: {count} host{'s' if count != 1 else ''}")
         lines.append("")
@@ -427,7 +570,7 @@ def update_overview_md(state: dict) -> None:
         lines += [
             "## Host History",
             "",
-            "| Host | Total Resets | Failures | Consec Fails | Last Success | Last Failure | Skip Until |",
+            "| Host | Total Resets | Reset Failures | Consec Reset Fails | Last Reset Success | Last Reset Failure | Skip Until |",
             "|------|-------------|----------|--------------|-------------|--------------|------------|",
         ]
         for fqdn, h in sorted(hosts.items()):
@@ -437,6 +580,18 @@ def update_overview_md(state: dict) -> None:
                 f"{h.get('consecutive_reset_failures', 0)} | {fmt(h.get('last_success'))} | "
                 f"{fmt(h.get('last_failure'))} | {fmt(h.get('skip_until'))} |"
             )
+        lines.append("")
+
+    action_rows = action_report_rows(hosts)
+    if action_rows:
+        lines += ["## Clock Repairs and Diagnostics", "",
+                  "Clock success means verified clock correction; it does not confirm Taskcluster recovery. "
+                  "Counts cover recorded outcomes; historical reset data is unchanged.", "",
+                  "| " + " | ".join(ACTION_REPORT_HEADERS) + " |",
+                  "| " + " | ".join(["---"] * len(ACTION_REPORT_HEADERS)) + " |"]
+        for row in action_rows:
+            row[5] = fmt(row[5])
+            lines.append("| " + " | ".join(row) + " |")
         lines.append("")
 
     RESULTS_BASE.mkdir(parents=True, exist_ok=True)
@@ -562,7 +717,7 @@ def update_overview_html(state: dict) -> None:
 
     counts = daily_counts()
     if counts:
-        parts.append("<h2>Daily Activity</h2>")
+        parts.append("<h2>Diagnostics Collected</h2>")
         parts.append("<table>")
         parts.append("  <thead><tr><th>Date</th><th>Hosts collected</th></tr></thead>")
         parts.append("  <tbody>")
@@ -590,8 +745,8 @@ def update_overview_html(state: dict) -> None:
             f'<script>const HIST_DATA = {json.dumps(hist_data)};</script>',
             "<table>",
             "  <thead><tr>",
-            "    <th>Host</th><th>Total Resets</th><th>Failures</th>"
-            "<th>Consec Fails</th><th>Last Success</th><th>Last Failure</th><th>Skip Until</th>",
+            "    <th>Host</th><th>Total Resets</th><th>Reset Failures</th>"
+            "<th>Consec Reset Fails</th><th>Last Reset Success</th><th>Last Reset Failure</th><th>Skip Until</th>",
             "  </tr></thead>",
             "  <tbody>",
         ]
@@ -613,6 +768,19 @@ def update_overview_html(state: dict) -> None:
                 f"</tr>"
             )
         parts += ["  </tbody>", "</table>"]
+
+    action_rows = action_report_rows(hosts)
+    if action_rows:
+        from html import escape
+        parts += ["<h2>Clock Repairs and Diagnostics</h2>",
+                  "<p>Clock success means verified clock correction; it does not confirm Taskcluster recovery. "
+                  "Counts cover recorded outcomes; historical reset data is unchanged.</p>",
+                  "<table><thead><tr>" + "".join(f"<th>{h}</th>" for h in ACTION_REPORT_HEADERS)
+                  + "</tr></thead><tbody>"]
+        for row in action_rows:
+            cells = [fmt(value) if i == 5 else escape(value) for i, value in enumerate(row)]
+            parts.append("<tr>" + "".join(f"<td>{value}</td>" for value in cells) + "</tr>")
+        parts.append("</tbody></table>")
 
     parts += [
         "<script>",
@@ -1009,6 +1177,19 @@ def collect_host(fqdn: str, label: str, out_file: Path) -> bool:
     return host_ok
 
 
+def collect_diagnostics(fqdn: str, label: str, out_file: Path, state: dict) -> bool:
+    started = time.monotonic()
+    collected = False
+    try:
+        collected = collect_host(fqdn, label, out_file)
+        return collected
+    finally:
+        record_action(state, fqdn, "diagnostics", collected,
+                      duration_seconds=round(time.monotonic() - started, 1),
+                      report=str(out_file) if collected else None)
+        save_state(state)
+
+
 # --- main ---
 
 def parse_args() -> argparse.Namespace:
@@ -1240,7 +1421,8 @@ def main() -> None:
 
                     _log_fh = log_path.open("a")
                     try:
-                        _emit(f"Run started at {datetime.datetime.now(datetime.timezone.utc).isoformat()}")
+                        run_started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                        _emit(f"Run started at {run_started}")
                         _emit(f"Hosts: {' '.join(hosts)}")
                         _emit("")
 
@@ -1261,25 +1443,10 @@ def main() -> None:
                             # --- reset batch ---
                             reset_fail_labels: list[str] = []
                             if not args.no_reset:
-                                info("Resetting hosts via iLO (waiting for them to come back online)...")
-                                run(["uv", "run", "./reset_moonshot.py", "--force"] + batch,
-                                    cwd=RESET_DIR, check=False)
-                                print()
-                                online_hosts = []
-                                for host in batch:
-                                    fqdn = worker_fqdn(host)
-                                    label = short_label(host)
-                                    if ssh_is_online(fqdn):
-                                        online_hosts.append(host)
-                                        record_reset_success(state, fqdn)
-                                    else:
-                                        err(f"[{label}] did not come back online — skipping collection")
-                                        record_reset_failure(state, fqdn)
-                                        reset_fail_labels.append(label)
+                                batch, reset_fail_labels = reset_batch(batch, state)
                                 save_state(state)
                                 update_overview_md(state)
                                 update_overview_html(state)
-                                batch = online_hosts
 
                             fail_hosts.extend(reset_fail_labels)
 
@@ -1291,10 +1458,15 @@ def main() -> None:
                                 out_file = run_dir / f"{ts}-{label}.md"
 
                                 try:
-                                    if collect_host(fqdn, label, out_file):
+                                    # Reboots can expose the bad RTC again; also run with --no-reset.
+                                    clock_result = remediate_clock_skew(fqdn, state)
+                                    save_state(state)
+                                    collected = collect_diagnostics(fqdn, label, out_file, state)
+                                    if collected and clock_result is not False:
                                         ok_hosts.append(label)
                                     else:
-                                        err(f"[{label}] collection failed")
+                                        if not collected:
+                                            err(f"[{label}] collection failed")
                                         fail_hosts.append(label)
                                 except Exception as exc:
                                     err(f"[{label}] unexpected error: {exc}")
@@ -1306,6 +1478,14 @@ def main() -> None:
                         # --- summary ---
                         _emit(_c('1', "=" * 40))
                         _emit(f"{_c('1', 'Run complete:')} {run_dir}")
+                        for action in ("clock_fix", "reset", "diagnostics"):
+                            events = [e for h in state.get("hosts", {}).values()
+                                      for e in h.get("action_history", [])
+                                      if e["timestamp"] >= run_started and e["action"] == action]
+                            if events:
+                                successes = sum(e["success"] for e in events)
+                                _emit(f"{action}: {len(events)} attempt(s), {successes} succeeded, "
+                                      f"{len(events) - successes} failed")
                         if ok_hosts:
                             _emit(f"{_c('1;32', 'OK:  ')} {' '.join(ok_hosts)}")
                         if fail_hosts:

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import getpass
 import os
 import sys
 import pprint
@@ -19,14 +20,16 @@ def parse_args():
         description="Install NTP sync one-shot systemd service on a remote host"
     )
     parser.add_argument("-H", "--host", required=True, help="Remote host to install the service on")
-    parser.add_argument("-u", "--user", default=os.getlogin(), help="SSH user (default: $USER)")
+    parser.add_argument("-u", "--user", default=getpass.getuser(), help="SSH user (default: $USER)")
     parser.add_argument("-f", "--force", action="store_true", help="Force the operation without confirmation")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show command output")
     return parser.parse_args()
 
 def run_ssh_command(host, user, command, verbose=False):
     """Execute a command on the remote host via SSH"""
-    ssh_cmd = ["ssh", f"{user}@{host}", command]
+    ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30",
+               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+               f"{user}@{host}", command]
     
     if verbose:
         print(f"[VERBOSE] Running: {' '.join(ssh_cmd)}")
@@ -36,11 +39,15 @@ def run_ssh_command(host, user, command, verbose=False):
             ssh_cmd,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            timeout=180,
         )
         if verbose and result.stdout:
             print(f"[VERBOSE] Output: {result.stdout}")
         return result
+    except subprocess.TimeoutExpired:
+        print("[ERROR] SSH command timed out")
+        sys.exit(1)
     except subprocess.CalledProcessError as e:
         print(f"[ERROR] Command failed with exit code {e.returncode}")
         print(f"[ERROR] stderr: {e.stderr}")
@@ -48,7 +55,9 @@ def run_ssh_command(host, user, command, verbose=False):
 
 def check_ssh_command(host, user, command, verbose=False):
     """Execute a command on the remote host via SSH without exiting on failure"""
-    ssh_cmd = ["ssh", f"{user}@{host}", command]
+    ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30",
+               "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+               f"{user}@{host}", command]
     
     if verbose:
         print(f"[VERBOSE] Running: {' '.join(ssh_cmd)}")
@@ -57,7 +66,8 @@ def check_ssh_command(host, user, command, verbose=False):
         ssh_cmd,
         capture_output=True,
         text=True,
-        check=False  # Don't raise exception on non-zero exit
+        check=False,  # Don't raise exception on non-zero exit
+        timeout=180,
     )
     
     if verbose and result.stdout:

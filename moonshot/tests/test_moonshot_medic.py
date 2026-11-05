@@ -89,6 +89,113 @@ def _past(hours=24):
 FQDN = "t-linux64-ms-025.test.releng.mdc1.mozilla.com"
 
 
+class TestClockRemediation:
+    @pytest.mark.parametrize("os_id,version,eligible", [
+        ("ubuntu", "18.04", True), ("ubuntu", "24.04", False),
+        ("ubuntu", "20.04", False), ("debian", "18.04", False),
+        ("", "", False),
+    ])
+    def test_probe_requires_exact_os(self, monkeypatch, os_id, version, eligible):
+        monkeypatch.setattr(mm.time, "time", lambda: 2000000000)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return mm.subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{os_id}\n{version}\n1999990000\naerickson\n")
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+        result = mm.probe_1804_clock(FQDN)
+        assert result == ((-10000, "aerickson") if eligible else None)
+        assert "BatchMode=yes" in calls[0]
+
+    @pytest.mark.parametrize("output,code", [
+        ("ubuntu\n18.04\nbad\naerickson", 0),
+        ("ubuntu\n18.04\n1000\n-oProxyCommand=bad", 0),
+        ("ubuntu\n18.04\n1000\naerickson", 255), ("", 0),
+    ])
+    def test_bad_probe_is_not_eligible(self, monkeypatch, output, code):
+        monkeypatch.setattr(mm.subprocess, "run", lambda *a, **kw:
+                            mm.subprocess.CompletedProcess(a[0], code, stdout=output))
+        assert mm.probe_1804_clock(FQDN) is None
+
+    @pytest.mark.parametrize("probe", [None, (0, "user"), (300, "user"), (-300, "user")])
+    def test_no_fix_without_eligible_skew(self, monkeypatch, probe):
+        monkeypatch.setattr(mm, "probe_1804_clock", lambda host: probe)
+        monkeypatch.setattr(mm.subprocess, "run", lambda *a, **kw: pytest.fail("unexpected fix"))
+        assert mm.remediate_clock_skew(FQDN, _state()) is None
+
+    @pytest.mark.parametrize("skew", [-116084300, 10000])
+    @pytest.mark.parametrize("exit_code,verified,success", [
+        (0, (1, "aerickson"), True), (0, (10000, "aerickson"), False),
+        (0, None, False), (1, (0, "aerickson"), False),
+    ])
+    def test_fix_verifies_clock_and_records_separate_state(
+        self, monkeypatch, skew, exit_code, verified, success,
+    ):
+        probes = iter([(skew, "aerickson"), verified])
+        monkeypatch.setattr(mm, "probe_1804_clock", lambda host: next(probes))
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return mm.subprocess.CompletedProcess(cmd, exit_code, stdout="fix output", stderr="")
+
+        monkeypatch.setattr(mm.subprocess, "run", fake_run)
+        state = _state()
+        assert mm.remediate_clock_skew(FQDN, state) is success
+        cmd, kwargs = calls[0]
+        assert cmd == [sys.executable, str(mm.CLOCK_FIX_SCRIPT), "-H", FQDN,
+                       "-u", "aerickson", "-f", "-v"]
+        assert kwargs["timeout"] == 1200
+        entry = state["hosts"][FQDN]
+        assert entry["last_clock_fix"]["success"] is success
+        assert entry.get("total_clock_fixes", 0) == int(success)
+        assert entry["total_resets"] == 0
+        assert entry["action_counts"]["clock_fix"] == {
+            "success": int(success), "failure": int(not success),
+        }
+        event = entry["action_history"][0]
+        assert event["action"] == "clock_fix"
+        assert event["skew_seconds"] == skew
+        assert event["verified_skew_seconds"] == (
+            round(verified[0]) if verified and exit_code == 0 else None)
+
+    def test_fix_timeout_records_failure(self, monkeypatch):
+        monkeypatch.setattr(mm, "probe_1804_clock", lambda host: (-10000, "user"))
+
+        def timeout(*args, **kwargs):
+            raise mm.subprocess.TimeoutExpired("fix", 1200)
+
+        monkeypatch.setattr(mm.subprocess, "run", timeout)
+        state = _state()
+        assert mm.remediate_clock_skew(FQDN, state) is False
+        assert state["hosts"][FQDN]["last_clock_fix"]["success"] is False
+
+    def test_batch_only_resets_unrepaired_hosts(self, monkeypatch):
+        batch = [mm.worker_fqdn(f"ms{i}") for i in (155, 156, 157, 158)]
+        outcomes = dict(zip(batch, [True, None, False, None]))
+        monkeypatch.setattr(mm, "remediate_clock_skew", lambda host, state: outcomes[host])
+        monkeypatch.setattr(mm, "ssh_is_online", lambda host: host != batch[3])
+        calls = []
+        monkeypatch.setattr(mm, "run", lambda cmd, **kw: calls.append(cmd))
+        state = _state()
+        online, failed = mm.reset_batch(batch, state)
+        assert online == batch[:3]
+        assert failed == ["ms158"]
+        assert calls == [["uv", "run", "./reset_moonshot.py", "--force", *batch[1:]]]
+        assert batch[0] not in state["hosts"]
+        assert state["hosts"][batch[1]]["total_resets"] == 1
+        assert state["hosts"][batch[2]]["total_resets"] == 1
+        assert state["hosts"][batch[3]]["consecutive_reset_failures"] == 1
+
+    def test_all_repaired_hosts_skip_reset(self, monkeypatch):
+        monkeypatch.setattr(mm, "remediate_clock_skew", lambda host, state: True)
+        monkeypatch.setattr(mm, "run", lambda *a, **kw: pytest.fail("unexpected reset"))
+        monkeypatch.setattr(mm, "ssh_is_online", lambda *a: pytest.fail("unexpected reset probe"))
+        assert mm.reset_batch([FQDN], _state()) == ([FQDN], [])
+
+
 def _freshness_report():
     return {
         "schema_version": 2,
@@ -594,3 +701,94 @@ class TestOverviewHtml:
         out = capsys.readouterr().out
         assert "Overview report:" in out
         assert str(tmp_path / "OVERVIEW.html") in out
+
+
+class TestActionTracking:
+    def test_distinct_action_counts_and_structured_logs(self, capsys):
+        state = _state()
+        mm.record_reset_success(state, FQDN)
+        mm.record_action(state, FQDN, "clock_fix", False, skew_seconds=-10000)
+        mm.record_action(state, FQDN, "clock_fix", True, skew_seconds=-10000,
+                         verified_skew_seconds=1)
+        mm.record_action(state, FQDN, "diagnostics", False)
+        entry = state["hosts"][FQDN]
+        assert entry["total_resets"] == 1
+        assert entry["total_failures"] == 0
+        assert entry["consecutive_reset_failures"] == 0
+        assert mm._resets_since(state["hosts"], 24) == 1
+        assert entry["action_counts"] == {
+            "reset": {"success": 1, "failure": 0},
+            "clock_fix": {"success": 1, "failure": 1},
+            "diagnostics": {"success": 0, "failure": 1},
+        }
+        events = [mm.json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        assert len(events) == 4
+        assert all(e["event"] == "medic_action" and e["host"] == FQDN for e in events)
+        assert events[2]["verified_skew_seconds"] == 1
+        assert entry["last_actions"]["clock_fix"]["success"] is True
+
+    @pytest.mark.parametrize("outcome", [True, False, "exception"])
+    def test_diagnostics_recorded_even_on_exception(self, monkeypatch, tmp_path, outcome):
+        state = _state()
+        saved = []
+        monkeypatch.setattr(mm, "save_state", lambda value: saved.append(value))
+
+        def collect(*args):
+            if outcome == "exception":
+                raise OSError("collection error")
+            return outcome
+
+        monkeypatch.setattr(mm, "collect_host", collect)
+        report = tmp_path / "report.md"
+        if outcome == "exception":
+            with pytest.raises(OSError):
+                mm.collect_diagnostics(FQDN, "ms025", report, state)
+        else:
+            assert mm.collect_diagnostics(FQDN, "ms025", report, state) is outcome
+        event = state["hosts"][FQDN]["last_actions"]["diagnostics"]
+        assert event["success"] is (outcome is True)
+        assert event["report"] == (str(report) if outcome is True else None)
+        assert saved == [state]
+
+    def test_history_retention_preserves_lifetime_counters(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mm, "RESULTS_BASE", tmp_path)
+        monkeypatch.setattr(mm, "STATE_FILE", tmp_path / "state.json")
+        state = _state()
+        mm.record_action(state, FQDN, "clock_fix", True)
+        old = {"timestamp": _past(24 * 40), "action": "clock_fix", "success": False}
+        state["hosts"][FQDN]["action_history"].append(old)
+        mm.save_state(state)
+        loaded = mm.json.loads((tmp_path / "state.json").read_text())
+        assert len(loaded["hosts"][FQDN]["action_history"]) == 1
+        assert loaded["hosts"][FQDN]["action_counts"]["clock_fix"]["success"] == 1
+
+    def test_both_reports_show_separate_clock_and_diagnostics_outcomes(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mm, "RESULTS_BASE", tmp_path)
+        monkeypatch.setattr(mm, "OVERVIEW_FILE", tmp_path / "OVERVIEW.md")
+        monkeypatch.setattr(mm, "OVERVIEW_HTML_FILE", tmp_path / "OVERVIEW.html")
+        monkeypatch.setattr(mm, "FAVICON_FILE", tmp_path / "favicon.svg")
+        monkeypatch.setattr(mm, "_report_fleet_hosts", lambda: ({FQDN}, "configured"))
+        state = _state()
+        mm.record_action(state, FQDN, "clock_fix", True,
+                         skew_seconds=-10000, verified_skew_seconds=1)
+        mm.record_action(state, FQDN, "clock_fix", False, skew_seconds=-9000)
+        mm.record_action(state, FQDN, "diagnostics", True)
+        mm.update_overview_md(state)
+        mm.update_overview_html(state)
+        for path in (tmp_path / "OVERVIEW.md", tmp_path / "OVERVIEW.html"):
+            report = path.read_text()
+            assert "Clock Repairs and Diagnostics" in report
+            assert "Last Reset Success" in report
+            assert "clock_fix" in report and "diagnostics" in report
+            assert "does not confirm Taskcluster recovery" in report
+            assert "-9000" in report
+        rows = mm.action_report_rows(state["hosts"])
+        assert rows[0][1:5] == ["clock_fix", "2", "1", "1"]
+        assert rows[1][1:5] == ["diagnostics", "1", "1", "0"]
+
+    def test_legacy_state_is_readable_without_inventing_actions(self):
+        assert mm.action_report_rows({FQDN: {"total_resets": 3, "total_failures": 1}}) == []
+        legacy = {FQDN: {"total_clock_fixes": 1,
+                         "last_clock_fix": {"timestamp": _past(), "success": True,
+                                            "skew_seconds": -10000}}}
+        assert mm.action_report_rows(legacy)[0][1:5] == ["clock_fix", "1", "1", "0"]
