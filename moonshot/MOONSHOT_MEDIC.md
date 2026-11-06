@@ -39,6 +39,9 @@ The loop is:
 
    Medic runs `fleetroll gather tc --use-historical-identity` for the eligible hosts, then
    reads a new JSON snapshot. Both the successful TC observation and latest
+   lookup are checked per host even if gather exits 2 for incomplete collection;
+   a failed host does not block other hosts with independently valid evidence.
+   Other command failures skip the batch. Both the observation and latest
    lookup must match all four identity fields and the exact historical provenance.
    The lookup must have started during this check, remain younger than the
    configured freshness requirement (and under one hour), and link to the retained

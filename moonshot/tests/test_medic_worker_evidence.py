@@ -267,6 +267,69 @@ def test_override_changes_during_lookup_block_recovery(evidence, fleetroll, monk
     assert mm.eligible_auto_hosts([HOST], freshness_seconds=900, max_identity_age_hours=168) == []
 
 
+@pytest.mark.parametrize("failed_status", ["worker_missing", "pool_query_failed", "task_lookup_failed"])
+def test_incomplete_gather_keeps_only_successful_hosts(evidence, fleetroll, monkeypatch, failed_status):
+    other_host = mm.worker_fqdn("ms018")
+    failed = deepcopy(evidence)
+    failed["host"] = other_host
+    other_identity = {**IDENTITY, "worker_id": "t-linux64-ms-018"}
+    baseline = failed["historical_worker_identity"]
+    baseline.update(other_identity)
+    baseline["provenance"]["identity"] = other_identity
+    for obj in (failed["taskcluster"], failed["taskcluster"]["latest_lookup"]):
+        obj["identity"] = other_identity
+        obj["historical_baseline"] = deepcopy(baseline["provenance"])
+    failed["taskcluster"]["latest_lookup"].update(status=failed_status)
+    failed["taskcluster"]["latest_lookup_status"] = failed_status
+    calls = []
+
+    def command(*args, **kwargs):
+        calls.append(args[:2])
+        if args[:2] == ("gather", "tc"):
+            assert Path(args[2]).read_text().splitlines() == [HOST, other_host]
+            raise mm.subprocess.CalledProcessError(2, "fleetroll", stderr="collection incomplete")
+        return json.dumps({HOST: evidence, other_host: failed})
+
+    monkeypatch.setattr(mm, "_fleetroll_command", command)
+    decisions = {}
+    assert mm.eligible_auto_hosts(
+        [HOST, other_host], freshness_seconds=900, max_identity_age_hours=168,
+        decisions=decisions,
+    ) == [HOST]
+    assert "did not succeed" in decisions[other_host]["reason"]
+    assert calls == [("host", "monitor"), ("gather", "tc"), ("host", "monitor")]
+
+
+@pytest.mark.parametrize("returncode,stale,allowed", [(2, False, True), (2, True, False), (1, False, False)])
+def test_gather_exit_alone_never_authorizes_recovery(
+    evidence, fleetroll, monkeypatch, returncode, stale, allowed,
+):
+    original = mm._fleetroll_command
+    if stale:
+        evidence["taskcluster"]["latest_lookup"]["started_ts"] = stamp(hours=1)
+
+    def command(*args, **kwargs):
+        if args[:2] == ("gather", "tc"):
+            raise mm.subprocess.CalledProcessError(returncode, "fleetroll")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mm, "_fleetroll_command", command)
+    assert mm.eligible_auto_hosts(
+        [HOST], freshness_seconds=900, max_identity_age_hours=168,
+    ) == ([HOST] if allowed else [])
+
+
+def test_failed_fleetroll_command_surfaces_stderr(monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise mm.subprocess.CalledProcessError(2, "fleetroll", stderr="Taskcluster collection incomplete")
+
+    monkeypatch.setattr(mm.subprocess, "run", fail)
+    with pytest.raises(mm.subprocess.CalledProcessError):
+        mm._fleetroll_command("gather", "tc", "hosts.list")
+    output = capsys.readouterr()
+    assert "Taskcluster collection incomplete" in output.out + output.err
+
+
 @pytest.mark.parametrize("payload", ["null", "[]", "bad", json.dumps({HOST: None}),
                                      json.dumps({HOST: {"host": HOST, "worker_evidence_schema_version": 2}}),
                                      json.dumps({"ms017": {}})])

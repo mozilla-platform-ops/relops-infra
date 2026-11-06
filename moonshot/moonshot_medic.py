@@ -1162,10 +1162,15 @@ def _evidence_timestamp(value: object) -> datetime.datetime:
 
 
 def _fleetroll_command(*args: str, timeout: int = 60) -> str:
-    result = subprocess.run(
-        ["uv", "run", "fleetroll", *args], cwd=FLEETROLL_DIR,
-        capture_output=True, text=True, check=True, timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            ["uv", "run", "fleetroll", *args], cwd=FLEETROLL_DIR,
+            capture_output=True, text=True, check=True, timeout=timeout,
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr and exc.stderr.strip():
+            warn(f"Fleetroll stderr: {exc.stderr.strip()}")
+        raise
     if result.stderr.strip():
         warn(f"Fleetroll stderr: {result.stderr.strip()}")
     return result.stdout
@@ -1274,7 +1279,7 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
                         max_identity_age_hours: int,
                         allow_recent_identity: bool = False,
                         decisions: dict | None = None) -> list[str]:
-    """Refresh exact identities in one batch; errors authorize no host actions."""
+    """Refresh exact identities; only validated per-host evidence authorizes actions."""
     if not hosts:
         return []
     try:
@@ -1302,7 +1307,17 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
             host_file.write("\n".join(eligible) + "\n")
             host_file.flush()
             started = datetime.datetime.now(datetime.timezone.utc)
-            _fleetroll_command("gather", "tc", host_file.name, "--use-historical-identity", timeout=300)
+            try:
+                _fleetroll_command("gather", "tc", host_file.name, "--use-historical-identity", timeout=300)
+            except subprocess.CalledProcessError as exc:
+                if exc.returncode != 2:
+                    raise
+                # Fleetroll commits successful observations and failed lookup
+                # attempts before reporting incomplete collection with exit 2.
+                # Exit 2 can also signal other errors: it authorizes nothing.
+                # The snapshot below must prove a successful lookup from this
+                # run independently for every host, including exact provenance.
+                warn("Fleetroll TC gather exited with status 2; checking fresh per-host evidence")
             after = fleetroll_worker_snapshot(host_file.name)
         now = datetime.datetime.now(datetime.timezone.utc)
         allowed = []
