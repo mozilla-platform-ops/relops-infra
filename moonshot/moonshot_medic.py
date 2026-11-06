@@ -1890,8 +1890,16 @@ def main() -> None:
                         warn(f"Skipping {len(skipped)} host(s): {' '.join(short_label(h) for h in skipped)}")
                     hosts = filtered
 
+                # Resolve eligibility before announcing work or creating a run log.
+                # Keep the batch/reset checks below to catch changes during waits.
+                if args.auto:
+                    hosts = eligible_auto_hosts(
+                        hosts, freshness_seconds=stale_threshold,
+                        max_identity_age_hours=args.max_identity_age_hours,
+                    )
+
                 if not hosts:
-                    info("All requested hosts were recently processed. Nothing to do.")
+                    info("No eligible hosts to process. Nothing to do.")
                 else:
                     batches = [hosts[i:i + AUTO_BATCH_SIZE] for i in range(0, len(hosts), AUTO_BATCH_SIZE)]
                     n_total = len(hosts)

@@ -276,9 +276,12 @@ def test_snapshot_rejects_invalid_contract(monkeypatch, payload):
         mm.fleetroll_worker_snapshot("hosts.list")
 
 
-@pytest.mark.parametrize("preview,active", [(True, True), (False, True), (False, False)])
+@pytest.mark.parametrize("preview,active,missing_identity", [
+    (True, True, False), (False, True, False), (False, False, False),
+    (False, False, True),
+])
 def test_auto_main_gates_actions_with_override_evidence(
-    monkeypatch, tmp_path, evidence, fleetroll, preview, active,
+    monkeypatch, tmp_path, evidence, fleetroll, capsys, preview, active, missing_identity,
 ):
     args = ["moonshot_medic.py", "--auto", "--once", "--no-voice", "--max-fleet-reset-pct", "100"]
     if not preview:
@@ -291,6 +294,8 @@ def test_auto_main_gates_actions_with_override_evidence(
     monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: True)
     monkeypatch.setattr(mm, "recently_processed", lambda *a: False)
     monkeypatch.setattr(mm.time, "sleep", lambda *a: None)
+    announcements = []
+    monkeypatch.setattr(mm, "say", announcements.append)
     for name in ("update_overview_html", "update_overview_md", "save_state"):
         monkeypatch.setattr(mm, name, lambda *a: None)
     actions = []
@@ -305,13 +310,32 @@ def test_auto_main_gates_actions_with_override_evidence(
     monkeypatch.setattr(mm, "collect_diagnostics", lambda *a: True)
     if active:
         evidence["taskcluster"]["last_date_active"] = stamp(seconds=10)
+    if missing_identity:
+        evidence.pop("historical_worker_identity")
     with pytest.raises(SystemExit) as exc:
         mm.main()
     assert exc.value.code == (1 if preview else 0)
-    assert actions == ([] if preview or active else [HOST])
-    expected = [("host", "monitor"), ("host", "monitor"), ("gather", "tc"), ("host", "monitor")]
-    if not preview and not active:
-        expected += [("host", "monitor"), ("gather", "tc"), ("host", "monitor")]
+    eligible = not active and not missing_identity
+    assert actions == ([HOST] if not preview and eligible else [])
+    output = capsys.readouterr().out
+    if not preview:
+        if eligible:
+            assert "Hosts to process: 1 host(s)" in output
+            assert "Starting run. 1 host detected." in announcements
+            assert list(tmp_path.rglob("run.log"))
+        else:
+            assert "No eligible hosts to process. Nothing to do." in output
+            assert "Hosts to process:" not in output
+            assert "Run started at" not in output
+            assert "Run complete:" not in output
+            assert not any(message.startswith("Starting run.") for message in announcements)
+            assert not any(message.startswith("All 0 hosts succeeded.") for message in announcements)
+            assert not list(tmp_path.rglob("run.log"))
+    check = [("host", "monitor"), ("gather", "tc"), ("host", "monitor")]
+    expected = [("host", "monitor")]
+    expected += [("host", "monitor")] if missing_identity else check
+    if not preview and eligible:
+        expected += check * 2  # Per-batch and immediately before reset.
     assert [cmd[:2] for cmd in fleetroll] == expected
 
 
