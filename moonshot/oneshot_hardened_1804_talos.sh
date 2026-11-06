@@ -2,7 +2,7 @@
 # Temporary fresh-image path for a private ronin_puppet branch on Talos 18.04.
 set -euo pipefail
 
-moonshot_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
+moonshot_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ronin_puppet_dir=${RONIN_PUPPET_DIR:-"$HOME/git/ronin_puppet"}
 
 print_warning_banner() {

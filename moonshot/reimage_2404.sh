@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # ensure that tee fails if the pipe fails
 set -o pipefail
 
@@ -18,7 +19,7 @@ shift
 boot_params=""
 
 MAX_RETRIES=3
-log_dir="$(dirname "$0")/logs"
+log_dir="$SCRIPT_DIR/logs"
 mkdir -p "$log_dir"
 
 for node in $@; do
@@ -26,7 +27,7 @@ for node in $@; do
     attempt=0
     while [ $attempt -lt $MAX_RETRIES ]; do
         attempt=$((attempt + 1))
-        if ./reimage_2404.exp --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
+        if "$SCRIPT_DIR/reimage_2404.exp" --chassis relops@${hostname} --node c${node}n1 --boot-params "$boot_params" \
                 | tee "$log_dir/$(basename "$0" .sh).$chassis.$node.$(date +"%H:%M:%S").log"; then
             break
         fi

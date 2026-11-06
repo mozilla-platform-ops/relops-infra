@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # set -x
 trap 'echo "Error at line $LINENO. Aborting."; exit 1' ERR
 
@@ -293,7 +294,7 @@ else
     set -x
     # reimage the host
     echo "Reimaging chassis ${CHASSIS} cartridge ${CARTRIDGE}..."
-    ./reimage_${OS_VERSION}.sh "${CHASSIS}" "${CARTRIDGE}"
+    "$SCRIPT_DIR/reimage_${OS_VERSION}.sh" "${CHASSIS}" "${CARTRIDGE}"
     echo ""
     echo "Reimaging started."
     set +x

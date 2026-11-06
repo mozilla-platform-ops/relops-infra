@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -e
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # set -x
 
 CONFIRM=false
@@ -138,7 +139,7 @@ if [[ "$CONFIRM" == false ]]; then
   if [[ -n "${SKIP_CONVERGE:-}" ]]; then
     printf 'SKIP_CONVERGE=%q ' "$SKIP_CONVERGE"
   fi
-  printf './oneshot_linux.sh %q %q %q %q %q' "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION"
+  printf '%q %q %q %q %q %q' "$SCRIPT_DIR/oneshot_linux.sh" "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION"
   if [[ -n "$RONIN_SETTINGS_PATH" ]]; then
     printf ' --ronin-settings %q' "$RONIN_SETTINGS_PATH"
   fi
@@ -161,4 +162,4 @@ if [[ "$CONFIRM" == false ]]; then
 fi
 
 # export ROLE="gecko_t_linux_talos"
-./oneshot_linux.sh "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION" "${SETTINGS_ARGS[@]}"
+"$SCRIPT_DIR/oneshot_linux.sh" "$CHASSIS" "$CARTRIDGE" "$HOST_NUMBER" "$ROLE" "$OS_VERSION" "${SETTINGS_ARGS[@]}"

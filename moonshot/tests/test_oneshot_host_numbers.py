@@ -25,7 +25,7 @@ class HostNumberTests(unittest.TestCase):
                 self.assertIn(f'Host Number:  {number:03d}', result.stdout)
                 chassis = (number - 1) // 45 + 1
                 cartridge = (number - 1) % 45 + 1
-                self.assertIn(f'./oneshot_linux.sh {chassis} {cartridge} {number:03d} ', result.stdout)
+                self.assertIn(f'oneshot_linux.sh {chassis} {cartridge} {number:03d} ', result.stdout)
 
     def test_input_forms_and_explicit_arguments(self):
         for value in ('47', '047', 't-linux64-ms-047', 't-linux64-ms-047.test.releng.mdc1.mozilla.com'):
@@ -33,10 +33,10 @@ class HostNumberTests(unittest.TestCase):
                 result = self.dry_run(value)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('t-linux64-ms-047.test.releng.mdc1.mozilla.com', result.stdout)
-                self.assertIn('./oneshot_linux.sh 2 2 047 ', result.stdout)
+                self.assertIn('oneshot_linux.sh 2 2 047 ', result.stdout)
         explicit = self.dry_run('2', '2', '047')
         self.assertEqual(explicit.returncode, 0, explicit.stderr)
-        self.assertIn('./oneshot_linux.sh 2 2 047 ', explicit.stdout)
+        self.assertIn('oneshot_linux.sh 2 2 047 ', explicit.stdout)
 
     def test_zero_and_invalid_input_rejected(self):
         for value in ('000', '0', 'not-a-host'):
