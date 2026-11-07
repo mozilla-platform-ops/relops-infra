@@ -396,12 +396,10 @@ def run_picker(screen, db, provisioner=None):
                 except curses.error:
                     pass
 
-        title = "  Firefox CI · Worker pools"
-        if picker.scope:
-            title += " / " + picker.scope
+        title = f"  tcwl · {picker.scope}" if picker.scope else "  tcwl · Firefox CI worker pools"
         line(0, title, style(3) | curses.A_BOLD)
         if picker.scope:
-            context = "  Ctrl-B All provisioners · Esc back"
+            context = "  Firefox CI worker pools · Ctrl-B All provisioners"
         else:
             context = "  Browse a provisioner or search loaded pools"
         line(1, context, style(1))
@@ -410,8 +408,9 @@ def run_picker(screen, db, provisioner=None):
         displayed_query = picker.query[-query_width:] if query_width else ""
         line(2, prompt + displayed_query, style(1) | curses.A_BOLD)
 
-        # Reserve two section labels as well as the header and footer.
-        available = max(1, height - 8)
+        # Leave room for section labels and the gap between home-view groups.
+        group_gap = bool(not picker.scope and not picker.query.strip() and counts)
+        available = max(1, height - 8 - group_gap)
         start = max(0, picker.selected - available + 1)
         visible = picker.matches[start:start + available]
         y = 4
@@ -421,12 +420,13 @@ def run_picker(screen, db, provisioner=None):
             p, w = target
             group = picker.group(target)
             if group != previous_group:
-                line(y, "  " + group, style(4 if group == "Frequently used" else 3) | curses.A_BOLD)
+                if previous_group is not None:
+                    y += 1
+                line(y, "  " + group, style(3) | curses.A_BOLD)
                 y += 1
                 previous_group = group
             selected = index == picker.selected
             base = (style(6) if colored else curses.A_REVERSE) if selected else 0
-            row_style = base if selected else style(4 if counts.get(target) else 3 if not w else 0)
             missing = bool(counts.get(target) and p in catalog.verified and target not in live)
             if w:
                 uses = counts.get(target, 0)
@@ -444,12 +444,14 @@ def run_picker(screen, db, provisioner=None):
             row = prefix + label
             if badge:
                 row += " " * max(2, width - 3 - len(badge) - len(row)) + badge
-            line(y, row.ljust(max(0, width - 1)), row_style)
+            line(y, row.ljust(max(0, width - 1)), base)
+            if not w and not selected:
+                line(y, "›", style(3), 4)
             if missing:
                 line(y, row, base | (0 if selected else style(2)) | curses.A_BOLD)
             elif badge and not selected:
                 key = "workers:" + p
-                badge_style = style(2 if key in catalog.errors else 5 if key in catalog.pending else 4 if w else 1)
+                badge_style = style(4) if w else style(2) if key in catalog.errors else style(5) if key in catalog.pending else curses.A_DIM
                 line(y, badge, badge_style, len(row) - len(badge))
             for offset, original in enumerate(positions):
                 if original in picker.highlights.get(target, ()):

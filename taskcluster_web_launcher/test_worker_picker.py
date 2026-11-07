@@ -491,8 +491,8 @@ def test_scope_browsing_and_return_to_all_provisioners(
     screen = Screen([*"gkt", "\n", back, "\x03"])
     with picker.database(tmp_path / "history.sqlite") as db:
         assert picker.run_picker(screen, db) is None
-    assert any("Worker pools / gecko-t" in frame and "Ctrl-B All provisioners" in frame for frame in screen.frames)
-    assert "Worker pools / gecko-t" not in screen.frames[-1]
+    assert any("tcwl · gecko-t" in frame and "Ctrl-B All provisioners" in frame for frame in screen.frames)
+    assert "tcwl · gecko-t" not in screen.frames[-1]
     assert "Provisioners" in screen.frames[-1]
 
 
@@ -561,7 +561,7 @@ def test_fuzzy_provisioner_match_beats_same_letters_inside_pool_path(
     screen = Screen([*"gkt", "\n", "\x10"])
     with picker.database(tmp_path / "history.sqlite") as db:
         assert picker.run_picker(screen, db) == (("gecko-t", "gecko-t-linux-worker"), True)
-    assert "Worker pools / gecko-t" in screen.frames[-1]
+    assert "tcwl · gecko-t" in screen.frames[-1]
 
 
 def test_fuzzy_highlights_choose_the_tightest_matching_span():
@@ -582,9 +582,9 @@ def test_escape_clears_filter_then_leaves_scope_and_never_quits(
     with picker.database(tmp_path / "history.sqlite") as db:
         assert picker.run_picker(screen, db, "gecko-t") is None
     assert "Search pools › linux" in screen.frames[-4]
-    assert "Worker pools / gecko-t" in screen.frames[-3]
+    assert "tcwl · gecko-t" in screen.frames[-3]
     assert "Search pools ›\n" in screen.frames[-3]
-    assert "Worker pools / gecko-t" not in screen.frames[-2]
+    assert "tcwl · gecko-t" not in screen.frames[-2]
     assert screen.frames[-2] == screen.frames[-1]
     assert "Ctrl-C quit" in screen.frames[-1]
 
