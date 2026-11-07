@@ -84,15 +84,33 @@ def test_discovery_follows_continuation_tokens(monkeypatch):
 
 
 class Screen:
-    def __init__(self, keys):
+    def __init__(self, keys, height=24, width=120):
         self.keys = iter(keys)
         self.lines = []
+        self.height = height
+        self.width = width
+        self.canvas = {}
+        self.frames = []
+        self.segments = []
 
     def getmaxyx(self):
-        return 24, 120
+        return self.height, self.width
 
-    def addnstr(self, _y, _x, text, *_args):
+    def addnstr(self, y, x, text, limit, attr=0):
         self.lines.append(text)
+        self.segments.append((y, x, text[:limit], attr))
+        row = self.canvas.setdefault(y, [" "] * self.width)
+        for offset, char in enumerate(text[:limit]):
+            assert 0 <= y < self.height and 0 <= x + offset < self.width
+            row[x + offset] = char
+
+    def erase(self):
+        self.canvas = {}
+
+    def refresh(self):
+        self.frames.append("\n".join(
+            "".join(self.canvas.get(y, [])).rstrip() for y in range(self.height)
+        ))
 
     def get_wch(self):
         return next(self.keys)
@@ -114,6 +132,7 @@ def terminal(monkeypatch):
     monkeypatch.setattr(picker.curses, "curs_set", lambda *_: None)
     monkeypatch.setattr(picker.curses, "has_colors", lambda: False)
     monkeypatch.setattr(picker.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: [])
 
 
 @pytest.fixture
@@ -133,7 +152,7 @@ def test_marks_only_missing_saved_workers_in_checked_provisioner(
     terminal, saved_db, monkeypatch
 ):
     monkeypatch.setattr(picker, "discover", lambda _: [("releng-hardware", "present")])
-    screen = Screen(["\x1b"])
+    screen = Screen(["\x1b", "\x03"])
     assert picker.run_picker(screen, saved_db, "releng-hardware") is None
     assert any("gone" in line and "missing" in line for line in screen.lines)
     assert not any(
@@ -147,9 +166,9 @@ def test_offline_does_not_mark_workers_missing(terminal, saved_db, monkeypatch):
         raise OSError("offline")
 
     monkeypatch.setattr(picker, "discover", offline)
-    screen = Screen(["\x1b"])
+    screen = Screen(["\x1b", "\x03"])
     picker.run_picker(screen, saved_db, "releng-hardware")
-    assert any("Offline:" in line for line in screen.lines)
+    assert any("Refresh failed" in line for line in screen.lines)
     assert not any("missing" in line for line in screen.lines)
 
 
@@ -294,7 +313,7 @@ def test_partial_failure_only_marks_missing_in_successful_provisioner(
         return [(name, "present")]
 
     monkeypatch.setattr(picker, "discover", discover)
-    screen = Screen(["\x1b"])
+    screen = Screen(["\x03"])
     picker.run_picker(screen, saved_db)
     assert any("gone" in line and "missing" in line for line in screen.lines)
     assert not any("unknown-phone" in line and "missing" in line for line in screen.lines)
@@ -367,15 +386,15 @@ def test_unloaded_provisioners_are_searchable_and_counts_are_visible(
 ):
     monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t", "infra"])
     monkeypatch.setattr(picker, "discover", lambda p: [(p, "worker")])
-    screen = Screen([*"infra", "\x1b"])
+    screen = Screen([*"infra", "\x03"])
     picker.run_picker(screen, saved_db)
-    assert any("infra" in line and "Enter to load workers" in line for line in screen.lines)
-    assert any("5 provisioners" in line and "2 worker types loaded" in line for line in screen.lines)
-    assert any("rows 1–1 of 1" in line for line in screen.lines)
+    assert any("› infra" in line and "Browse" in line for line in screen.lines)
+    assert any("5 provisioners" in line and "2 pools loaded" in line for line in screen.lines)
+    assert any("1–1 of 1" in line for line in screen.lines)
 
 
 @pytest.mark.parametrize(("keys", "worker"), [
-    ([picker.curses.KEY_RIGHT], "worker-15"),
+    ([picker.curses.KEY_RIGHT], "worker-16"),
     ([picker.curses.KEY_LEFT], "worker-00"),
     ([picker.curses.KEY_RIGHT, picker.curses.KEY_RIGHT], "worker-29"),
     ([picker.curses.KEY_RIGHT, picker.curses.KEY_LEFT], "worker-00"),
@@ -392,7 +411,7 @@ def test_page_navigation(terminal, tmp_path, monkeypatch, keys, worker):
         )
 
 
-def test_empty_search_shows_favorites_then_provisioners_then_other_workers(
+def test_home_groups_frequently_used_and_provisioners_without_other_pools(
     terminal, saved_db, monkeypatch
 ):
     monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t", "infra"])
@@ -400,16 +419,15 @@ def test_empty_search_shows_favorites_then_provisioners_then_other_workers(
     picker.record(saved_db, ("releng-hardware", "present"))
     screen = Screen(["\x10"])
     assert picker.run_picker(screen, saved_db) == (("releng-hardware", "present"), True)
-    rows = [line.strip().removeprefix("▸ ") for line in screen.lines if "Enter to " in line]
-    assert [row.split()[0] for row in rows] == [
-        "gecko-t", "infra", "other", "proj-autophone", "releng-hardware"
-    ]
-    last_provisioner = next(i for i, line in enumerate(screen.lines) if "releng-hardware  Enter to browse" in line)
-    first_provisioner = next(i for i, line in enumerate(screen.lines) if "gecko-t  Enter to load" in line)
-    favorites = [i for i, line in enumerate(screen.lines) if "★" in line]
-    first_other_worker = next(i for i, line in enumerate(screen.lines) if "proj-autophone/worker" in line)
-    assert max(favorites) < first_provisioner
-    assert last_provisioner < first_other_worker
+    assert any("Frequently used" in line for line in screen.lines)
+    assert any("Provisioners" in line for line in screen.lines)
+    assert not any("proj-autophone/worker" in line for line in screen.lines)
+    assert not any("★" in line or "  live" in line for line in screen.lines)
+    first_group = next(i for i, line in enumerate(screen.lines) if "Frequently used" in line)
+    used = next(i for i, line in enumerate(screen.lines) if "releng-hardware/present" in line)
+    second_group = next(i for i, line in enumerate(screen.lines) if line.strip() == "Provisioners")
+    assert first_group < used < second_group
+    assert any("releng-hardware/present" in line and "2 uses" in line for line in screen.lines)
 
 
 def test_selecting_preloaded_provisioner_browses_without_refetch(
@@ -427,3 +445,174 @@ def test_selecting_preloaded_provisioner_browses_without_refetch(
         screen = Screen([picker.curses.KEY_DOWN, "\n", "\x10"])
         assert picker.run_picker(screen, db) == (("proj-autophone", "worker"), True)
     assert calls == ["releng-hardware", "proj-autophone"]
+
+
+def test_selection_stays_on_target_when_results_arrive(terminal, saved_db, monkeypatch):
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t"])
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "linux-z")])
+    catalog = picker.Catalog(saved_db)
+    catalog.poll()
+    model = picker.Picker()
+    model.search("linux")
+    model.update(catalog, {})
+    model.move(1)
+    selected = model.target
+    old_index = model.selected
+    catalog.events.put(("workers:gecko-t", [("gecko-t", "linux-a")], None))
+    catalog.poll()
+    model.update(catalog, {})
+    assert model.target == selected
+    assert model.selected == old_index + 1
+
+
+def test_loaded_provisioner_remains_selected_during_discovery(
+    terminal, saved_db, monkeypatch
+):
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: [])
+    monkeypatch.setattr(picker, "discover", lambda p: [])
+    catalog = picker.Catalog(saved_db)
+    catalog.poll()
+    model = picker.Picker()
+    model.update(catalog, {})
+    model.move(1)
+    selected = model.target
+    catalog.events.put(("provisioners", ["aaa-new"], None))
+    catalog.poll()
+    model.update(catalog, {})
+    assert model.target == selected
+
+
+@pytest.mark.parametrize("back", ["\x1b", "\x02", "\x7f"])
+def test_scope_browsing_and_return_to_all_provisioners(
+    terminal, tmp_path, monkeypatch, back
+):
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t"])
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "linux-worker")])
+    screen = Screen([*"gkt", "\n", back, "\x03"])
+    with picker.database(tmp_path / "history.sqlite") as db:
+        assert picker.run_picker(screen, db) is None
+    assert any("Worker pools / gecko-t" in frame and "Ctrl-B All provisioners" in frame for frame in screen.frames)
+    assert "Worker pools / gecko-t" not in screen.frames[-1]
+    assert "Provisioners" in screen.frames[-1]
+
+
+def test_clear_search_stays_in_scope_and_manual_pool_uses_scope(
+    terminal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "worker")])
+    screen = Screen([*"discard", "\x15", *"new-pool", "\x10"])
+    with picker.database(tmp_path / "history.sqlite") as db:
+        assert picker.run_picker(screen, db, "gecko-t") == (("gecko-t", "new-pool"), True)
+    assert "Search pools › new-pool" in screen.frames[-1]
+    assert any("Search pools ›\n" in frame for frame in screen.frames)
+
+
+def test_match_highlighting_corresponds_to_displayed_characters(
+    terminal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "linux-worker")])
+    screen = Screen([*"lnwrk", "\x10"])
+    with picker.database(tmp_path / "history.sqlite") as db:
+        assert picker.run_picker(screen, db, "gecko-t") == (("gecko-t", "linux-worker"), True)
+    highlighted = [text for _, _, text, attr in screen.segments if attr & picker.curses.A_UNDERLINE]
+    assert "".join(highlighted[-5:]) == "lnwrk"
+
+
+@pytest.mark.parametrize(("height", "width"), [(24, 80), (12, 40), (8, 24)])
+def test_small_terminal_keeps_navigation_and_long_paths_usable(
+    terminal, tmp_path, monkeypatch, height, width
+):
+    worker = "gecko-t-linux-" + "long-" * 20 + "wayland"
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, worker)])
+    screen = Screen(["\x10"], height=height, width=width)
+    with picker.database(tmp_path / "history.sqlite") as db:
+        assert picker.run_picker(screen, db, "releng-hardware") == (("releng-hardware", worker), True)
+    assert "…" in screen.frames[-1]
+    assert all(len(line) < width for line in screen.frames[-1].splitlines())
+
+
+def test_scoped_failure_shows_retry_state_and_does_not_open_a_placeholder(
+    terminal, tmp_path, monkeypatch
+):
+    def offline(_):
+        raise OSError("network unavailable")
+
+    monkeypatch.setattr(picker, "discover", offline)
+    screen = Screen(["\n", "\x1b", "\x03"])
+    with picker.database(tmp_path / "history.sqlite") as db:
+        assert picker.run_picker(screen, db, "gecko-t") is None
+    assert any("Could not load pools" in frame for frame in screen.frames)
+    assert any("network unavailable" in frame for frame in screen.frames)
+
+
+def test_shortened_paths_keep_tail_and_highlight_positions():
+    text = "releng-hardware/gecko-t-linux-wayland"
+    label, positions = picker.shorten(text, 24)
+    assert len(label) == 24
+    assert label.endswith("linux-wayland")
+    assert all(original is None or label[i] == text[original] for i, original in enumerate(positions))
+
+
+def test_fuzzy_provisioner_match_beats_same_letters_inside_pool_path(
+    terminal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t"])
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "gecko-t-linux-worker")])
+    screen = Screen([*"gkt", "\n", "\x10"])
+    with picker.database(tmp_path / "history.sqlite") as db:
+        assert picker.run_picker(screen, db) == (("gecko-t", "gecko-t-linux-worker"), True)
+    assert "Worker pools / gecko-t" in screen.frames[-1]
+
+
+def test_fuzzy_highlights_choose_the_tightest_matching_span():
+    target = ("releng-hardware", "gecko-t-linux-worker")
+    match = picker.fuzzy_match("gkt", target)
+    assert match is not None
+    _, positions = match
+    text = "/".join(target)
+    assert "".join(text[i] for i in sorted(positions)) == "gkt"
+    assert min(positions) == text.index("gecko-t")
+
+
+def test_escape_clears_filter_then_leaves_scope_and_never_quits(
+    terminal, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "linux-worker")])
+    screen = Screen([*"linux", "\x1b", "\x1b", "\x1b", "\x03"])
+    with picker.database(tmp_path / "history.sqlite") as db:
+        assert picker.run_picker(screen, db, "gecko-t") is None
+    assert "Search pools › linux" in screen.frames[-4]
+    assert "Worker pools / gecko-t" in screen.frames[-3]
+    assert "Search pools ›\n" in screen.frames[-3]
+    assert "Worker pools / gecko-t" not in screen.frames[-2]
+    assert screen.frames[-2] == screen.frames[-1]
+    assert "Ctrl-C quit" in screen.frames[-1]
+
+
+def test_escape_clears_global_search_without_quitting(terminal, saved_db, monkeypatch):
+    monkeypatch.setattr(picker, "discover", lambda p: [])
+    screen = Screen([*"present", "\x1b", "\x1b", "\x03"])
+    assert picker.run_picker(screen, saved_db) is None
+    assert "Search › present" in screen.frames[-3]
+    assert "Frequently used" in screen.frames[-2]
+    assert screen.frames[-2] == screen.frames[-1]
+
+
+def test_color_palette_preserves_selection_background_during_highlighting(
+    terminal, tmp_path, monkeypatch
+):
+    pairs = []
+    monkeypatch.setattr(picker.curses, "has_colors", lambda: True)
+    monkeypatch.setattr(picker.curses, "start_color", lambda: None)
+    monkeypatch.setattr(picker.curses, "use_default_colors", lambda: None)
+    monkeypatch.setattr(picker.curses, "init_pair", lambda *args: pairs.append(args))
+    monkeypatch.setattr(picker.curses, "color_pair", lambda n: n << 8)
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "linux-worker")])
+    screen = Screen([*"lnwrk", "\x10"])
+    with picker.database(tmp_path / "history.sqlite") as db:
+        assert picker.run_picker(screen, db, "gecko-t") == (("gecko-t", "linux-worker"), True)
+    assert {number for number, _, _ in pairs} == {1, 2, 3, 4, 5, 6}
+    assert pairs[-1] == (6, picker.curses.COLOR_BLACK, picker.curses.COLOR_CYAN)
+    highlights = [attr for _, _, _, attr in screen.segments if attr & picker.curses.A_UNDERLINE]
+    assert highlights
+    assert all(attr & 0xFF00 == 6 << 8 for attr in highlights)
