@@ -2,9 +2,11 @@
 """Automated triage for hung t-linux64-ms-* Moonshot cartridges: resets via iLO, collects hang diagnostics, and tracks repeat offenders.
 
 Usage:
-  moonshot_medic.py [--auto] [--no-reset] [--no-freshness] [--ignore-recency] [HOST ...]
+  moonshot_medic.py [--auto] [--once] [--no-reset] [--ignore-recency] [HOST ...]
 
   --auto                    Fetch bad-host list from fleetroll instead of reading argv/stdin (requires --confirm).
+  --once                    Run one auto-mode iteration, then exit.
+  --max-fleet-reset-pct     Maximum auto-selected percentage of configured fleet (default: 20).
   --no-reset                Skip iLO reboot (host already freshly rebooted).
   --freshness-requirement   Max acceptable age of fleetroll data in minutes (default: loop-interval).
   --ignore-recency          Process hosts even if collected within the last RECENCY_MINUTES minutes.
@@ -14,12 +16,15 @@ Usage:
 import argparse
 import datetime
 import json
+import math
 import re
+import shlex
 import signal
-import socket
 import subprocess
 import sys
+import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 FLEETROLL_DIR = Path.home() / "git/fleetroll_mvp"
@@ -27,6 +32,8 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 RESET_DIR = SCRIPT_DIR
 RESULTS_BASE = SCRIPT_DIR / "moonshot_debugging_results"
 HANG_SCRIPT = SCRIPT_DIR / "moonshot_hang_report.py"
+CLOCK_FIX_SCRIPT = SCRIPT_DIR / "install_clock_fix.py"
+CLOCK_SKEW_SECONDS = 5 * 60
 RECENCY_MINUTES = 60
 AUTO_BATCH_SIZE = 10
 SCRIPT_VOICE_NAME = "Moonshot Medic"
@@ -37,8 +44,15 @@ FAVICON_FILE = RESULTS_BASE / "favicon.svg"
 SKIP_THRESHOLD_CONSECUTIVE = 3
 SKIP_DURATION_HOURS = 6
 FRESHNESS_MIN_PCT = 65
+DEFAULT_MAX_FLEET_RESET_PCT = 20.0
+FLEETROLL_FRESHNESS_SCHEMA_VERSION = 2
+FLEETROLL_FRESHNESS_REQUIRED_SOURCES = {"host", "tc"}
 MOONSHOT_HOST_RE = re.compile(r'^t-linux64-ms-\d+\.test\.releng\.mdc[12]\.mozilla\.com$', re.IGNORECASE)
 MOONSHOT_OBSERVED_FILTER = "host~t-linux64-ms os=L sort:host:asc"
+WORKER_EVIDENCE_SCHEMA_VERSION = 3
+HUNG_SECONDS = 4 * 60 * 60
+DEFAULT_MAX_IDENTITY_AGE_HOURS = 7 * 24
+WORKER_IDENTITY_FIELDS = ("provisioner", "worker_type", "worker_group", "worker_id")
 
 SSH_OPTS = [
     "-o", "StrictHostKeyChecking=accept-new",
@@ -166,15 +180,154 @@ def parse_bad_hosts(raw: str) -> tuple[list[str], list[str]]:
     return hosts, ignored
 
 
+def check_fleet_reset_circuit_breaker(
+    hosts: list[str], max_reset_pct: float,
+) -> tuple[bool, list[str], str]:
+    """Validate auto-selected hosts against configured inventory and blast radius."""
+    configured_hosts = _configured_linux_moonshot_hosts()
+    if not configured_hosts:
+        return False, [], "Cannot load configured Moonshot inventory; refusing automatic resets"
+
+    # Preserve Fleetroll's order while ensuring duplicates cannot inflate work or
+    # cause the same host to be reset more than once in a run.
+    candidates = list(dict.fromkeys(worker_fqdn(host) for host in hosts))
+    unknown_hosts = set(candidates) - configured_hosts
+    if unknown_hosts:
+        labels = " ".join(sorted(short_label(host) for host in unknown_hosts))
+        return False, candidates, f"Fleetroll returned host(s) outside configured inventory: {labels}"
+
+    candidate_pct = 100.0 * len(candidates) / len(configured_hosts)
+    summary = (
+        f"Fleet reset candidates: {len(candidates)}/{len(configured_hosts)} "
+        f"({candidate_pct:.1f}%; maximum {max_reset_pct:g}%)"
+    )
+    if candidate_pct > max_reset_pct:
+        required_pct = math.ceil(candidate_pct)
+        return False, candidates, (
+            f"Circuit breaker tripped — {summary}. "
+            "After reviewing the candidate list, run an attended one-time recovery with "
+            f"--auto --once --confirm --max-fleet-reset-pct {required_pct}"
+        )
+    return True, candidates, summary
+
+
 # --- SSH probe ---
 
 def ssh_is_online(fqdn: str, timeout: int = 10) -> bool:
+    """Check that SSH can authenticate and execute a command, as scp requires."""
     try:
-        sock = socket.create_connection((fqdn, 22), timeout=timeout)
-        sock.close()
-        return True
-    except (socket.timeout, OSError):
+        result = subprocess.run(
+            [
+                "ssh",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={timeout}",
+                "-o", "ConnectionAttempts=1",
+                fqdn,
+                "true",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout + 5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+# --- Ubuntu 18.04 clock remediation ---
+
+def probe_1804_clock(fqdn: str) -> tuple[float, str] | None:
+    """Return clock skew and SSH username only for confirmed Ubuntu 18.04 hosts."""
+    try:
+        before = time.time()
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", fqdn,
+             '. /etc/os-release && printf "%s\\n" "$ID" "$VERSION_ID" '
+             '&& date -u +%s && id -un'],
+            capture_output=True, text=True, check=False, timeout=45,
+        )
+        after = time.time()
+        if result.returncode != 0:
+            warn(f"[{short_label(fqdn)}] clock probe failed; using normal triage")
+            return None
+        fields = result.stdout.strip().splitlines()
+        if len(fields) != 4 or fields[:2] != ["ubuntu", "18.04"]:
+            return None
+        if not re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]*", fields[3]):
+            return None
+        return int(fields[2]) - (before + after) / 2, fields[3]
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        warn(f"[{short_label(fqdn)}] clock probe unavailable: {exc}")
+        return None
+
+
+def remediate_clock_skew(fqdn: str, state: dict) -> bool | None:
+    """True: verified repair; False: repair failed; None: no applicable skew."""
+    probe = probe_1804_clock(fqdn)
+    if probe is None or abs(probe[0]) <= CLOCK_SKEW_SECONDS:
+        return None
+    skew, user = probe
+    label = short_label(fqdn)
+    warn(f"[{label}] Ubuntu 18.04 clock skew {skew:.0f}s; running clock fix")
+    started = time.monotonic()
+    verified = None
+    try:
+        # Force is intentional: the service may already exist but need another sync.
+        result = subprocess.run(
+            [sys.executable, str(CLOCK_FIX_SCRIPT), "-H", fqdn, "-u", user, "-f", "-v"],
+            cwd=SCRIPT_DIR, capture_output=True, text=True, check=False, timeout=1200,
+        )
+        for output in (result.stdout, result.stderr):
+            if output:
+                _emit(output.rstrip())
+        verified = probe_1804_clock(fqdn) if result.returncode == 0 else None
+        repaired = verified is not None and abs(verified[0]) <= CLOCK_SKEW_SECONDS
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        err(f"[{label}] clock fix failed: {exc}")
+        repaired = False
+    entry = _host_entry(state, fqdn)
+    event = record_action(state, fqdn, "clock_fix", repaired,
+                          skew_seconds=round(skew),
+                          verified_skew_seconds=round(verified[0]) if verified else None,
+                          duration_seconds=round(time.monotonic() - started, 1))
+    entry["last_clock_fix"] = event.copy()
+    if repaired:
+        entry["total_clock_fixes"] = entry.get("total_clock_fixes", 0) + 1
+        ok(f"[{label}] clock correction verified")
+    else:
+        err(f"[{label}] clock correction could not be verified")
+    return repaired
+
+
+def reset_batch(batch: list[str], state: dict, *,
+                authorize_reset: Callable[[list[str]], list[str]] | None = None,
+                ) -> tuple[list[str], list[str]]:
+    """Repair skew before rebooting; retain repaired hosts for diagnostics."""
+    repaired = {host for host in batch if remediate_clock_skew(worker_fqdn(host), state) is True}
+    reset_hosts = [host for host in batch if host not in repaired]
+    if authorize_reset and reset_hosts:
+        # Clock repair may take minutes. Refresh TC evidence after that work.
+        reset_hosts = authorize_reset(reset_hosts)
+        batch = [host for host in batch if host in repaired or host in reset_hosts]
+    if reset_hosts:
+        info("Resetting hosts via iLO (waiting for them to come back online)...")
+        run(["uv", "run", "./reset_moonshot.py", "--force"] + reset_hosts,
+            cwd=RESET_DIR, check=False)
+    online_hosts, failed_labels = [], []
+    for host in batch:
+        fqdn, label = worker_fqdn(host), short_label(host)
+        if host in repaired:
+            online_hosts.append(host)
+        elif ssh_is_online(fqdn):
+            online_hosts.append(host)
+            record_reset_success(state, fqdn)
+        else:
+            err(f"[{label}] did not come back online — skipping collection")
+            record_reset_failure(state, fqdn)
+            failed_labels.append(label)
+    return online_hosts, failed_labels
 
 
 # --- persistent host state ---
@@ -194,6 +347,8 @@ def save_state(state: dict) -> None:
     for h in state.get("hosts", {}).values():
         if "reset_timestamps" in h:
             h["reset_timestamps"] = [ts for ts in h["reset_timestamps"] if ts >= cutoff]
+        if "action_history" in h:
+            h["action_history"] = [e for e in h["action_history"] if e["timestamp"] >= cutoff]
     RESULTS_BASE.mkdir(parents=True, exist_ok=True)
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2) + "\n")
@@ -212,6 +367,21 @@ def _host_entry(state: dict, fqdn: str) -> dict:
     })
 
 
+def record_action(state: dict, fqdn: str, action: str, success: bool, **details) -> dict:
+    """Record completed actions separately; a clock fix does not imply TC recovery."""
+    entry = _host_entry(state, fqdn)
+    event = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "action": action, "success": success, **details,
+    }
+    entry.setdefault("action_history", []).append(event)
+    counts = entry.setdefault("action_counts", {}).setdefault(action, {"success": 0, "failure": 0})
+    counts["success" if success else "failure"] += 1
+    entry.setdefault("last_actions", {})[action] = event.copy()
+    _emit(json.dumps({"event": "medic_action", "host": fqdn, **event}, sort_keys=True))
+    return event
+
+
 def record_reset_success(state: dict, fqdn: str) -> None:
     h = _host_entry(state, fqdn)
     h["consecutive_reset_failures"] = 0
@@ -220,6 +390,7 @@ def record_reset_success(state: dict, fqdn: str) -> None:
     h["total_resets"] = h.get("total_resets", 0) + 1
     h["skip_until"] = None
     h.setdefault("reset_timestamps", []).append(now_iso)
+    record_action(state, fqdn, "reset", True)
 
 
 def record_reset_failure(state: dict, fqdn: str) -> None:
@@ -227,6 +398,7 @@ def record_reset_failure(state: dict, fqdn: str) -> None:
     h["consecutive_reset_failures"] = h.get("consecutive_reset_failures", 0) + 1
     h["last_failure"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     h["total_failures"] = h.get("total_failures", 0) + 1
+    record_action(state, fqdn, "reset", False)
     if h["consecutive_reset_failures"] >= SKIP_THRESHOLD_CONSECUTIVE:
         skip_until = (
             datetime.datetime.now(datetime.timezone.utc)
@@ -268,7 +440,7 @@ def _ssh_observed_linux_moonshot_hosts() -> set[str] | None:
     if not host_list.exists():
         return None
     cmd = [
-        "uv", "run", "fleetroll", "host-monitor", str(host_list),
+        "uv", "run", "fleetroll", "host", "monitor", str(host_list),
         "--once", "--hostname-only", "--filter", MOONSHOT_OBSERVED_FILTER,
     ]
     result = subprocess.run(cmd, cwd=FLEETROLL_DIR, capture_output=True, text=True, check=False)
@@ -321,6 +493,40 @@ def _resets_since(hosts: dict, hours: int) -> int:
     )
 
 
+def action_report_rows(hosts: dict) -> list[list[str]]:
+    """Report typed outcomes without inferring worker/Taskcluster recovery."""
+    rows = []
+    for fqdn, host in sorted(hosts.items()):
+        counts = host.get("action_counts", {})
+        for action in ("clock_fix", "diagnostics"):
+            totals = counts.get(action, {})
+            last = host.get("last_actions", {}).get(action)
+            # Support state written by the initial clock-fix implementation.
+            if action == "clock_fix" and not last:
+                last = host.get("last_clock_fix")
+                successes = host.get("total_clock_fixes", 0)
+                failures = int(last is not None and not last["success"])
+            else:
+                successes, failures = totals.get("success", 0), totals.get("failure", 0)
+            if not last:
+                continue
+            before, after = last.get("skew_seconds"), last.get("verified_skew_seconds")
+            rows.append([
+                short_label(fqdn), action, str(successes + failures),
+                str(successes), str(failures), last["timestamp"],
+                "success" if last["success"] else "failure",
+                str(before) if before is not None else "",
+                str(after) if after is not None else "",
+            ])
+    return rows
+
+
+ACTION_REPORT_HEADERS = [
+    "Host", "Action", "Recorded Attempts", "Successes", "Failures", "Last Attempt",
+    "Last Outcome", "Skew Before (s)", "Verified Skew (s)",
+]
+
+
 def update_overview_md(state: dict) -> None:
     now = datetime.datetime.now(datetime.timezone.utc)
     hosts = state.get("hosts", {})
@@ -357,7 +563,7 @@ def update_overview_md(state: dict) -> None:
 
     counts = daily_counts()
     if counts:
-        lines += ["## Daily Activity", ""]
+        lines += ["## Diagnostics Collected", ""]
         for date_str, count in counts:
             lines.append(f"- {date_str}: {count} host{'s' if count != 1 else ''}")
         lines.append("")
@@ -377,7 +583,7 @@ def update_overview_md(state: dict) -> None:
         lines += [
             "## Host History",
             "",
-            "| Host | Total Resets | Failures | Consec Fails | Last Success | Last Failure | Skip Until |",
+            "| Host | Total Resets | Reset Failures | Consec Reset Fails | Last Reset Success | Last Reset Failure | Skip Until |",
             "|------|-------------|----------|--------------|-------------|--------------|------------|",
         ]
         for fqdn, h in sorted(hosts.items()):
@@ -387,6 +593,18 @@ def update_overview_md(state: dict) -> None:
                 f"{h.get('consecutive_reset_failures', 0)} | {fmt(h.get('last_success'))} | "
                 f"{fmt(h.get('last_failure'))} | {fmt(h.get('skip_until'))} |"
             )
+        lines.append("")
+
+    action_rows = action_report_rows(hosts)
+    if action_rows:
+        lines += ["## Clock Repairs and Diagnostics", "",
+                  "Clock success means verified clock correction; it does not confirm Taskcluster recovery. "
+                  "Counts cover recorded outcomes; historical reset data is unchanged.", "",
+                  "| " + " | ".join(ACTION_REPORT_HEADERS) + " |",
+                  "| " + " | ".join(["---"] * len(ACTION_REPORT_HEADERS)) + " |"]
+        for row in action_rows:
+            row[5] = fmt(row[5])
+            lines.append("| " + " | ".join(row) + " |")
         lines.append("")
 
     RESULTS_BASE.mkdir(parents=True, exist_ok=True)
@@ -512,7 +730,7 @@ def update_overview_html(state: dict) -> None:
 
     counts = daily_counts()
     if counts:
-        parts.append("<h2>Daily Activity</h2>")
+        parts.append("<h2>Diagnostics Collected</h2>")
         parts.append("<table>")
         parts.append("  <thead><tr><th>Date</th><th>Hosts collected</th></tr></thead>")
         parts.append("  <tbody>")
@@ -540,8 +758,8 @@ def update_overview_html(state: dict) -> None:
             f'<script>const HIST_DATA = {json.dumps(hist_data)};</script>',
             "<table>",
             "  <thead><tr>",
-            "    <th>Host</th><th>Total Resets</th><th>Failures</th>"
-            "<th>Consec Fails</th><th>Last Success</th><th>Last Failure</th><th>Skip Until</th>",
+            "    <th>Host</th><th>Total Resets</th><th>Reset Failures</th>"
+            "<th>Consec Reset Fails</th><th>Last Reset Success</th><th>Last Reset Failure</th><th>Skip Until</th>",
             "  </tr></thead>",
             "  <tbody>",
         ]
@@ -563,6 +781,19 @@ def update_overview_html(state: dict) -> None:
                 f"</tr>"
             )
         parts += ["  </tbody>", "</table>"]
+
+    action_rows = action_report_rows(hosts)
+    if action_rows:
+        from html import escape
+        parts += ["<h2>Clock Repairs and Diagnostics</h2>",
+                  "<p>Clock success means verified clock correction; it does not confirm Taskcluster recovery. "
+                  "Counts cover recorded outcomes; historical reset data is unchanged.</p>",
+                  "<table><thead><tr>" + "".join(f"<th>{h}</th>" for h in ACTION_REPORT_HEADERS)
+                  + "</tr></thead><tbody>"]
+        for row in action_rows:
+            cells = [fmt(value) if i == 5 else escape(value) for i, value in enumerate(row)]
+            parts.append("<tr>" + "".join(f"<td>{value}</td>" for value in cells) + "</tr>")
+        parts.append("</tbody></table>")
 
     parts += [
         "<script>",
@@ -778,11 +1009,27 @@ VOICE_HOUR_START = 10
 VOICE_HOUR_END = 18
 
 
+def in_slack_meeting() -> bool:
+    """Suppress speech only when the optional slack-status command reports a meeting."""
+    try:
+        result = subprocess.run(
+            ["slack-status"], capture_output=True, text=True, check=False, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        status = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return isinstance(status, dict) and status.get("meeting_assessment") == "likely"
+
+
 def say(msg: str) -> None:
     if not _voice_enabled:
         return
     now = datetime.datetime.now()
     if not _voice_all_hours and not (now.weekday() < 5 and VOICE_HOUR_START <= now.hour < VOICE_HOUR_END):
+        return
+    if in_slack_meeting():
         return
     subprocess.run(["say", "-v", "Rocko", "-r", "220", msg], check=False)
 
@@ -801,6 +1048,555 @@ def capture(cmd: list, *, cwd: Path | None = None, check: bool = True) -> str:
 def capture_stdout(cmd: list, *, cwd: Path | None = None, check: bool = True) -> tuple[str, str]:
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
     return result.stdout.strip(), result.stderr.strip()
+
+
+def validate_fleetroll_freshness(raw: str, returncode: int) -> tuple[bool, list[str]]:
+    """Validate Fleetroll's versioned freshness response, failing closed."""
+    messages: list[str] = []
+    try:
+        report = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        return False, [f"Fleetroll returned invalid freshness JSON: {exc}"]
+
+    if not isinstance(report, dict):
+        return False, ["Fleetroll freshness JSON is not an object"]
+
+    if report.get("schema_version") != FLEETROLL_FRESHNESS_SCHEMA_VERSION:
+        messages.append(
+            "Unsupported Fleetroll freshness schema: "
+            f"expected {FLEETROLL_FRESHNESS_SCHEMA_VERSION}, "
+            f"got {report.get('schema_version')!r}"
+        )
+
+    required_sources = report.get("required_sources")
+    if not isinstance(required_sources, list):
+        messages.append("Fleetroll freshness report has no valid required_sources list")
+        required_sources = []
+    else:
+        invalid_sources = [source for source in required_sources if not isinstance(source, str)]
+        if invalid_sources:
+            messages.append("Fleetroll freshness required_sources contains non-string values")
+        required_sources = [source for source in required_sources if isinstance(source, str)]
+        missing = FLEETROLL_FRESHNESS_REQUIRED_SOURCES - set(required_sources)
+        if missing:
+            messages.append(
+                f"Fleetroll freshness report is missing required source(s): {', '.join(sorted(missing))}"
+            )
+
+    sources = report.get("sources")
+    if not isinstance(sources, dict):
+        messages.append("Fleetroll freshness report has no valid sources object")
+        sources = {}
+
+    for source_name in required_sources:
+        source = sources.get(source_name)
+        if not isinstance(source, dict):
+            messages.append(f"Fleetroll freshness source {source_name!r} is missing")
+            continue
+        status = source.get("status")
+        coverage = ""
+        if "hosts_fresh" in source and "hosts_total" in source:
+            coverage = f" ({source['hosts_fresh']}/{source['hosts_total']} hosts fresh)"
+        if status != "fresh":
+            messages.append(f"Fleetroll {source_name} data is {status!r}{coverage}")
+
+    failures = report.get("failures")
+    if not isinstance(failures, list):
+        messages.append("Fleetroll freshness report has no valid failures list")
+    elif failures:
+        for failure in failures:
+            if isinstance(failure, dict):
+                source = failure.get("source", "unknown")
+                reason = failure.get("reason", "unspecified failure")
+                messages.append(f"Fleetroll {source} freshness failure: {reason}")
+            else:
+                messages.append(f"Fleetroll freshness failure: {failure}")
+
+    if report.get("status") != "fresh":
+        messages.append(f"Fleetroll overall freshness status is {report.get('status')!r}")
+    if returncode != 0:
+        messages.append(f"Fleetroll freshness command exited with status {returncode}")
+
+    if messages:
+        return False, messages
+
+    summaries = []
+    for source_name in required_sources:
+        source = sources[source_name]
+        summaries.append(
+            f"{source_name}: fresh "
+            f"({source.get('hosts_fresh', '?')}/{source.get('hosts_total', '?')} hosts)"
+        )
+    return True, summaries
+
+
+def check_fleetroll_data_freshness(stale_threshold: int, min_fresh_pct: int) -> bool:
+    """Run and strictly validate Fleetroll's host and Taskcluster freshness check."""
+    cmd = [
+        "uv", "run", "fleetroll", "data", "freshness",
+        "configs/host-lists/linux/all.list",
+        "--stale-threshold", str(stale_threshold),
+        "--min-fresh-pct", str(min_fresh_pct),
+        "--json", "--require-fresh",
+    ]
+    result = subprocess.run(
+        cmd, cwd=FLEETROLL_DIR, capture_output=True, text=True, check=False,
+    )
+    valid, messages = validate_fleetroll_freshness(result.stdout, result.returncode)
+    for message in messages:
+        _emit(f"  {_c('2', message)}")
+    if result.stderr.strip():
+        warn(f"Fleetroll freshness stderr: {result.stderr.strip()}")
+    return valid
+
+
+# --- automatic recovery evidence ---
+
+def _evidence_timestamp(value: object) -> datetime.datetime:
+    if not isinstance(value, str):
+        raise ValueError("missing evidence timestamp")
+    stamp = datetime.datetime.fromisoformat(value)
+    if stamp.tzinfo is None:
+        raise ValueError("evidence timestamp has no timezone")
+    return stamp
+
+
+def _fleetroll_command(*args: str, timeout: int = 60) -> str:
+    try:
+        result = subprocess.run(
+            ["uv", "run", "fleetroll", *args], cwd=FLEETROLL_DIR,
+            capture_output=True, text=True, check=True, timeout=timeout,
+        )
+    except subprocess.CalledProcessError as exc:
+        if exc.stderr and exc.stderr.strip():
+            warn(f"Fleetroll stderr: {exc.stderr.strip()}")
+        raise
+    if result.stderr.strip():
+        warn(f"Fleetroll stderr: {result.stderr.strip()}")
+    return result.stdout
+
+
+def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False) -> dict:
+    args = ["host", "monitor", host_source, "--once", "--json"]
+    if candidates:
+        args.extend(["--filter-file", "configs/filters/moonshots-hung.yaml"])
+    report = json.loads(_fleetroll_command(*args))
+    if not isinstance(report, dict):
+        raise ValueError("Fleetroll worker snapshot is not a host-keyed object")
+    for host, record in report.items():
+        if (canonical_moonshot_fqdn(host) != host or not isinstance(record, dict)
+                or record.get("host") != host
+                or record.get("worker_evidence_schema_version") != WORKER_EVIDENCE_SCHEMA_VERSION):
+            raise ValueError(f"Invalid Fleetroll v3 worker evidence for {host!r}")
+    return report
+
+
+def historical_identity_problem(record: dict, *, now: datetime.datetime,
+                                max_identity_age_hours: int) -> str | None:
+    """A failed latest SSH audit is allowed; a contradictory baseline is not."""
+    if record.get("worker_evidence_schema_version") != WORKER_EVIDENCE_SCHEMA_VERSION:
+        return "unsupported worker evidence schema"
+    baseline = record.get("historical_worker_identity")
+    if not isinstance(baseline, dict) or baseline.get("status") != "present":
+        return "no historical worker identity"
+    if (baseline.get("collection_status") != "ok"
+            or baseline.get("source") != "host_configuration"
+            or baseline.get("contradiction_status") != "none_known"
+            or baseline.get("reasons") != []):
+        return "historical identity is uncertain or contradicted"
+    identity = {key: baseline.get(key) for key in WORKER_IDENTITY_FIELDS}
+    if not all(isinstance(value, str) and value.strip() for value in identity.values()):
+        return "historical identity is incomplete"
+    provenance = baseline.get("provenance")
+    if (not isinstance(provenance, dict) or provenance.get("identity") != identity
+            or provenance.get("observation_ts") != baseline.get("observation_ts")
+            or provenance.get("source") != "host_configuration"):
+        return "historical identity provenance is incomplete"
+    try:
+        age = (now - _evidence_timestamp(baseline.get("observation_ts"))).total_seconds()
+    except (ValueError, TypeError, OverflowError):
+        return "invalid historical identity timestamp"
+    if not 0 <= age <= max_identity_age_hours * 3600:
+        return "historical identity is too old or future-dated"
+    return None
+
+
+def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
+                               lookup_started: datetime.datetime, freshness_seconds: int,
+                               max_identity_age_hours: int,
+                               allow_recent_identity: bool = False) -> str | None:
+    """Require a fresh successful lookup pinned to this exact historical baseline."""
+    problem = historical_identity_problem(
+        record, now=now, max_identity_age_hours=max_identity_age_hours,
+    )
+    if problem:
+        return problem
+    baseline = record["historical_worker_identity"]
+    if (not allow_recent_identity
+            and (now - _evidence_timestamp(baseline["observation_ts"])).total_seconds() <= HUNG_SECONDS):
+        return "host identity was successfully observed within the last four hours"
+    tc = record.get("taskcluster")
+    if not isinstance(tc, dict) or tc.get("record_status") != "stored_success":
+        return "no successful Taskcluster observation"
+    attempt = tc.get("latest_lookup")
+    if (not isinstance(attempt, dict) or attempt.get("status") != "success"
+            or tc.get("latest_lookup_status") != "success"
+            or attempt.get("resolution_source") != "historical_worker_identity"):
+        return "latest Taskcluster lookup did not succeed for the historical identity"
+    identity = {key: baseline[key] for key in WORKER_IDENTITY_FIELDS}
+    for evidence in (tc, attempt):
+        if (evidence.get("identity") != identity
+                or evidence.get("historical_identity_match") != "match"
+                or evidence.get("historical_baseline_match") != "match"
+                or evidence.get("historical_baseline") != baseline["provenance"]):
+            return "Taskcluster evidence belongs to a different identity or baseline"
+    if attempt.get("successful_observation_ts") != tc.get("observation_ts"):
+        return "latest lookup is not linked to the retained Taskcluster observation"
+    try:
+        started = _evidence_timestamp(attempt.get("started_ts"))
+        completed = _evidence_timestamp(attempt.get("ts"))
+        observed = _evidence_timestamp(tc.get("observation_ts"))
+        # Fleetroll's gather clock has second resolution. Do not accept an older run.
+        if not lookup_started.replace(microsecond=0) <= started <= observed <= completed <= now:
+            return "Taskcluster lookup does not belong to this recovery check"
+        if (now - started).total_seconds() >= min(freshness_seconds, 3600):
+            return "Taskcluster lookup is stale"
+        active = _evidence_timestamp(tc.get("last_date_active"))
+        # Measure inactivity at query time, not after an unusually slow query.
+        if not (started - active).total_seconds() > HUNG_SECONDS:
+            return "worker is active or activity timestamp is future-dated"
+    except (ValueError, TypeError, OverflowError):
+        return "invalid or missing Taskcluster timestamp"
+    raw = tc.get("record")
+    if not isinstance(raw, dict):
+        return "missing Taskcluster worker record"
+    if raw.get("task_state") in ("running", "pending"):
+        return "worker has an active Taskcluster task"
+    return None
+
+
+def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
+                        max_identity_age_hours: int,
+                        allow_recent_identity: bool = False,
+                        decisions: dict | None = None) -> list[str]:
+    """Refresh exact identities; only validated per-host evidence authorizes actions."""
+    if not hosts:
+        return []
+    try:
+        with tempfile.NamedTemporaryFile(mode="w+", suffix=".list") as host_file:
+            host_file.write("\n".join(hosts) + "\n")
+            host_file.flush()
+            before = fleetroll_worker_snapshot(host_file.name)
+            now = datetime.datetime.now(datetime.timezone.utc)
+            eligible = []
+            for host in hosts:
+                problem = historical_identity_problem(
+                    before.get(host, {}), now=now,
+                    max_identity_age_hours=max_identity_age_hours,
+                )
+                if problem:
+                    warn(f"Skipping {short_label(host)}: {problem}")
+                    if decisions is not None:
+                        decisions[host] = {"reason": problem}
+                else:
+                    eligible.append(host)
+            if not eligible:
+                return []
+            host_file.seek(0)
+            host_file.truncate()
+            host_file.write("\n".join(eligible) + "\n")
+            host_file.flush()
+            started = datetime.datetime.now(datetime.timezone.utc)
+            try:
+                _fleetroll_command("gather", "tc", host_file.name, "--use-historical-identity", timeout=300)
+            except subprocess.CalledProcessError as exc:
+                if exc.returncode != 2:
+                    raise
+                # Fleetroll commits successful observations and failed lookup
+                # attempts before reporting incomplete collection with exit 2.
+                # Exit 2 can also signal other errors: it authorizes nothing.
+                # The snapshot below must prove a successful lookup from this
+                # run independently for every host, including exact provenance.
+                warn("Fleetroll TC gather exited with status 2; checking fresh per-host evidence")
+            after = fleetroll_worker_snapshot(host_file.name)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        allowed = []
+        for host in eligible:
+            problem = automatic_recovery_problem(
+                after.get(host, {}), now=now, lookup_started=started,
+                freshness_seconds=freshness_seconds,
+                max_identity_age_hours=max_identity_age_hours,
+                allow_recent_identity=allow_recent_identity,
+            )
+            if allow_recent_identity and not problem:
+                task = after[host]["taskcluster"]["record"]
+                if task.get("task_id") and task.get("task_state") not in ("completed", "failed", "exception"):
+                    problem = "latest Taskcluster task state is unknown"
+            if decisions is not None:
+                tc = after.get(host, {}).get("taskcluster", {})
+                if not isinstance(tc, dict):
+                    tc = {}
+                decisions[host] = {
+                    "reason": problem or "fresh exact-identity lookup confirms old Taskcluster activity",
+                    "taskcluster": {key: tc.get(key) for key in (
+                        "identity", "observation_ts", "last_date_active", "latest_lookup_status",
+                    )},
+                }
+            if problem:
+                warn(f"Skipping {short_label(host)}: {problem}")
+            else:
+                allowed.append(host)
+        return allowed
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        warn(f"Skipping automatic recovery batch: Fleetroll evidence check failed: {exc}")
+        if decisions is not None:
+            decisions.update({host: {"reason": "Fleetroll evidence check failed"} for host in hosts})
+        return []
+
+
+# Fallback evidence source until Fleetroll supplies a supported zombie diagnosis.
+# Never read cmdline or worker configuration: either may contain credentials.
+WORKER_PROCESS_PROBE = r'''
+import datetime
+import json
+import stat
+from pathlib import Path
+
+def collect(root=Path("/proc"), hold=Path("/home/cltbld/operator_hold"),
+            status_file=Path("/tmp/worker-status.json")):
+    result = {"schema_version": 1, "source": "medic_proc_v1",
+              "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "boot_id": (root / "sys/kernel/random/boot_id").read_text().strip(),
+              "uptime_seconds": float((root / "uptime").read_text().split()[0]),
+              "processes": [], "unverified_pids": []}
+    try:
+        result["operator_hold"] = stat.S_ISREG(hold.stat().st_mode)
+    except FileNotFoundError:
+        result["operator_hold"] = False
+    try:
+        result["status_file_mtime"] = status_file.stat().st_mtime
+    except FileNotFoundError:
+        result["status_file_mtime"] = None
+    for entry in root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            name = (entry / "comm").read_text().strip()
+        except FileNotFoundError:
+            continue
+        if name != "generic-worker":
+            continue
+        if len(result["processes"]) + len(result["unverified_pids"]) >= 32:
+            raise ValueError("too many matching processes")
+        pid = int(entry.name)
+        try:
+            fields = dict(line.split(":", 1) for line in (entry / "status").read_text().splitlines()
+                          if ":" in line)
+            state = fields["State"].split()[0]
+            ppid = int(fields["PPid"].strip())
+            result["processes"].append({"pid": pid, "ppid": ppid, "state": state})
+        except (OSError, KeyError, ValueError, IndexError):
+            result["unverified_pids"].append(pid)
+    return result
+
+if __name__ == "__main__":
+    print(json.dumps(collect()))
+'''
+
+
+def classify_worker_probe(raw: object, *, started: datetime.datetime,
+                          now: datetime.datetime, startup_grace_seconds: int) -> dict:
+    """Normalize bounded local process evidence; this never authorizes recovery."""
+    unknown = {"source": "medic_proc_v1", "worker_state": "unverified"}
+    try:
+        if (not isinstance(raw, dict) or type(raw.get("schema_version")) is not int
+                or raw["schema_version"] != 1 or raw.get("source") != "medic_proc_v1"):
+            raise ValueError("unsupported process evidence")
+        stamp = _evidence_timestamp(raw.get("checked_at"))
+        if not started - datetime.timedelta(seconds=60) <= stamp <= now + datetime.timedelta(seconds=60):
+            raise ValueError("process evidence clock outside check window")
+        if not isinstance(raw.get("boot_id"), str) or not re.fullmatch(
+                r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", raw["boot_id"]):
+            raise ValueError("invalid boot identity")
+        uptime = raw.get("uptime_seconds")
+        if type(uptime) not in (int, float) or not math.isfinite(uptime) or uptime < 0:
+            raise ValueError("invalid uptime")
+        if type(raw.get("operator_hold")) is not bool:
+            raise ValueError("hold state unavailable")
+        processes, unverified = raw.get("processes"), raw.get("unverified_pids")
+        if not isinstance(processes, list) or not isinstance(unverified, list) or len(processes) + len(unverified) > 32:
+            raise ValueError("invalid process evidence")
+        clean = []
+        for process in processes:
+            if (not isinstance(process, dict) or type(process.get("pid")) is not int
+                    or process["pid"] <= 0 or type(process.get("ppid")) is not int or process["ppid"] < 0
+                    or process.get("state") not in tuple("RSDZTtXxKWIP")):
+                raise ValueError("invalid process entry")
+            clean.append({key: process[key] for key in ("pid", "ppid", "state")})
+        if any(type(pid) is not int or pid <= 0 for pid in unverified):
+            raise ValueError("invalid unverified process entry")
+        pids = [p["pid"] for p in clean] + unverified
+        if len(pids) != len(set(pids)):
+            raise ValueError("duplicate process evidence")
+        mtime = raw.get("status_file_mtime")
+        if mtime is not None and (type(mtime) not in (int, float) or not math.isfinite(mtime) or mtime < 0):
+            raise ValueError("invalid status-file timestamp")
+        # Whitelist fields rather than forwarding arbitrary remote output.
+        evidence = {"source": "medic_proc_v1", "checked_at": stamp.isoformat(),
+                    "boot_id": raw["boot_id"], "uptime_seconds": uptime,
+                    "operator_hold": raw["operator_hold"], "processes": clean,
+                    "unverified_pids": unverified, "status_file_mtime": mtime}
+        if raw["operator_hold"]:
+            state, reason = "held", "operator hold active"
+        elif unverified:
+            state, reason = "unverified", "worker process inspection incomplete"
+        elif any(p["state"] == "Z" for p in clean):
+            state, reason = "zombie", "confirmed zombie generic-worker"
+        elif any(p["state"] not in ("X", "x") for p in clean):
+            state, reason = "live", "live worker; task health not established"
+        elif uptime < startup_grace_seconds:
+            state, reason = "startup", "no live worker during startup grace"
+        else:
+            state, reason = "absent", "no live worker; provisioning/task state not established"
+        return {**evidence, "worker_state": state, "reason": reason}
+    except (ValueError, TypeError, OverflowError) as exc:
+        return {**unknown, "reason": str(exc)}
+
+
+def fleetroll_worker_diagnosis(fqdn: str, *, started: datetime.datetime) -> dict:
+    """Collect bounded diagnostic evidence without forwarding remote stderr."""
+    evidence = {"source": "fleetroll_host_diagnose", "worker_state": "unverified"}
+    try:
+        result = subprocess.run(
+            ["uv", "run", "fleetroll", "host", "diagnose", fqdn, "--json"],
+            cwd=FLEETROLL_DIR, capture_output=True, text=True, check=False, timeout=45,
+        )
+        if len(result.stdout) > 262144:
+            raise ValueError("oversized Fleetroll diagnosis")
+        raw = json.loads(result.stdout)
+        if not isinstance(raw, dict):
+            raise ValueError("invalid Fleetroll diagnosis")
+        # Retain structured checks, including nested data, but omit raw reports,
+        # stderr and exception text which may contain sensitive remote output.
+        evidence["report"] = {key: raw[key] for key in (
+            "schema_version", "host", "ts", "checked_at", "os_type", "ok",
+            "collection_status", "reason", "health", "gwhc_exit_code",
+            "gwhc_schema_version", "contract_status", "gwhc_ts", "zombie", "checks",
+        ) if key in raw}
+        if (result.returncode != 0 or type(raw.get("schema_version")) is not int
+                or raw["schema_version"] != 1 or raw.get("host") != fqdn
+                or raw.get("ok") is not True or raw.get("collection_status") != "completed"
+                or raw.get("os_type") != "Linux" or raw.get("health") not in ("healthy", "unhealthy")
+                or raw.get("contract_status") in ("unknown", "unsupported")):
+            raise ValueError("unsupported or unavailable Fleetroll diagnosis")
+        now = datetime.datetime.now(datetime.UTC)
+        for key in ("checked_at", "gwhc_ts"):
+            stamp = _evidence_timestamp(raw.get(key))
+            if not started - datetime.timedelta(seconds=60) <= stamp <= now + datetime.timedelta(seconds=60):
+                raise ValueError("Fleetroll evidence clock outside check window")
+        zombie = raw.get("zombie")
+        status = zombie.get("status") if isinstance(zombie, dict) else None
+        # Absence of zombies does not establish worker presence or task health.
+        if status == "confirmed":
+            return {**evidence, "worker_state": "zombie", "reason": "Fleetroll confirmed zombie"}
+        if status == "absent":
+            return {**evidence, "worker_state": "not_zombie", "reason": "Fleetroll confirmed no zombie"}
+        raise ValueError("Fleetroll zombie diagnosis inconclusive")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, OverflowError):
+        return {**evidence, "reason": "Fleetroll diagnosis unavailable or inconclusive"}
+
+
+def diagnose_worker(fqdn: str, *, startup_grace_seconds: int) -> dict:
+    if canonical_moonshot_fqdn(fqdn) != fqdn:
+        return {"source": "medic_proc_v1", "worker_state": "unverified",
+                "reason": "invalid Moonshot target"}
+    fleetroll = fleetroll_worker_diagnosis(fqdn, started=datetime.datetime.now(datetime.UTC))
+    if fleetroll["worker_state"] != "unverified":
+        return fleetroll
+    return {**diagnose_worker_probe(fqdn, startup_grace_seconds=startup_grace_seconds),
+            "fleetroll": fleetroll}
+
+
+def diagnose_worker_probe(fqdn: str, *, startup_grace_seconds: int) -> dict:
+    started = datetime.datetime.now(datetime.UTC)
+    try:
+        if canonical_moonshot_fqdn(fqdn) != fqdn:
+            raise ValueError("invalid Moonshot target")
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", fqdn,
+             "sudo -n python3 -c " + shlex.quote(WORKER_PROCESS_PROBE)],
+            capture_output=True, text=True, check=False, timeout=45,
+        )
+        if result.returncode != 0:
+            raise ValueError("SSH/process probe failed")
+        if len(result.stdout) > 16384:
+            raise ValueError("oversized process evidence")
+        return classify_worker_probe(
+            json.loads(result.stdout), started=started,
+            now=datetime.datetime.now(datetime.UTC),
+            startup_grace_seconds=startup_grace_seconds,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        # Remote stderr can contain sensitive or unbounded output; never persist it.
+        return {"source": "medic_proc_v1", "worker_state": "unverified",
+                "reason": "probe timeout" if isinstance(exc, subprocess.TimeoutExpired) else "process probe unavailable"}
+
+
+def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours: int,
+                               limit: int, startup_grace_seconds: int) -> dict:
+    """A separate, diagnosis-only path. No clock repair, reset, or recovery state writes."""
+    raw = json.loads(_fleetroll_command(
+        "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--json",
+        "--filter", "host~t-linux64-ms tc_act>4h note= sort:host:asc",
+    ))
+    if not isinstance(raw, dict):
+        raise TypeError("Fleetroll snapshot is not a host-keyed object")
+    inventory = _configured_linux_moonshot_hosts()
+    if not inventory or any(canonical_moonshot_fqdn(h) != h or h not in inventory for h in raw):
+        raise ValueError("diagnosis candidates cannot be validated against inventory")
+    now = datetime.datetime.now(datetime.UTC)
+    state = load_state()
+    results, candidates = [], []
+    for host, record in raw.items():
+        reason = None
+        if not isinstance(record, dict) or record.get("host") != host:
+            reason = "invalid host record"
+        elif record.get("ok") is not True:
+            reason = "latest host audit did not succeed"
+        else:
+            try:
+                age = (now - _evidence_timestamp(record.get("ts"))).total_seconds()
+                if not 0 <= age < freshness_seconds:
+                    reason = "successful host audit is stale or future-dated"
+            except (ValueError, TypeError, OverflowError):
+                reason = "invalid host audit timestamp"
+        if not reason:
+            reason = historical_identity_problem(record, now=now, max_identity_age_hours=max_identity_age_hours)
+        if not reason and (recently_processed(short_label(host)) or is_skipped(state, host)):
+            reason = "recent processing or failure backoff"
+        if not reason and len(candidates) >= limit:
+            reason = "diagnosis limit reached"
+        if reason:
+            results.append({"host": host, "selection": "deferred", "reason": reason})
+        else:
+            candidates.append(host)
+    decisions: dict = {}
+    eligible = set(eligible_auto_hosts(
+        candidates, freshness_seconds=freshness_seconds,
+        max_identity_age_hours=max_identity_age_hours, allow_recent_identity=True, decisions=decisions,
+    ))
+    for host in candidates:
+        if host not in eligible:
+            results.append({"host": host, "selection": "deferred",
+                            **decisions.get(host, {"reason": "Taskcluster/identity evidence did not pass"})})
+            continue
+        diagnosis = diagnose_worker(host, startup_grace_seconds=startup_grace_seconds)
+        results.append({"host": host, "selection": "diagnosed",
+                        "host_audit_ts": raw[host]["ts"],
+                        **decisions.get(host, {}), "diagnosis": diagnosis})
+    return {"schema_version": 1, "mode": "diagnosis_only",
+            "checked_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            "results": results}
 
 
 # --- per-host collection ---
@@ -831,8 +1627,8 @@ def collect_host(fqdn: str, label: str, out_file: Path) -> bool:
         check=False)
 
     if host_ok:
-        section(f"{label}  host-audit")
-        audit = capture(["uv", "run", "fleetroll", "host-audit", fqdn], cwd=FLEETROLL_DIR, check=False)
+        section(f"{label}  gather host")
+        audit = capture(["uv", "run", "fleetroll", "gather", "host", fqdn], cwd=FLEETROLL_DIR, check=False)
         with tmp_file.open("a") as f:
             f.write("\n---\n\n# Fleetroll Host Audit\n\n```\n")
             f.write(audit)
@@ -841,6 +1637,19 @@ def collect_host(fqdn: str, label: str, out_file: Path) -> bool:
         ok(f"[{label}] -> {out_file}")
 
     return host_ok
+
+
+def collect_diagnostics(fqdn: str, label: str, out_file: Path, state: dict) -> bool:
+    started = time.monotonic()
+    collected = False
+    try:
+        collected = collect_host(fqdn, label, out_file)
+        return collected
+    finally:
+        record_action(state, fqdn, "diagnostics", collected,
+                      duration_seconds=round(time.monotonic() - started, 1),
+                      report=str(out_file) if collected else None)
+        save_state(state)
 
 
 # --- main ---
@@ -854,6 +1663,12 @@ def parse_args() -> argparse.Namespace:
                         help="Short (ms025) or FQDN. Reads stdin if omitted.")
     parser.add_argument("--auto", action="store_true",
                         help="Fetch bad-host list from fleetroll.")
+    parser.add_argument("--diagnose-workers", action="store_true",
+                        help="One-shot read-only diagnosis of reachable, TC-inactive workers; requires --auto.")
+    parser.add_argument("--diagnosis-limit", type=int, default=10,
+                        help="Maximum candidates queried for worker diagnosis (default: 10).")
+    parser.add_argument("--startup-grace-minutes", type=int, default=15,
+                        help="Minimum uptime before an absent worker is outside startup grace (default: 15).")
     parser.add_argument("-n", "--no-reset", action="store_true",
                         help="Skip iLO reboot.")
     parser.add_argument("--freshness-requirement", type=int, default=None, metavar="MINUTES",
@@ -866,11 +1681,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-q", "--no-voice", action="store_true",
                         help="Suppress spoken announcements.")
     parser.add_argument("--voice-all-hours", action="store_true",
-                        help=f"Speak outside working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00).")
+                        help=f"Speak outside working hours ({VOICE_HOUR_START}:00–before {VOICE_HOUR_END}:00); "
+                             "still suppress speech when slack-status reports a meeting.")
     parser.add_argument("-l", "--loop-interval", type=int, default=15, metavar="MINUTES",
                         help="Minutes to sleep between auto runs (default: 15).")
+    parser.add_argument("--once", action="store_true",
+                        help="Run one auto-mode iteration, then exit.")
+    parser.add_argument("--max-fleet-reset-pct", type=float,
+                        default=DEFAULT_MAX_FLEET_RESET_PCT, metavar="PCT",
+                        help=f"Maximum percentage of the configured fleet that auto mode may reset "
+                             f"(default: {DEFAULT_MAX_FLEET_RESET_PCT:g}).")
     parser.add_argument("--freshness-min-pct", type=int, default=FRESHNESS_MIN_PCT, metavar="PCT",
                         help=f"Minimum %% of hosts with fresh fleetroll data required (default: {FRESHNESS_MIN_PCT}).")
+    parser.add_argument("--max-identity-age-hours", type=int,
+                        default=DEFAULT_MAX_IDENTITY_AGE_HOURS, metavar="HOURS",
+                        help="Maximum historical worker identity age for automatic recovery "
+                             "(default: 168 hours).")
     parser.add_argument("--update-report", action="store_true",
                         help="Regenerate OVERVIEW.html and OVERVIEW.md from existing state, then exit.")
     return parser.parse_args()
@@ -883,11 +1709,31 @@ def main() -> None:
     _voice_enabled = not args.no_voice
     _voice_all_hours = args.voice_all_hours
 
+    if args.diagnose_workers and (not args.auto or args.hostname or args.confirm or args.update_report):
+        err("--diagnose-workers requires --auto and cannot combine with hosts, --confirm, or --update-report.")
+        sys.exit(1)
+    if args.diagnosis_limit < 1 or args.startup_grace_minutes < 1:
+        err("--diagnosis-limit and --startup-grace-minutes must be positive.")
+        sys.exit(1)
+
     if args.loop_interval < 1:
         err("--loop-interval must be at least 1 minute.")
         sys.exit(1)
+    if args.max_identity_age_hours < 1:
+        err("--max-identity-age-hours must be at least 1 hour.")
+        sys.exit(1)
     if args.freshness_requirement is not None and args.freshness_requirement < 1:
         err("--freshness-requirement must be at least 1 minute.")
+        sys.exit(1)
+    if args.once and not args.auto:
+        err("--once requires --auto.")
+        sys.exit(1)
+    if not 0 < args.max_fleet_reset_pct <= 100:
+        err("--max-fleet-reset-pct must be greater than 0 and at most 100.")
+        sys.exit(1)
+    if args.max_fleet_reset_pct > DEFAULT_MAX_FLEET_RESET_PCT and not args.once:
+        err(f"Raising --max-fleet-reset-pct above {DEFAULT_MAX_FLEET_RESET_PCT:g}% "
+            "requires --once.")
         sys.exit(1)
 
     if args.update_report:
@@ -910,24 +1756,55 @@ def main() -> None:
                        if args.freshness_requirement is not None
                        else f"{freshness_mins}min (from loop interval)")
 
+    if args.diagnose_workers:
+        if not check_fleetroll_data_freshness(freshness_mins * 60, args.freshness_min_pct):
+            err("Fleetroll freshness validation failed; diagnosis skipped.")
+            sys.exit(1)
+        try:
+            report = diagnose_reachable_workers(
+                freshness_seconds=freshness_mins * 60,
+                max_identity_age_hours=args.max_identity_age_hours,
+                limit=args.diagnosis_limit, startup_grace_seconds=args.startup_grace_minutes * 60,
+            )
+            run_dir = RESULTS_BASE / datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
+            run_dir.mkdir(parents=True, exist_ok=True)
+            report_path = run_dir / (datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ") + "-worker-diagnosis.json")
+            report_path.write_text(json.dumps(report, indent=2) + "\n")
+            for entry in report["results"]:
+                _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
+            info(f"Diagnosis-only report: {report_path}")
+            return
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+            err(f"Worker diagnosis failed: {exc}")
+            sys.exit(1)
+
     if args.auto and not args.confirm:
         stale_threshold = freshness_mins * 60
         info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
-        r = subprocess.run(["uv", "run", "fleetroll", "data-freshness", "configs/host-lists/linux/all.list", "--stale-threshold", str(stale_threshold), "--min-fresh-pct", str(args.freshness_min_pct)],
-                           cwd=FLEETROLL_DIR, capture_output=True, text=True)
-        freshness_out = (r.stdout + r.stderr).strip()
-        for line in freshness_out.splitlines():
-            _emit(f"  {_c('2', re.sub(r'^=+>\s*', '', line))}")
-        if r.returncode != 0:
-            err(f"Fleetroll data is stale (older than {stale_threshold}s). Refresh it before previewing.")
+        if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
+            err("Fleetroll host or Taskcluster data failed freshness validation. "
+                "Refresh it before previewing.")
             sys.exit(1)
         info("Fetching bad-host list to preview run...")
-        raw, raw_err = capture_stdout(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False)
-        if raw_err:
-            warn(f"Ignoring stderr from fleetroll bad-host list: {raw_err}")
-        preview_hosts, ignored_hosts = parse_bad_hosts(raw)
-        if ignored_hosts:
-            warn(f"Ignoring {len(ignored_hosts)} non-host token(s) from fleetroll stdout: {' '.join(ignored_hosts)}")
+        try:
+            preview_hosts = list(fleetroll_worker_snapshot(
+                "configs/host-lists/linux/all.list", candidates=True,
+            ))
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            err(f"Cannot read automatic recovery candidates: {exc}")
+            sys.exit(1)
+        circuit_ok, preview_hosts, circuit_summary = check_fleet_reset_circuit_breaker(
+            preview_hosts, args.max_fleet_reset_pct,
+        )
+        if not circuit_ok:
+            err(circuit_summary)
+            say("Moonshot Medic circuit breaker tripped")
+            sys.exit(1)
+        info(circuit_summary)
+        preview_hosts = eligible_auto_hosts(
+            preview_hosts, freshness_seconds=stale_threshold,
+            max_identity_age_hours=args.max_identity_age_hours,
+        )
         n = min(len(preview_hosts), AUTO_BATCH_SIZE)
         print()
         if n:
@@ -966,14 +1843,10 @@ def main() -> None:
         if args.auto:
             stale_threshold = freshness_mins * 60
             info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
-            r = subprocess.run(["uv", "run", "fleetroll", "data-freshness", "configs/host-lists/linux/all.list", "--stale-threshold", str(stale_threshold), "--min-fresh-pct", str(args.freshness_min_pct)],
-                               cwd=FLEETROLL_DIR, capture_output=True, text=True)
-            freshness_out = (r.stdout + r.stderr).strip()
-            for line in freshness_out.splitlines():
-                _emit(f"  {_c('2', re.sub(r'^=+>\s*', '', line))}")
-            if r.returncode != 0:
+            if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
                 print()
-                warn(f"Fleetroll data is stale (older than {stale_threshold}s) — will retry next loop.")
+                warn("Fleetroll host or Taskcluster data failed freshness validation "
+                     "— will retry next loop.")
                 say("Stale Fleetroll data")
                 stale = True
                 last_failed = True
@@ -982,13 +1855,23 @@ def main() -> None:
         if not stale:
             if args.auto:
                 info("Fetching bad-host list from fleetroll...")
-                raw, raw_err = capture_stdout(["bash", "tools/list_bad_linux_hosts.sh"], cwd=FLEETROLL_DIR, check=False)
-                if raw_err:
-                    warn(f"Ignoring stderr from fleetroll bad-host list: {raw_err}")
-                host_tokens, ignored_hosts = parse_bad_hosts(raw)
-                if ignored_hosts:
-                    warn(f"Ignoring {len(ignored_hosts)} non-host token(s) from fleetroll stdout: {' '.join(ignored_hosts)}")
-                hosts = [worker_fqdn(h) for h in host_tokens]
+                try:
+                    host_tokens = list(fleetroll_worker_snapshot(
+                        "configs/host-lists/linux/all.list", candidates=True,
+                    ))
+                except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                    err(f"Cannot read automatic recovery candidates: {exc}")
+                    last_failed = True
+                    break
+                circuit_ok, hosts, circuit_summary = check_fleet_reset_circuit_breaker(
+                    host_tokens, args.max_fleet_reset_pct,
+                )
+                if not circuit_ok:
+                    err(circuit_summary)
+                    say("Moonshot Medic circuit breaker tripped")
+                    last_failed = True
+                    break
+                info(circuit_summary)
             elif args.hostname:
                 hosts = [worker_fqdn(h) for h in args.hostname]
             else:
@@ -1022,8 +1905,16 @@ def main() -> None:
                         warn(f"Skipping {len(skipped)} host(s): {' '.join(short_label(h) for h in skipped)}")
                     hosts = filtered
 
+                # Resolve eligibility before announcing work or creating a run log.
+                # Keep the batch/reset checks below to catch changes during waits.
+                if args.auto:
+                    hosts = eligible_auto_hosts(
+                        hosts, freshness_seconds=stale_threshold,
+                        max_identity_age_hours=args.max_identity_age_hours,
+                    )
+
                 if not hosts:
-                    info("All requested hosts were recently processed. Nothing to do.")
+                    info("No eligible hosts to process. Nothing to do.")
                 else:
                     batches = [hosts[i:i + AUTO_BATCH_SIZE] for i in range(0, len(hosts), AUTO_BATCH_SIZE)]
                     n_total = len(hosts)
@@ -1049,7 +1940,8 @@ def main() -> None:
 
                     _log_fh = log_path.open("a")
                     try:
-                        _emit(f"Run started at {datetime.datetime.now(datetime.timezone.utc).isoformat()}")
+                        run_started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                        _emit(f"Run started at {run_started}")
                         _emit(f"Hosts: {' '.join(hosts)}")
                         _emit("")
 
@@ -1069,26 +1961,26 @@ def main() -> None:
 
                             # --- reset batch ---
                             reset_fail_labels: list[str] = []
+                            if args.auto:
+                                batch = eligible_auto_hosts(
+                                    batch, freshness_seconds=stale_threshold,
+                                    max_identity_age_hours=args.max_identity_age_hours,
+                                )
+                                if not batch:
+                                    continue
                             if not args.no_reset:
-                                info("Resetting hosts via iLO (waiting for them to come back online)...")
-                                run(["uv", "run", "./reset_moonshot.py", "--force"] + batch,
-                                    cwd=RESET_DIR, check=False)
-                                print()
-                                online_hosts = []
-                                for host in batch:
-                                    fqdn = worker_fqdn(host)
-                                    label = short_label(host)
-                                    if ssh_is_online(fqdn):
-                                        online_hosts.append(host)
-                                        record_reset_success(state, fqdn)
-                                    else:
-                                        err(f"[{label}] did not come back online — skipping collection")
-                                        record_reset_failure(state, fqdn)
-                                        reset_fail_labels.append(label)
+                                authorize_reset = None
+                                if args.auto:
+                                    authorize_reset = lambda pending: eligible_auto_hosts(
+                                        pending, freshness_seconds=stale_threshold,
+                                        max_identity_age_hours=args.max_identity_age_hours,
+                                    )
+                                batch, reset_fail_labels = reset_batch(
+                                    batch, state, authorize_reset=authorize_reset,
+                                )
                                 save_state(state)
                                 update_overview_md(state)
                                 update_overview_html(state)
-                                batch = online_hosts
 
                             fail_hosts.extend(reset_fail_labels)
 
@@ -1100,10 +1992,15 @@ def main() -> None:
                                 out_file = run_dir / f"{ts}-{label}.md"
 
                                 try:
-                                    if collect_host(fqdn, label, out_file):
+                                    # Reboots can expose the bad RTC again; also run with --no-reset.
+                                    clock_result = remediate_clock_skew(fqdn, state)
+                                    save_state(state)
+                                    collected = collect_diagnostics(fqdn, label, out_file, state)
+                                    if collected and clock_result is not False:
                                         ok_hosts.append(label)
                                     else:
-                                        err(f"[{label}] collection failed")
+                                        if not collected:
+                                            err(f"[{label}] collection failed")
                                         fail_hosts.append(label)
                                 except Exception as exc:
                                     err(f"[{label}] unexpected error: {exc}")
@@ -1115,6 +2012,14 @@ def main() -> None:
                         # --- summary ---
                         _emit(_c('1', "=" * 40))
                         _emit(f"{_c('1', 'Run complete:')} {run_dir}")
+                        for action in ("clock_fix", "reset", "diagnostics"):
+                            events = [e for h in state.get("hosts", {}).values()
+                                      for e in h.get("action_history", [])
+                                      if e["timestamp"] >= run_started and e["action"] == action]
+                            if events:
+                                successes = sum(e["success"] for e in events)
+                                _emit(f"{action}: {len(events)} attempt(s), {successes} succeeded, "
+                                      f"{len(events) - successes} failed")
                         if ok_hosts:
                             _emit(f"{_c('1;32', 'OK:  ')} {' '.join(ok_hosts)}")
                         if fail_hosts:
@@ -1135,7 +2040,7 @@ def main() -> None:
 
         first_run = False
 
-        if not args.auto or _interrupt_count:
+        if not args.auto or args.once or _interrupt_count:
             break
 
         info(f"Next run in {args.loop_interval} minute{'s' if args.loop_interval != 1 else ''}. "

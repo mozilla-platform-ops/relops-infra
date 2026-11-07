@@ -57,6 +57,15 @@ Checks the power status of moonshot cartridges by sending an ILO command (`show 
 ./check_power.sh
 ```
 
+### check_power_supplies.py
+
+Checks every reported power supply in each of the seven mdc1 Moonshot chassis over iLO SSH. It uses the `relops` iLO SSH key already loaded in `ssh-agent` and the legacy algorithms required by the chassis. Use `--host` to check only one chassis.
+
+```bash
+./check_power_supplies.py
+./check_power_supplies.py --host 6
+```
+
 ### moon_command.sh
 
 Executes generic commands on the Moonshot chassis iLO.
@@ -104,6 +113,7 @@ Reimages a moonshot cartridge with Ubuntu 18.04 or 24.04.
 > These scripts use expect automation to connect to the Moonshot chassis iLO (HP Lights-Out),
 configure PXE boot, power cycle the cartridge, and initiate OS installation via netboot.xyz.
 Each script calls its corresponding `.exp` expect script to handle the interactive iLO session.
+Reimage logs are saved in the `logs/` subfolder, which is ignored by Git.
 
 ```bash
 # Reimage with Ubuntu 18.04
@@ -141,7 +151,7 @@ run Puppet bootstrap → converge host. Uses file locking to serialize reimage o
 Given a chassis, cartridge, host number, Puppet role, and OS version, it: (1) acquires a per-chassis lock, (2) reimages via the appropriate `reimage_*.sh`, (3) waits for install to complete (14–18 min), (4) waits for SSH to come up, (5) delivers and runs the Ronin Puppet bootstrap script to converge the host.
 
 ```bash
-./oneshot_linux.sh <chassis> <cartridge> <host_number> <role> <os_version>
+./oneshot_linux.sh <chassis> <cartridge> <host_number> <role> <os_version> [--ronin-settings <path>]
 # Example: ./oneshot_linux.sh 1 3 023 gecko_t_linux_2404_talos 2404
 ```
 
@@ -156,31 +166,115 @@ of what would happen.
 ./oneshot_1804_x11_talos.sh <chassis> <cartridge> <host_number>
 
 # Ubuntu 18.04 X11 Talos (actual execution)
+# The wrapper derives chassis and cartridge from the worker number or hostname.
+./oneshot_1804_x11_talos.sh <host_number_or_hostname> --confirm
+# Example: ./oneshot_1804_x11_talos.sh 229 --confirm
+# The original explicit form remains supported:
 ./oneshot_1804_x11_talos.sh <chassis> <cartridge> <host_number> --confirm
-# Example: ./oneshot_1804_x11_talos.sh 1 3 023 --confirm
 
 # Ubuntu 24.04 X11 Talos (actual execution)
+# The wrapper derives chassis and cartridge from the worker number or hostname.
+./oneshot_2404_x11_talos.sh <host_number_or_hostname> --confirm
+# Example: ./oneshot_2404_x11_talos.sh 229 --confirm
+# Full hostnames work too:
+./oneshot_2404_x11_talos.sh t-linux64-ms-229.test.releng.mdc1.mozilla.com --confirm
+# The original explicit form remains supported:
 ./oneshot_2404_x11_talos.sh <chassis> <cartridge> <host_number> --confirm
-# Example: ./oneshot_2404_x11_talos.sh 1 3 023 --confirm
+# Supply a settings file from outside the Ronin Puppet checkout:
+./oneshot_2404_x11_talos.sh 229 --ronin-settings ~/overrides/ronin_settings --confirm
+```
+
+### oneshot_2404_wayland_talos.sh
+
+Reimages and converges Ubuntu 24.04 Wayland Talos hosts using the
+`gecko_t_linux_2404_talos_wayland` Puppet role. Accepts the same arguments,
+`--ronin-settings`, and `SKIP_REIMAGE` / `SKIP_CONVERGE` options as the X11 wrapper.
+
+```bash
+# Dry run for ms-001 (chassis 1, cartridge 1)
+./oneshot_2404_wayland_talos.sh 001
+
+# Reimage and converge
+./oneshot_2404_wayland_talos.sh 001 --confirm
+
+# Explicit chassis/cartridge/worker number
+./oneshot_2404_wayland_talos.sh 1 1 001 --confirm
+```
+
+### oneshot_2404_netperf.sh
+
+Reimages and converges Ubuntu 24.04 Netperf hosts using the
+`gecko_t_linux_2404_netperf` Puppet role. Accepts a worker number, hostname,
+or explicit chassis/cartridge/worker number, like the Talos wrappers above.
+
+```bash
+# Dry run
+./oneshot_2404_netperf.sh <host_number_or_hostname>
+
+# Reimage and converge
+./oneshot_2404_netperf.sh <host_number_or_hostname> --confirm
+# Explicit form:
+./oneshot_2404_netperf.sh <chassis> <cartridge> <host_number> --confirm
+# Optional settings file:
+./oneshot_2404_netperf.sh 229 --ronin-settings ~/overrides/ronin_settings --confirm
 ```
 
 ### Configuration for Oneshot Scripts
 
-**Environment Variables:**
-- `RONIN_PUPPET_REPO_PATH` - Path to ronin_puppet repository (default: `$HOME/git/ronin_puppet`)
-- `SKIP_REIMAGE` - (Optional) Set to skip the reimage step (useful for testing convergence only)
+**Local Ronin Puppet checkout**
 
+Oneshot uses `$HOME/git/ronin_puppet`, as set by `RONIN_PUPPET_REPO_PATH` near the top of `oneshot_linux.sh`. It reads two files from that checkout:
+
+- `provisioners/linux/deliver_linux.sh` runs locally to prepare the host.
+- `provisioners/linux/bootstrap_linux.sh` is copied to the host as `/tmp/bootstrap.sh` and run there.
+
+The delivery script also reads `$HOME/vault.yaml`, which is outside the checkout. The bootstrap script fetches the Puppet code on the host from the configured repository and branch (by default, `mozilla-platform-ops/ronin_puppet` on `master`). Local changes to Puppet manifests or modules in the checkout are not used for convergence; local changes to the two scripts above are.
+
+**Pause between imaging and convergence**
+
+Set `SKIP_CONVERGE=1` to reimage a host, wait for SSH access, then stop before delivering the Puppet role, vault file, settings file, or bootstrap script. After your manual work, use `SKIP_REIMAGE=1` to skip the reimage step while still delivering and running bootstrap. The delivery script requires a host without an existing Puppet role:
+
+```bash
+SKIP_CONVERGE=1 ./oneshot_2404_x11_talos.sh 229 --confirm
+# Perform manual work on the host.
+SKIP_REIMAGE=1 ./oneshot_2404_x11_talos.sh 229 --confirm
+```
+
+The second command prompts for confirmation again and checks SSH before delivery. `SKIP_CONVERGE` also works with `--ronin-settings`, but the settings file is only sent during the convergence run.
 
 **Optional Override File**
 
-If you'd like to have the newly imaged host use an override file immediately after initial convergence, place your override at `$RONIN_PUPPET_REPO_PATH/provisioners/linux/ronin_settings` the script will deploy it to the host.
+Pass `--ronin-settings <path>` to any oneshot wrapper (or to `oneshot_linux.sh`) to deploy that file to the host before bootstrap. The file can live outside the Ronin Puppet checkout. Without this option, oneshot does not deploy a settings file, even if one exists in the checkout.
 
-**Optional Environment Variables**
+Deploying the file alone does not select the Puppet repository or branch for the initial converge. Bootstrap does not source `/etc/puppet/ronin_settings`; it selects its code from `PUPPET_REPO` and `PUPPET_BRANCH`, which oneshot supplies through the variables below. The deployed settings file controls subsequent Puppet runs.
 
-If the override file has an effect too late in the process (e.g. you want to test initial convergence) you can set these variables and it will use the values in the bootstrap script.
+**Optional Bootstrap Environment Variables**
+
+To use a custom Puppet repository or branch during the initial converge, set **both** variables:
 
 - `ONESHOT_PUPPET_REPO` - Override default Puppet repository for bootstrap script
 - `ONESHOT_PUPPET_BRANCH` - Override default Puppet branch for bootstrap script
+
+Oneshot only forwards these bootstrap overrides when both are nonempty. Otherwise, bootstrap uses its defaults (`mozilla-platform-ops/ronin_puppet`, branch `master`). Keep these values consistent with the settings file when the initial converge and subsequent runs should use the same code.
+
+For example, converge an already imaged ms-001 using the Wayland errata branch for the initial converge and deploy its override file for subsequent runs:
+
+```bash
+SKIP_REIMAGE=1 \
+ONESHOT_PUPPET_REPO=https://github.com/mozilla-platform-ops/ronin_puppet.git \
+ONESHOT_PUPPET_BRANCH=20261030-2404_wayland_errata \
+./oneshot_2404_wayland_talos.sh 001 \
+  --ronin-settings /Users/aerickson/git/fleetroll_mvp/configs/overrides/20261030-2404_wayland_errata.override \
+  --confirm
+```
+
+Omit `SKIP_REIMAGE=1` to reimage first. Omitting `--confirm` previews the wrapper's target and settings path; it does not run bootstrap or verify the branch or the settings file's contents.
+
+**Bootstrap completion and reboot disconnects**
+
+Oneshot saves bootstrap output to a local temporary file and prints its path. A successful bootstrap exit shows a success banner. SSH exit status 255 also shows the banner when the captured output contains bootstrap's `Success. Rebooting...` message; this is treated as an expected reboot disconnect. The banner confirms bootstrap completion, not that the host has finished rebooting.
+
+If SSH disconnects before that message, oneshot exits with an error and reports that convergence success is unconfirmed. Check the host and the saved output before retrying. Other bootstrap failures remain errors, even if the success message appeared.
 
 
 ## On-Host Maintenance
@@ -197,10 +291,10 @@ Runs on the worker itself (as root via systemd). If disk usage exceeds 70%, clea
 4. OS installation proceeds via netboot.xyz
 
 **Oneshot Workflow:**
-1. Wrapper scripts (`oneshot_*_x11_talos.sh`) call `oneshot_linux.sh` with pre-configured parameters
+1. Wrapper scripts (`oneshot_*_x11_talos.sh` and `oneshot_2404_netperf.sh`) call `oneshot_linux.sh` with pre-configured parameters
 2. `oneshot_linux.sh` orchestrates the full workflow:
    - Reimage the host (calls appropriate `reimage_*.sh`)
-   - Wait for OS installation to complete (10 minutes)
+   - Wait for OS installation to complete (14–18 minutes)
    - Poll for SSH connectivity
    - Upload and execute Puppet bootstrap script
    - Converge host with specified Puppet role

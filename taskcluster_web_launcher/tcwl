@@ -1,0 +1,612 @@
+#!/usr/bin/env python3
+"""Taskcluster Web Launcher: find and open Firefox CI worker-type pages."""
+
+import argparse
+import curses
+import json
+import queue
+import sqlite3
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from pathlib import Path
+
+ROOT = "https://firefox-ci-tc.services.mozilla.com"
+DEFAULT_PROVISIONER = "releng-hardware"
+DEFAULT_PROVISIONERS = (DEFAULT_PROVISIONER, "proj-autophone")
+CACHE_TTL = 3600
+EXAMPLE = "gecko-t-linux-talos-2404-wayland"
+
+
+def parse_target(value, default=DEFAULT_PROVISIONER):
+    value = value.strip()
+    if value.startswith(("https://", "http://")):
+        url = urllib.parse.urlsplit(value)
+        if url.scheme != "https" or url.netloc != "firefox-ci-tc.services.mozilla.com":
+            raise ValueError("Use a Firefox CI HTTPS worker-type URL")
+        parts = url.path.strip("/").split("/")
+        if len(parts) != 4 or parts[0] != "provisioners" or parts[2] != "worker-types":
+            raise ValueError("Expected a provisioner/worker-types URL")
+        provisioner, worker = map(urllib.parse.unquote, (parts[1], parts[3]))
+    elif "/" in value:
+        provisioner, worker = value.split("/", 1)
+    else:
+        provisioner, worker = default, value
+    if not all(
+        part and all(c.isascii() and (c.isalnum() or c in "-_.") for c in part)
+        for part in (provisioner, worker)
+    ):
+        raise ValueError(
+            "Enter a worker type, provisioner/worker-type, or worker page URL"
+        )
+    return provisioner, worker
+
+
+def worker_url(provisioner, worker):
+    return f"{ROOT}/provisioners/{provisioner}/worker-types/{worker}"
+
+
+def database(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path, timeout=5)
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS history (provisioner TEXT NOT NULL, worker TEXT NOT NULL, uses INTEGER NOT NULL, last_used INTEGER NOT NULL, PRIMARY KEY (provisioner, worker))"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, data TEXT NOT NULL, fetched_at REAL NOT NULL)"
+    )
+    return db
+
+
+def record(db, target):
+    with db:
+        db.execute(
+            "INSERT INTO history VALUES (?, ?, 1, ?) ON CONFLICT(provisioner, worker) DO UPDATE SET uses=uses+1, last_used=excluded.last_used",
+            (*target, time.time_ns()),
+        )
+
+
+def history(db):
+    return db.execute(
+        "SELECT provisioner, worker, uses FROM history ORDER BY uses DESC, last_used DESC"
+    ).fetchall()
+
+
+def read_cache(db, key):
+    row = db.execute("SELECT data, fetched_at FROM cache WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return None, False
+    return json.loads(row[0]), time.time() - row[1] < CACHE_TTL
+
+
+def write_cache(db, key, data):
+    with db:
+        db.execute(
+            "INSERT OR REPLACE INTO cache VALUES (?, ?, ?)",
+            (key, json.dumps(data), time.time()),
+        )
+
+
+def queue_items(path, field):
+    found = []
+    token = None
+    while True:
+        params = {"limit": "1000"}
+        if token:
+            params["continuationToken"] = token
+        url = f"{ROOT}/api/queue/v1/{path}?{urllib.parse.urlencode(params)}"
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "tcwl/1"}
+        )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            data = json.load(response)
+        found.extend(data[field])
+        token = data.get("continuationToken")
+        if not token:
+            return found
+
+
+def discover(provisioner):
+    path = f"provisioners/{urllib.parse.quote(provisioner, safe='')}/worker-types"
+    return [(provisioner, item["workerType"]) for item in queue_items(path, "workerTypes")]
+
+
+def discover_provisioners():
+    return [item["provisionerId"] for item in queue_items("provisioners", "provisioners")]
+
+
+class Catalog:
+    """Background discovery; only the UI thread touches SQLite or catalog state."""
+
+    def __init__(self, db, provisioner=None):
+        self.db = db
+        self.defaults = (provisioner,) if provisioner else DEFAULT_PROVISIONERS
+        self.discover_others = provisioner is None
+        self.names = set(self.defaults)
+        self.names.update(p for p, _, _ in history(db))
+        self.known = {}
+        self.verified = set()
+        self.pending = set()
+        self.attempted = set()
+        self.errors = {}
+        self.events = queue.Queue()
+        names, _ = read_cache(db, "provisioners")
+        if self.discover_others and names is not None:
+            self.names.update(names)
+        for name in self.defaults:
+            self.request(name)
+        if self.discover_others:
+            self.request_names()
+
+    def start(self, key, fetch):
+        if key in self.pending:
+            return
+        self.pending.add(key)
+        self.errors.pop(key, None)
+
+        def work():
+            try:
+                self.events.put((key, fetch(), None))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.events.put((key, None, str(exc)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def request_names(self, force=False):
+        _, fresh = read_cache(self.db, "provisioners")
+        if force or not fresh:
+            self.start("provisioners", discover_provisioners)
+
+    def request(self, name, force=False):
+        if not force and name in self.attempted:
+            return
+        self.attempted.add(name)
+        self.names.add(name)
+        cached, fresh = read_cache(self.db, "workers:" + name)
+        if cached is not None and name not in self.known:
+            self.known[name] = [tuple(target) for target in cached]
+        if force or not fresh:
+            self.verified.discard(name)
+            self.start("workers:" + name, lambda: discover(name))
+
+    def poll(self):
+        while True:
+            try:
+                key, data, error = self.events.get_nowait()
+            except queue.Empty:
+                return
+            self.pending.discard(key)
+            if error is not None:
+                self.errors[key] = error
+                continue
+            write_cache(self.db, key, data)
+            if key == "provisioners":
+                self.names.update(data)
+            else:
+                name = key.removeprefix("workers:")
+                self.known[name] = data
+                self.verified.add(name)
+
+    def activate(self, query):
+        # Exact provisioner tokens load automatically; fuzzy matches remain cheap
+        # until selected. A qualified target can name an unlisted provisioner.
+        if query.startswith(("https://", "http://")):
+            return
+        for term in query.lower().split():
+            name = term.split("/", 1)[0]
+            if name in self.names:
+                self.request(name)
+            elif "/" in term:
+                try:
+                    parse_target(name + "/validation")
+                except ValueError:
+                    continue
+                self.request(name)
+
+    def refresh(self):
+        for name in sorted(self.attempted):
+            self.request(name, force=True)
+        if self.discover_others:
+            self.request_names(force=True)
+
+    def message(self):
+        parts = [
+            f"{len(self.names)} provisioners",
+            f"{sum(map(len, self.known.values()))} worker types loaded",
+        ]
+        if self.pending:
+            parts.append(f"Loading {len(self.pending)} lists…")
+        else:
+            parts.append("Ctrl-R refreshes cache")
+        if self.errors:
+            labels = [key.removeprefix("workers:") for key in sorted(self.errors)]
+            parts.append("Offline: " + ", ".join(labels) + " (cached choices available)")
+        return " · ".join(parts)
+
+
+def fuzzy_match(query, target):
+    """Return a score and matching character positions for the displayed path."""
+    text = (f"{target[0]}/{target[1]}" if target[1] else target[0]).lower()
+    score = 0
+    matched = set()
+    for term in query.lower().split():
+        start = text.find(term)
+        if start >= 0:
+            matched.update(range(start, start + len(term)))
+            score += 0 if term in (target[0].lower(), target[1].lower()) else 1
+            continue
+        candidates = []
+        for first, char in enumerate(text):
+            if char != term[0]:
+                continue
+            positions = [first]
+            for char in term[1:]:
+                position = text.find(char, positions[-1] + 1)
+                if position < 0:
+                    break
+                positions.append(position)
+            if len(positions) == len(term):
+                candidates.append(positions)
+        if not candidates:
+            return None
+        positions = min(candidates, key=lambda positions: (positions[-1] - positions[0], positions[0]))
+        matched.update(positions)
+        score += 2 + positions[-1] - positions[0] + 1 - len(term) + positions[0] / (len(text) + 1)
+    return score, matched
+
+
+def fuzzy_score(query, target):
+    match = fuzzy_match(query, target)
+    return match[0] if match is not None else None
+
+
+class Picker:
+    """Selection follows a target, rather than its changing position in results."""
+
+    def __init__(self, scope=None):
+        self.scope = scope
+        self.query = ""
+        self.matches = []
+        self.selected = 0
+        self.target = None
+        self.highlights = {}
+
+    def update(self, catalog, counts):
+        live = {target for entries in catalog.known.values() for target in entries}
+        workers = list(counts) + [target for target in sorted(live) if target not in counts]
+        if self.scope:
+            targets = [target for target in workers if target[0] == self.scope]
+        elif not self.query.strip():
+            targets = list(counts) + [(name, "") for name in sorted(catalog.names)]
+        else:
+            targets = workers + [(name, "") for name in sorted(catalog.names)]
+        ranked = []
+        self.highlights = {}
+        for index, target in enumerate(targets):
+            match = fuzzy_match(self.query, target)
+            if match is not None:
+                score, positions = match
+                ranked.append((score, index, target))
+                self.highlights[target] = positions
+        self.matches = [target for _, _, target in sorted(ranked)]
+        if self.target in self.matches:
+            self.selected = self.matches.index(self.target)
+        else:
+            self.selected = min(self.selected, max(0, len(self.matches) - 1))
+        self.target = self.matches[self.selected] if self.matches else None
+
+    def move(self, amount):
+        self.selected = max(0, min(len(self.matches) - 1, self.selected + amount))
+        self.target = self.matches[self.selected] if self.matches else None
+
+    def search(self, query):
+        self.query = query
+        self.selected = 0
+        self.target = None
+
+    def browse(self, name):
+        self.scope = name
+        self.search("")
+
+    def back(self):
+        previous_scope = self.scope
+        self.scope = None
+        self.search("")
+        if previous_scope:
+            self.target = (previous_scope, "")
+
+    def group(self, target):
+        if self.scope:
+            return "Pools"
+        if self.query.strip():
+            return "Search results"
+        return "Frequently used" if target[1] else "Provisioners"
+
+
+def shorten(text, limit):
+    """Keep both ends of long paths, retaining a map for match highlighting."""
+    if len(text) <= limit:
+        return text, list(range(len(text)))
+    if limit < 5:
+        return text[:limit], list(range(limit))
+    left = (limit - 1) // 3
+    right = limit - left - 1
+    return text[:left] + "…" + text[-right:], list(range(left)) + [None] + list(range(len(text) - right, len(text)))
+
+
+def provisioner_badge(catalog, name):
+    key = "workers:" + name
+    count = len(catalog.known[name]) if name in catalog.known else None
+    if key in catalog.errors:
+        return f"{count} cached · Refresh failed" if count is not None else "Refresh failed · Retry"
+    if key in catalog.pending:
+        return f"{pool_count(count)} · Refreshing…" if count is not None else "Loading…"
+    return pool_count(count) if count is not None else "Browse"
+
+
+def pool_count(count):
+    return f"{count} pool{'s' if count != 1 else ''}"
+
+
+def run_picker(screen, db, provisioner=None):
+    default_provisioner = provisioner or DEFAULT_PROVISIONER
+    curses.curs_set(1)
+    screen.keypad(True)
+    screen.timeout(150)
+    colored = curses.has_colors()
+    if colored:
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_CYAN, -1)
+        curses.init_pair(2, curses.COLOR_RED, -1)
+        curses.init_pair(3, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(4, curses.COLOR_GREEN, -1)
+        curses.init_pair(5, curses.COLOR_YELLOW, -1)
+        curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_CYAN)
+
+    def style(n):
+        return curses.color_pair(n) if colored else 0
+
+    catalog = Catalog(db, provisioner)
+    picker = Picker(provisioner)
+    message = ""
+
+    def back():
+        if not catalog.discover_others:
+            catalog.discover_others = True
+            catalog.request_names()
+        picker.back()
+
+    while True:
+        catalog.activate(picker.query)
+        catalog.poll()
+        counts = {(p, w): n for p, w, n in history(db)}
+        picker.update(catalog, counts)
+        height, width = screen.getmaxyx()
+        screen.erase()
+
+        def line(y, text, attr=0, x=0):
+            if 0 <= y < height and 0 <= x < width - 1:
+                try:
+                    screen.addnstr(y, x, text, width - x - 1, attr)
+                except curses.error:
+                    pass
+
+        title = f"  tcwl · {picker.scope}" if picker.scope else "  tcwl · Firefox CI worker pools"
+        line(0, title, style(3) | curses.A_BOLD)
+        if picker.scope:
+            context = "  Firefox CI worker pools · Ctrl-B All provisioners"
+        else:
+            context = "  Browse a provisioner or search loaded pools"
+        line(1, context, style(1))
+        prompt = "  Search pools › " if picker.scope else "  Search › "
+        query_width = max(0, width - len(prompt) - 2)
+        displayed_query = picker.query[-query_width:] if query_width else ""
+        line(2, prompt + displayed_query, style(1) | curses.A_BOLD)
+
+        # Leave room for section labels and the gap between home-view groups.
+        group_gap = bool(not picker.scope and not picker.query.strip() and counts)
+        available = max(1, height - 8 - group_gap)
+        start = max(0, picker.selected - available + 1)
+        visible = picker.matches[start:start + available]
+        y = 4
+        previous_group = None
+        live = {target for entries in catalog.known.values() for target in entries}
+        for index, target in enumerate(visible, start):
+            p, w = target
+            group = picker.group(target)
+            if group != previous_group:
+                if previous_group is not None:
+                    y += 1
+                line(y, "  " + group, style(3) | curses.A_BOLD)
+                y += 1
+                previous_group = group
+            selected = index == picker.selected
+            base = (style(6) if colored else curses.A_REVERSE) if selected else 0
+            missing = bool(counts.get(target) and p in catalog.verified and target not in live)
+            if w:
+                uses = counts.get(target, 0)
+                badge = f"{uses} use{'s' if uses != 1 else ''}" if uses else ""
+                if missing:
+                    badge = (badge + " · missing").strip(" ·")
+            else:
+                badge = provisioner_badge(catalog, p)
+            # At narrow widths, keep the target legible before showing metadata.
+            badge_limit = max(0, width // 3)
+            badge = badge if len(badge) <= badge_limit else badge[:max(0, badge_limit - 1)] + "…"
+            label_width = max(1, width - 8 - (len(badge) + 2 if badge else 0))
+            label, positions = shorten(f"{p}/{w}" if w else p, label_width)
+            prefix = f"  {'▸' if selected else ' '} {'›' if not w else ' '} "
+            row = prefix + label
+            if badge:
+                row += " " * max(2, width - 3 - len(badge) - len(row)) + badge
+            line(y, row.ljust(max(0, width - 1)), base)
+            if not w and not selected:
+                line(y, "›", style(3), 4)
+            if missing:
+                line(y, row, base | (0 if selected else style(2)) | curses.A_BOLD)
+            elif badge and not selected:
+                key = "workers:" + p
+                badge_style = style(4) if w else style(2) if key in catalog.errors else style(5) if key in catalog.pending else curses.A_DIM
+                line(y, badge, badge_style, len(row) - len(badge))
+            for offset, original in enumerate(positions):
+                if original in picker.highlights.get(target, ()):
+                    line(y, label[offset], base | (0 if selected else style(1)) | curses.A_BOLD | curses.A_UNDERLINE, len(prefix) + offset)
+            y += 1
+
+        if not picker.matches:
+            key = "workers:" + picker.scope if picker.scope else None
+            if key in catalog.pending:
+                empty = "Loading pools…"
+            elif key in catalog.errors:
+                empty = "Could not load pools. Ctrl-R retries; Ctrl-B returns."
+            elif picker.query.strip():
+                empty = "No matches. Enter opens the typed pool or URL."
+            else:
+                empty = "No pools listed. Ctrl-R refreshes; Ctrl-B returns."
+            line(5, "  " + empty, style(5))
+
+        first = start + 1 if visible else 0
+        last = start + len(visible)
+        status = (
+            f"{pool_count(len(catalog.known.get(picker.scope, [])))} · {first}–{last} of {len(picker.matches)}"
+            if picker.scope else
+            f"{len(catalog.names)} provisioners · {pool_count(sum(map(len, catalog.known.values())))} loaded · {first}–{last} of {len(picker.matches)}"
+        )
+        error_name = picker.scope or (picker.target[0] if picker.target else None)
+        error = catalog.errors.get("workers:" + error_name) if error_name else None
+        if error:
+            status = f"Refresh failed for {error_name}: {error} · Ctrl-R retries"
+        elif "provisioners" in catalog.errors:
+            status = "Provisioner list unavailable · Ctrl-R retries"
+        elif catalog.pending:
+            status += " · Updating…"
+        status_style = style(2) if error or "provisioners" in catalog.errors else style(5) if message or catalog.pending else curses.A_DIM
+        line(height - 2, "  " + (message or status), status_style)
+        action = "open" if (picker.target and picker.target[1]) or (not picker.matches and picker.query.strip()) else "browse"
+        escape = "clear" if picker.query else "back"
+        help_text = f"  ↑↓ move  ←→ page  Enter {action}  Esc {escape}  Ctrl-C quit"
+        if width >= 100:
+            help_text += "  Ctrl-R refresh  Ctrl-P URL  Ctrl-U clear"
+        line(height - 1, help_text, style(1))
+        try:
+            screen.move(min(2, max(0, height - 1)), min(max(0, width - 1), len(prompt) + len(displayed_query)))
+        except curses.error:
+            pass
+        screen.refresh()
+        try:
+            key = screen.get_wch()
+        except curses.error:
+            continue
+        if key in (3, "\x03"):
+            return None
+        elif key in (27, "\x1b"):
+            if picker.query:
+                picker.search("")
+            elif picker.scope:
+                back()
+            message = ""
+        elif key in (curses.KEY_UP,):
+            picker.move(-1)
+        elif key in (curses.KEY_DOWN,):
+            picker.move(1)
+        elif key in (curses.KEY_LEFT, curses.KEY_PPAGE):
+            picker.move(-available)
+        elif key in (curses.KEY_RIGHT, curses.KEY_NPAGE):
+            picker.move(available)
+        elif key in (2, "\x02"):
+            back()
+            message = ""
+        elif key in (21, "\x15"):
+            picker.search("")
+            message = ""
+        elif key in (18, "\x12"):
+            message = ""
+            catalog.refresh()
+        elif key in (10, 13, curses.KEY_ENTER, 16, "\n", "\r", "\x10"):
+            try:
+                target = (
+                    parse_target(picker.query, picker.scope or default_provisioner)
+                    if picker.query.strip() and (not picker.matches or picker.query.startswith(("https://", "http://")))
+                    else picker.matches[picker.selected]
+                )
+                if not target[1]:
+                    catalog.request(target[0], force="workers:" + target[0] in catalog.errors)
+                    picker.browse(target[0])
+                    message = ""
+                    continue
+                return target, key in (16, "\x10")
+            except (ValueError, IndexError) as exc:
+                message = str(exc) or "Enter a pool name"
+        elif key in (curses.KEY_BACKSPACE, 127, 8, "\b", "\x7f"):
+            if not picker.query and picker.scope:
+                back()
+            else:
+                picker.search(picker.query[:-1])
+            message = ""
+        elif isinstance(key, str) and key.isprintable():
+            picker.search(picker.query + key)
+            message = ""
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="worker type, provisioner/worker-type, or worker page URL",
+    )
+    parser.add_argument(
+        "--provisioner",
+        help="discover only this provisioner and use it for bare names (default: discover releng-hardware and proj-autophone; bare names use releng-hardware)",
+    )
+    parser.add_argument(
+        "--print",
+        action="store_true",
+        dest="print_url",
+        help="print URL instead of opening a browser",
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path.home() / ".tc-worker-picker.sqlite3",
+        help="history database path",
+    )
+    args = parser.parse_args()
+    try:
+        default_provisioner = args.provisioner or DEFAULT_PROVISIONER
+        parse_target(f"{default_provisioner}/validation")
+        if args.target:
+            choice = (parse_target(args.target, default_provisioner), args.print_url)
+        else:
+            if not sys.stdin.isatty() or not sys.stdout.isatty():
+                parser.error(
+                    "interactive picker needs a terminal; supply a target for non-interactive use"
+                )
+            with database(args.db) as db:
+                choice = curses.wrapper(run_picker, db, args.provisioner)
+        if not choice:
+            return 0
+        target, print_only = choice
+        url = worker_url(*target)
+        if print_only or args.print_url:
+            print(url)
+        elif not webbrowser.open(url):
+            raise RuntimeError(f"Could not open browser; URL: {url}")
+        with database(args.db) as db:
+            record(db, target)
+        return 0
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
+    except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
+        print(f"tcwl: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

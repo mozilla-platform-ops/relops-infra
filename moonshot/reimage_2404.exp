@@ -15,98 +15,127 @@ named $argv {--chassis "" --node "" --boot-params ""}
 set chassis $(--chassis)
 set node $(--node)
 set boot_params $(--boot-params)
+if {$chassis eq "" || ![regexp {^c[0-9]+n[0-9]+$} $node]} {
+    puts stderr "Usage: $argv0 --chassis <ssh-target> --node <cNnN> ?--boot-params <params>?"
+    exit 1
+}
 
-send_user "\rConnecting to $chassis to control $node ..."
+proc fail {operation reason} {
+    global chassis node
+    puts stderr "\nERROR: $chassis $node: $operation: $reason"
+    catch {close}
+    exit 1
+}
 
-set force_conservative 1
-if {$force_conservative} {
-	set send_slow {1 .1}
-	proc send {ignore arg} {
-		sleep .1
-		exp_send -s -- $arg
-	}
+proc expect_prompt {operation} {
+    global spawn_id timeout
+    expect {
+        -exact "hpiLO->" { return }
+        eof { fail $operation "connection closed before hpiLO prompt" }
+        timeout { fail $operation "timed out waiting for hpiLO prompt" }
+    }
+}
+
+proc expect_console {text operation} {
+    global spawn_id timeout
+    expect {
+        -exact $text { return }
+        -nocase -re {server is not powered on|virtual serial port[^\r\n]*not available} {
+            fail $operation "serial console reports the node is not powered on or VSP is unavailable"
+        }
+        eof { fail $operation "connection closed while waiting for console output" }
+        timeout { fail $operation "timed out waiting for '$text'" }
+    }
+}
+
+proc read_power_state {} {
+    global node spawn_id timeout
+    send -- "show node power $node\r"
+    expect {
+        -re {Power State:[ \t]+(On|Off)([\r\n]|$)} {
+            set state $expect_out(1,string)
+        }
+        -exact "hpiLO->" { fail "read power state" "response did not contain a Power State field" }
+        eof { fail "read power state" "connection closed before Power State field" }
+        timeout { fail "read power state" "timed out waiting for Power State field" }
+    }
+    expect_prompt "read power state ($state)"
+    return $state
+}
+
+proc set_power_state {desired} {
+    global node
+    set last_state Unknown
+    for {set attempt 1} {$attempt <= 2} {incr attempt} {
+        if {$desired eq "Off"} {
+            send -- "set node power off force $node\r"
+        } else {
+            send -- "set node power on $node\r"
+        }
+        expect_prompt "request power $desired (attempt $attempt/2)"
+        send_user "\nWaiting for power $desired (attempt $attempt/2)\n"
+        for {set poll 1} {$poll <= 6} {incr poll} {
+            sleep 5
+            set last_state [read_power_state]
+            if {$last_state eq $desired} {
+                send_user "\nPower is $desired (confirmed)\n"
+                return
+            }
+            send_user "\nStill $last_state; waiting for $desired (poll $poll/6).\n"
+        }
+    }
+    fail "set power $desired" "exhausted 2 attempts; last observed Power State: $last_state"
+}
+
+send_user "\nConnecting to $chassis to control $node ...\n"
+set send_slow {1 .1}
+proc send {ignore arg} {
+    sleep .1
+    exp_send -s -- $arg
 }
 
 set timeout 120
-spawn ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 -oCiphers=+aes128-cbc -oStrictHostKeyChecking=no "$chassis"
+# Keep algorithm lists minimal for the chassis's legacy SSH implementation.
+spawn ssh -oKexAlgorithms=diffie-hellman-group14-sha1 -oHostKeyAlgorithms=ssh-rsa -oCiphers=aes128-cbc -oMACs=hmac-sha1 -oStrictHostKeyChecking=no "$chassis"
 match_max 100000
-sleep 5
-expect {
-    "hpiLO->" {}
-    eof { send_user "\rConnection closed before hpiLO prompt\n"; exit 1 }
-    timeout { send_user "\rTimed out waiting for hpiLO prompt\n"; exit 1 }
-}
+expect_prompt "connect to chassis"
 send -- "set node bootonce pxe $node\r"
-expect "bootonce: PXE"
-expect "hpiLO->"
-set retries 2
-while { $retries > 0 } {
-	send -- "set node power off force $node\r"
-	expect "hpiLO->"
-	set waiting 6
-	send_user "\rWaiting for power off "
-	while { $waiting > 0 } {
-	    sleep 5
-	    set waiting [ expr $waiting - 1 ]
-	    send -- "show node power $node\r"
-	    expect {
-		"*Off" { set waiting -1 }
-		"*On" { send_user "." }
-	    }
-	}
-    if { $waiting == -1 } { set retries 0 }
-    set retries [ expr $retries - 1 ]
+expect {
+    -re {bootonce:[ \t]+PXE} {}
+    -exact "hpiLO->" { fail "set PXE boot" "response did not confirm bootonce: PXE" }
+    eof { fail "set PXE boot" "connection closed before PXE confirmation" }
+    timeout { fail "set PXE boot" "timed out waiting for PXE confirmation" }
 }
-send_user "\rPower is off"
-send_user "\n\r"
-sleep 0.5
-set retries 2
-while { $retries > 0 } {
-	send -- "set node power on $node\r"
-	expect "hpiLO->"
-	set waiting 6
-	send_user "\rWaiting for power on "
-	while { $waiting > 0 } {
-	    sleep 5
-	    set waiting [ expr $waiting - 1 ]
-	    send -- "show node power $node\r"
-	    expect {
-		"*On" { set waiting -1 }
-		"*Off" { send_user "." }
-	    }
-	}
-    if { $waiting == -1 } { set retries 0 }
-    set retries [ expr $retries - 1 ]
-}
-send_user "\rPower is on"
-send_user "\n\r"
-sleep 0.2
-expect "hpiLO->"
+expect_prompt "set PXE boot"
+set_power_state Off
+set_power_state On
 send -- "connect node vsp $node\r"
-send_user "\rcheck vsp\r"
-expect "Virtual Serial Port Active: "
-send_user "\n\r"
-set timeout -1
+expect_console "Virtual Serial Port Active: " "open serial console"
 
-# netboot.xyz: select the 24.04 automated install
-send_user "\rWaiting for netboot.xyz menu on $node "
-expect "netboot.xyz"
-expect "booting default..."
+# Bound the complete PXE/menu wait to five minutes, including both markers.
+set pxe_deadline [expr {[clock seconds] + 300}]
+set timeout 300
+send_user "\nWaiting for netboot.xyz menu on $node (up to 300 seconds)\n"
+expect_console "netboot.xyz" "wait for PXE firmware/menu"
+set timeout [expr {$pxe_deadline - [clock seconds]}]
+if {$timeout <= 0} { fail "wait for PXE menu" "five-minute PXE deadline expired" }
+expect_console "booting default..." "wait for default boot menu"
 sleep 5
-# press down key 3 times and then press enter
-exp_send -- "\033\[B"
-sleep 1
-exp_send -- "\033\[B"
-sleep 1
-exp_send -- "\033\[B"
-sleep 1
+# Select the 24.04 automated install entry.
+for {set selection 0} {$selection < 3} {incr selection} {
+    exp_send -- "\033\[B"
+    sleep 1
+}
 send -- "\r"
 sleep 10
 
-# exit virtual serial port
-#  `Press 'ESC (' to return to the CLI Session.`
+# Exit virtual serial port: 'ESC (' returns to the CLI session.
+set timeout 120
 exp_send -- "\033("
-expect "hpiLO->"
+expect_prompt "leave serial console"
 send -- "exit\r"
-expect eof
-send_user "\rFinished $chassis $node"
+expect {
+    eof {}
+    timeout { fail "disconnect from chassis" "connection did not close after exit" }
+}
+send_user "\nFinished $chassis $node\n"

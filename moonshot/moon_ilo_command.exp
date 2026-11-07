@@ -36,7 +36,8 @@ if {$force_conservative} {
 }
 
 set timeout 30
-spawn ssh -oStrictHostKeyChecking=no "$ilo"
+# Keep algorithm lists minimal for the chassis's legacy SSH implementation.
+spawn ssh -oKexAlgorithms=diffie-hellman-group14-sha1 -oHostKeyAlgorithms=ssh-rsa -oCiphers=aes128-cbc -oMACs=hmac-sha1 -oStrictHostKeyChecking=no "$ilo"
 match_max 100000
 expect "password: "
 send -- "${password}\r"
