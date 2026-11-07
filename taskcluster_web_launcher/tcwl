@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""Taskcluster Web Launcher: find and open Firefox CI worker-type pages."""
+
+import argparse
+import curses
+import json
+import sqlite3
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from pathlib import Path
+
+ROOT = "https://firefox-ci-tc.services.mozilla.com"
+DEFAULT_PROVISIONER = "releng-hardware"
+EXAMPLE = "gecko-t-linux-talos-2404-wayland"
+
+
+def parse_target(value, default=DEFAULT_PROVISIONER):
+    value = value.strip()
+    if value.startswith(("https://", "http://")):
+        url = urllib.parse.urlsplit(value)
+        if url.scheme != "https" or url.netloc != "firefox-ci-tc.services.mozilla.com":
+            raise ValueError("Use a Firefox CI HTTPS worker-type URL")
+        parts = url.path.strip("/").split("/")
+        if len(parts) != 4 or parts[0] != "provisioners" or parts[2] != "worker-types":
+            raise ValueError("Expected a provisioner/worker-types URL")
+        provisioner, worker = map(urllib.parse.unquote, (parts[1], parts[3]))
+    elif "/" in value:
+        provisioner, worker = value.split("/", 1)
+    else:
+        provisioner, worker = default, value
+    if not all(
+        part and all(c.isascii() and (c.isalnum() or c in "-_.") for c in part)
+        for part in (provisioner, worker)
+    ):
+        raise ValueError(
+            "Enter a worker type, provisioner/worker-type, or worker page URL"
+        )
+    return provisioner, worker
+
+
+def worker_url(provisioner, worker):
+    return f"{ROOT}/provisioners/{provisioner}/worker-types/{worker}"
+
+
+def database(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path, timeout=5)
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS history (provisioner TEXT NOT NULL, worker TEXT NOT NULL, uses INTEGER NOT NULL, last_used INTEGER NOT NULL, PRIMARY KEY (provisioner, worker))"
+    )
+    return db
+
+
+def record(db, target):
+    with db:
+        db.execute(
+            "INSERT INTO history VALUES (?, ?, 1, ?) ON CONFLICT(provisioner, worker) DO UPDATE SET uses=uses+1, last_used=excluded.last_used",
+            (*target, time.time_ns()),
+        )
+
+
+def history(db):
+    return db.execute(
+        "SELECT provisioner, worker, uses FROM history ORDER BY uses DESC, last_used DESC"
+    ).fetchall()
+
+
+def discover(provisioner):
+    found = []
+    token = None
+    while True:
+        params = {"limit": "1000"}
+        if token:
+            params["continuationToken"] = token
+        url = f"{ROOT}/api/queue/v1/provisioners/{urllib.parse.quote(provisioner, safe='')}/worker-types?{urllib.parse.urlencode(params)}"
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "tcwl/1"}
+        )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            data = json.load(response)
+        found.extend((provisioner, item["workerType"]) for item in data["workerTypes"])
+        token = data.get("continuationToken")
+        if not token:
+            return found
+
+
+def run_picker(screen, db, provisioner):
+    curses.curs_set(1)
+    screen.keypad(True)
+    screen.timeout(150)
+    if curses.has_colors():
+        curses.start_color()
+        curses.use_default_colors()
+        for n, color in enumerate(
+            (
+                curses.COLOR_CYAN,
+                curses.COLOR_MAGENTA,
+                curses.COLOR_GREEN,
+                curses.COLOR_YELLOW,
+                curses.COLOR_RED,
+            ),
+            1,
+        ):
+            curses.init_pair(n, color, -1)
+
+    def style(n):
+        return curses.color_pair(n) if curses.has_colors() else 0
+
+    query = ""
+    selected = 0
+    known = []
+    state = {"message": "Loading worker types…", "loading": True, "verified": False}
+
+    def refresh():
+        if state["loading"]:
+            return
+        state.update(message="Loading worker types…", loading=True, verified=False)
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def fetch():
+        try:
+            results = discover(provisioner)
+            known[:] = results
+            state["verified"] = True
+            state["message"] = f"{len(results)} live worker types · {provisioner}"
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            state["message"] = f"Offline: {exc}. Paste a URL or type a worker type."
+        finally:
+            state["loading"] = False
+
+    threading.Thread(target=fetch, daemon=True).start()
+    while True:
+        saved = history(db)
+        counts = {(p, w): n for p, w, n in saved}
+        live = set(known)
+        targets = list(counts) + [x for x in sorted(known) if x not in counts]
+        terms = query.lower().split()
+        matches = [
+            t
+            for t in targets
+            if all(term in f"{t[0]}/{t[1]}".lower() for term in terms)
+        ]
+        selected = min(selected, max(0, len(matches) - 1))
+        height, width = screen.getmaxyx()
+        screen.erase()
+
+        def line(y, text, attr=0, height=height, width=width):
+            if 0 <= y < height and width > 1:
+                try:
+                    screen.addnstr(y, 0, text, width - 1, attr)
+                except curses.error:
+                    pass
+
+        line(0, "  ◈  WORKER / FINDER", style(1) | curses.A_BOLD)
+        line(1, "  Firefox CI  ·  worker type pages", style(2))
+        line(3, f"  ❯ {query}", curses.A_BOLD)
+        line(4, "  Search by name · or paste a worker page URL", curses.A_DIM)
+        available = max(0, height - 9)
+        start = max(0, selected - available + 1)
+        for i, (p, w) in enumerate(matches[start : start + available], start):
+            count = counts.get((p, w))
+            badge = f"★ {count}" if count else "  live"
+            missing = (
+                count and state["verified"] and p == provisioner and (p, w) not in live
+            )
+            if missing:
+                badge += " · missing"
+            line(
+                6 + i - start,
+                f"  {'▸' if i == selected else ' '} {w}  ·  {p}  {badge}",
+                (curses.A_REVERSE if i == selected else 0)
+                | (style(5) if missing else style(3) if count else 0),
+            )
+        if not matches:
+            line(6, "  No matches. Enter opens the typed worker type or URL.", style(4))
+        line(height - 2, "  " + state["message"], curses.A_DIM)
+        line(
+            height - 1,
+            "  ↑↓ select  Enter open  Ctrl-P print URL  Ctrl-R refresh  Esc quit",
+            style(1),
+        )
+        try:
+            screen.move(3, min(width - 1, 4 + len(query)))
+        except curses.error:
+            pass
+        screen.refresh()
+        # get_wch honors timeout and preserves pasted Unicode input.
+        try:
+            key = screen.get_wch()
+        except curses.error:
+            continue
+        if key in (27, "\x1b"):
+            return None
+        if key in (curses.KEY_UP,):
+            selected = max(0, selected - 1)
+        elif key in (curses.KEY_DOWN,):
+            selected = min(len(matches) - 1, selected + 1) if matches else 0
+        elif key in (18, "\x12"):
+            refresh()
+        elif key in (10, 13, curses.KEY_ENTER, 16, "\n", "\r", "\x10"):
+            try:
+                target = (
+                    parse_target(query, provisioner)
+                    if query
+                    and (not matches or query.startswith(("https://", "http://")))
+                    else matches[selected]
+                )
+                return target, key in (16, "\x10")
+            except (ValueError, IndexError) as exc:
+                state["message"] = str(exc) or "Enter a worker type"
+        elif key in (curses.KEY_BACKSPACE, 127, 8, "\b", "\x7f"):
+            query = query[:-1]
+            selected = 0
+        elif isinstance(key, str) and key.isprintable():
+            query += key
+            selected = 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="worker type, provisioner/worker-type, or worker page URL",
+    )
+    parser.add_argument(
+        "--provisioner",
+        default=DEFAULT_PROVISIONER,
+        help="provisioner for discovery and bare names",
+    )
+    parser.add_argument(
+        "--print",
+        action="store_true",
+        dest="print_url",
+        help="print URL instead of opening a browser",
+    )
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path.home() / ".tc-worker-picker.sqlite3",
+        help="history database path",
+    )
+    args = parser.parse_args()
+    try:
+        parse_target(f"{args.provisioner}/validation")
+        if args.target:
+            choice = (parse_target(args.target, args.provisioner), args.print_url)
+        else:
+            if not sys.stdin.isatty() or not sys.stdout.isatty():
+                parser.error(
+                    "interactive picker needs a terminal; supply a target for non-interactive use"
+                )
+            with database(args.db) as db:
+                choice = curses.wrapper(run_picker, db, args.provisioner)
+        if not choice:
+            return 0
+        target, print_only = choice
+        url = worker_url(*target)
+        if print_only or args.print_url:
+            print(url)
+        elif not webbrowser.open(url):
+            raise RuntimeError(f"Could not open browser; URL: {url}")
+        with database(args.db) as db:
+            record(db, target)
+        return 0
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
+    except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
+        print(f"tcwl: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
