@@ -160,6 +160,7 @@ def test_filter_and_print_selection(terminal, saved_db, monkeypatch):
         ("releng-hardware", "present"),
         True,
     )
+    assert any("releng-hardware/present" in line for line in screen.lines)
 
 
 def test_interrupt_exits_cleanly_without_recording(tmp_path, monkeypatch, capsys):
@@ -175,3 +176,217 @@ def test_interrupt_exits_cleanly_without_recording(tmp_path, monkeypatch, capsys
     assert capsys.readouterr().err == "\nCancelled.\n"
     with picker.database(tmp_path / "history") as db:
         assert picker.history(db) == []
+
+
+def test_provisioner_discovery_follows_pagination(monkeypatch):
+    pages = iter([
+        {"provisioners": [{"provisionerId": "gecko-t"}], "continuationToken": "next"},
+        {"provisioners": [{"provisionerId": "proj-autophone"}]},
+    ])
+    urls = []
+
+    def fetch(request, timeout):
+        urls.append(request.full_url)
+        return io.BytesIO(json.dumps(next(pages)).encode())
+
+    monkeypatch.setattr(picker.urllib.request, "urlopen", fetch)
+    assert picker.discover_provisioners() == ["gecko-t", "proj-autophone"]
+    assert urlsplit(urls[0]).path == "/api/queue/v1/provisioners"
+    assert parse_qs(urlsplit(urls[1]).query)["continuationToken"] == ["next"]
+
+
+def test_defaults_preload_two_and_other_provisioners_load_lazily(
+    terminal, saved_db, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t", "other"])
+
+    def discover(name):
+        calls.append(name)
+        return [(name, "worker")]
+
+    monkeypatch.setattr(picker, "discover", discover)
+    catalog = picker.Catalog(saved_db)
+    catalog.poll()
+    assert calls == ["releng-hardware", "proj-autophone"]
+    assert "gecko-t" in catalog.names
+    catalog.activate("gkt")
+    assert "gecko-t" not in calls
+    catalog.activate("gecko-t/worker")
+    catalog.poll()
+    assert calls == ["releng-hardware", "proj-autophone", "gecko-t"]
+    assert catalog.known["gecko-t"] == [("gecko-t", "worker")]
+    catalog.activate("gecko-t")
+    assert len(calls) == 3
+
+
+def test_fuzzy_provisioner_selection_loads_workers(terminal, saved_db, monkeypatch):
+    calls = []
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t"])
+
+    def discover(name):
+        calls.append(name)
+        return [(name, "worker")]
+
+    monkeypatch.setattr(picker, "discover", discover)
+    screen = Screen([*"gkt", "\n", "\x10"])
+    assert picker.run_picker(screen, saved_db) == (("gecko-t", "worker"), True)
+    assert calls == ["releng-hardware", "proj-autophone", "gecko-t"]
+
+
+def test_cache_persists_across_sessions_and_expires(terminal, tmp_path, monkeypatch):
+    clock = [1000]
+    monkeypatch.setattr(picker.time, "time", lambda: clock[0])
+    calls = []
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t"])
+
+    def discover(name):
+        calls.append(name)
+        return [(name, "worker")]
+
+    monkeypatch.setattr(picker, "discover", discover)
+    path = tmp_path / "cache.sqlite"
+    with picker.database(path) as db:
+        first = picker.Catalog(db)
+        first.poll()
+        first.activate("gecko-t")
+        first.poll()
+    calls.clear()
+    with picker.database(path) as db:
+        second = picker.Catalog(db)
+        second.activate("gecko-t")
+        second.poll()
+        assert calls == []
+        assert second.known["gecko-t"] == [("gecko-t", "worker")]
+        assert not second.verified
+        assert not second.pending
+        second.refresh()
+        second.poll()
+        assert set(calls) == {"releng-hardware", "proj-autophone", "gecko-t"}
+    clock[0] += picker.CACHE_TTL + 1
+    calls.clear()
+
+    def offline(name):
+        calls.append(name)
+        raise OSError("offline")
+
+    monkeypatch.setattr(picker, "discover", offline)
+    with picker.database(path) as db:
+        third = picker.Catalog(db)
+        third.activate("gecko-t")
+        third.poll()
+        assert "gecko-t" in calls
+        assert third.known["gecko-t"] == [("gecko-t", "worker")]
+        assert not third.verified
+        assert "gecko-t" in third.message()
+        assert "Offline:" in third.message()
+
+
+def test_partial_failure_only_marks_missing_in_successful_provisioner(
+    terminal, saved_db, monkeypatch
+):
+    picker.record(saved_db, ("proj-autophone", "unknown-phone"))
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: [])
+
+    def discover(name):
+        if name == "proj-autophone":
+            raise OSError("offline")
+        return [(name, "present")]
+
+    monkeypatch.setattr(picker, "discover", discover)
+    screen = Screen(["\x1b"])
+    picker.run_picker(screen, saved_db)
+    assert any("gone" in line and "missing" in line for line in screen.lines)
+    assert not any("unknown-phone" in line and "missing" in line for line in screen.lines)
+
+
+@pytest.mark.parametrize(("query", "target", "expected"), [
+    ("", ("gecko-t", "linux-worker"), 0),
+    ("gecko-t", ("gecko-t", "linux-worker"), 0),
+    ("linux", ("gecko-t", "linux-worker"), 1),
+    ("zzz", ("gecko-t", "linux-worker"), None),
+])
+def test_fuzzy_matching(query, target, expected):
+    assert picker.fuzzy_score(query, target) == expected
+
+
+def test_fuzzy_matches_rank_below_substrings_and_require_all_terms():
+    assert picker.fuzzy_score("gkt lnwrk", ("gecko-t", "linux-worker")) > 1
+    assert picker.fuzzy_score("gkt zzz", ("gecko-t", "linux-worker")) is None
+
+
+def test_refresh_does_not_duplicate_pending_requests(saved_db, monkeypatch):
+    jobs = []
+
+    class DeferredThread:
+        def __init__(self, target, **_kwargs):
+            jobs.append(target)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(picker.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "present")])
+    catalog = picker.Catalog(saved_db, "releng-hardware")
+    assert len(jobs) == 1
+    catalog.refresh()
+    assert len(jobs) == 1
+    assert not catalog.verified
+    jobs.pop()()
+    catalog.poll()
+    assert catalog.verified == {"releng-hardware"}
+    catalog.refresh()
+    assert len(jobs) == 1
+    assert not catalog.verified
+
+
+def test_cached_provisioner_names_avoid_request_and_refresh_bypasses_cache(
+    terminal, saved_db, monkeypatch
+):
+    picker.write_cache(saved_db, "provisioners", ["gecko-t"])
+    calls = []
+    monkeypatch.setattr(picker, "discover", lambda _: [])
+
+    def names():
+        calls.append("names")
+        return ["gecko-t", "new-provisioner"]
+
+    monkeypatch.setattr(picker, "discover_provisioners", names)
+    catalog = picker.Catalog(saved_db)
+    catalog.poll()
+    assert "gecko-t" in catalog.names
+    assert calls == []
+    catalog.refresh()
+    catalog.poll()
+    assert calls == ["names"]
+    assert "new-provisioner" in catalog.names
+
+
+def test_unloaded_provisioners_are_searchable_and_counts_are_visible(
+    terminal, saved_db, monkeypatch
+):
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t", "infra"])
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "worker")])
+    screen = Screen([*"infra", "\x1b"])
+    picker.run_picker(screen, saved_db)
+    assert any("infra" in line and "Enter to load workers" in line for line in screen.lines)
+    assert any("5 provisioners" in line and "2 worker types loaded" in line for line in screen.lines)
+    assert any("rows 1–1 of 1" in line for line in screen.lines)
+
+
+@pytest.mark.parametrize(("keys", "worker"), [
+    ([picker.curses.KEY_RIGHT], "worker-15"),
+    ([picker.curses.KEY_LEFT], "worker-00"),
+    ([picker.curses.KEY_RIGHT, picker.curses.KEY_RIGHT], "worker-29"),
+    ([picker.curses.KEY_RIGHT, picker.curses.KEY_LEFT], "worker-00"),
+    ([picker.curses.KEY_NPAGE, picker.curses.KEY_PPAGE], "worker-00"),
+])
+def test_page_navigation(terminal, tmp_path, monkeypatch, keys, worker):
+    monkeypatch.setattr(
+        picker, "discover", lambda p: [(p, f"worker-{i:02}") for i in range(30)]
+    )
+    with picker.database(tmp_path / "history.sqlite") as db:
+        screen = Screen([*keys, "\x10"])
+        assert picker.run_picker(screen, db, "releng-hardware") == (
+            ("releng-hardware", worker), True
+        )

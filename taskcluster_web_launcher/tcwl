@@ -4,6 +4,7 @@
 import argparse
 import curses
 import json
+import queue
 import sqlite3
 import sys
 import threading
@@ -16,6 +17,8 @@ from pathlib import Path
 
 ROOT = "https://firefox-ci-tc.services.mozilla.com"
 DEFAULT_PROVISIONER = "releng-hardware"
+DEFAULT_PROVISIONERS = (DEFAULT_PROVISIONER, "proj-autophone")
+CACHE_TTL = 3600
 EXAMPLE = "gecko-t-linux-talos-2404-wayland"
 
 
@@ -53,6 +56,9 @@ def database(path):
     db.execute(
         "CREATE TABLE IF NOT EXISTS history (provisioner TEXT NOT NULL, worker TEXT NOT NULL, uses INTEGER NOT NULL, last_used INTEGER NOT NULL, PRIMARY KEY (provisioner, worker))"
     )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, data TEXT NOT NULL, fetched_at REAL NOT NULL)"
+    )
     return db
 
 
@@ -70,26 +76,182 @@ def history(db):
     ).fetchall()
 
 
-def discover(provisioner):
+def read_cache(db, key):
+    row = db.execute("SELECT data, fetched_at FROM cache WHERE key = ?", (key,)).fetchone()
+    if row is None:
+        return None, False
+    return json.loads(row[0]), time.time() - row[1] < CACHE_TTL
+
+
+def write_cache(db, key, data):
+    with db:
+        db.execute(
+            "INSERT OR REPLACE INTO cache VALUES (?, ?, ?)",
+            (key, json.dumps(data), time.time()),
+        )
+
+
+def queue_items(path, field):
     found = []
     token = None
     while True:
         params = {"limit": "1000"}
         if token:
             params["continuationToken"] = token
-        url = f"{ROOT}/api/queue/v1/provisioners/{urllib.parse.quote(provisioner, safe='')}/worker-types?{urllib.parse.urlencode(params)}"
+        url = f"{ROOT}/api/queue/v1/{path}?{urllib.parse.urlencode(params)}"
         request = urllib.request.Request(
             url, headers={"User-Agent": "tcwl/1"}
         )
         with urllib.request.urlopen(request, timeout=8) as response:
             data = json.load(response)
-        found.extend((provisioner, item["workerType"]) for item in data["workerTypes"])
+        found.extend(data[field])
         token = data.get("continuationToken")
         if not token:
             return found
 
 
-def run_picker(screen, db, provisioner):
+def discover(provisioner):
+    path = f"provisioners/{urllib.parse.quote(provisioner, safe='')}/worker-types"
+    return [(provisioner, item["workerType"]) for item in queue_items(path, "workerTypes")]
+
+
+def discover_provisioners():
+    return [item["provisionerId"] for item in queue_items("provisioners", "provisioners")]
+
+
+class Catalog:
+    """Background discovery; only the UI thread touches SQLite or catalog state."""
+
+    def __init__(self, db, provisioner=None):
+        self.db = db
+        self.defaults = (provisioner,) if provisioner else DEFAULT_PROVISIONERS
+        self.discover_others = provisioner is None
+        self.names = set(self.defaults)
+        self.names.update(p for p, _, _ in history(db))
+        self.known = {}
+        self.verified = set()
+        self.pending = set()
+        self.attempted = set()
+        self.errors = {}
+        self.events = queue.Queue()
+        names, _ = read_cache(db, "provisioners")
+        if self.discover_others and names is not None:
+            self.names.update(names)
+        for name in self.defaults:
+            self.request(name)
+        if self.discover_others:
+            self.request_names()
+
+    def start(self, key, fetch):
+        if key in self.pending:
+            return
+        self.pending.add(key)
+        self.errors.pop(key, None)
+
+        def work():
+            try:
+                self.events.put((key, fetch(), None))
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                self.events.put((key, None, str(exc)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def request_names(self, force=False):
+        _, fresh = read_cache(self.db, "provisioners")
+        if force or not fresh:
+            self.start("provisioners", discover_provisioners)
+
+    def request(self, name, force=False):
+        if not force and name in self.attempted:
+            return
+        self.attempted.add(name)
+        self.names.add(name)
+        cached, fresh = read_cache(self.db, "workers:" + name)
+        if cached is not None and name not in self.known:
+            self.known[name] = [tuple(target) for target in cached]
+        if force or not fresh:
+            self.verified.discard(name)
+            self.start("workers:" + name, lambda: discover(name))
+
+    def poll(self):
+        while True:
+            try:
+                key, data, error = self.events.get_nowait()
+            except queue.Empty:
+                return
+            self.pending.discard(key)
+            if error is not None:
+                self.errors[key] = error
+                continue
+            write_cache(self.db, key, data)
+            if key == "provisioners":
+                self.names.update(data)
+            else:
+                name = key.removeprefix("workers:")
+                self.known[name] = data
+                self.verified.add(name)
+
+    def activate(self, query):
+        # Exact provisioner tokens load automatically; fuzzy matches remain cheap
+        # until selected. A qualified target can name an unlisted provisioner.
+        if query.startswith(("https://", "http://")):
+            return
+        for term in query.lower().split():
+            name = term.split("/", 1)[0]
+            if name in self.names:
+                self.request(name)
+            elif "/" in term:
+                try:
+                    parse_target(name + "/validation")
+                except ValueError:
+                    continue
+                self.request(name)
+
+    def refresh(self):
+        for name in sorted(self.attempted):
+            self.request(name, force=True)
+        if self.discover_others:
+            self.request_names(force=True)
+
+    def message(self):
+        parts = [
+            f"{len(self.names)} provisioners",
+            f"{sum(map(len, self.known.values()))} worker types loaded",
+        ]
+        if self.pending:
+            parts.append(f"Loading {len(self.pending)} lists…")
+        else:
+            parts.append("Ctrl-R refreshes cache")
+        if self.errors:
+            labels = [key.removeprefix("workers:") for key in sorted(self.errors)]
+            parts.append("Offline: " + ", ".join(labels) + " (cached choices available)")
+        return " · ".join(parts)
+
+
+def fuzzy_score(query, target):
+    """Rank exact/substring matches before ordered-character matches; None excludes."""
+    text = f"{target[0]}/{target[1]}".lower()
+    score = 0
+    for term in query.lower().split():
+        if term in (target[0].lower(), target[1].lower()):
+            continue
+        if term in text:
+            score += 1
+            continue
+        position = -1
+        first = None
+        for char in term:
+            position = text.find(char, position + 1)
+            if position < 0:
+                return None
+            if first is None:
+                first = position
+        score += 2 + (position - first + 1 - len(term))
+    return score
+
+
+def run_picker(screen, db, provisioner=None):
+    default_provisioner = provisioner or DEFAULT_PROVISIONER
     curses.curs_set(1)
     screen.keypad(True)
     screen.timeout(150)
@@ -113,38 +275,20 @@ def run_picker(screen, db, provisioner):
 
     query = ""
     selected = 0
-    known = []
-    state = {"message": "Loading worker types…", "loading": True, "verified": False}
-
-    def refresh():
-        if state["loading"]:
-            return
-        state.update(message="Loading worker types…", loading=True, verified=False)
-        threading.Thread(target=fetch, daemon=True).start()
-
-    def fetch():
-        try:
-            results = discover(provisioner)
-            known[:] = results
-            state["verified"] = True
-            state["message"] = f"{len(results)} live worker types · {provisioner}"
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            state["message"] = f"Offline: {exc}. Paste a URL or type a worker type."
-        finally:
-            state["loading"] = False
-
-    threading.Thread(target=fetch, daemon=True).start()
+    catalog = Catalog(db, provisioner)
+    message = ""
     while True:
+        catalog.activate(query)
+        catalog.poll()
         saved = history(db)
         counts = {(p, w): n for p, w, n in saved}
-        live = set(known)
-        targets = list(counts) + [x for x in sorted(known) if x not in counts]
-        terms = query.lower().split()
-        matches = [
-            t
-            for t in targets
-            if all(term in f"{t[0]}/{t[1]}".lower() for term in terms)
-        ]
+        live = {target for entries in catalog.known.values() for target in entries}
+        targets = list(counts) + [x for x in sorted(live) if x not in counts]
+        targets += [(p, "") for p in sorted(catalog.names) if not catalog.known.get(p)]
+        ranked = [(fuzzy_score(query, target), i, target) for i, target in enumerate(targets)]
+        matches = [target for score, _, target in sorted(
+            (item for item in ranked if item[0] is not None), key=lambda item: item[:2]
+        )]
         selected = min(selected, max(0, len(matches) - 1))
         height, width = screen.getmaxyx()
         screen.erase()
@@ -159,29 +303,37 @@ def run_picker(screen, db, provisioner):
         line(0, "  ◈  WORKER / FINDER", style(1) | curses.A_BOLD)
         line(1, "  Firefox CI  ·  worker type pages", style(2))
         line(3, f"  ❯ {query}", curses.A_BOLD)
-        line(4, "  Search by name · or paste a worker page URL", curses.A_DIM)
         available = max(0, height - 9)
         start = max(0, selected - available + 1)
+        first = start + 1 if matches and available else 0
+        last = min(start + available, len(matches))
+        line(
+            4,
+            f"  Fuzzy search · select a provisioner to load · rows {first}–{last} of {len(matches)}",
+            curses.A_DIM,
+        )
         for i, (p, w) in enumerate(matches[start : start + available], start):
             count = counts.get((p, w))
-            badge = f"★ {count}" if count else "  live"
+            badge = f"★ {count}" if count else "  live" if p in catalog.verified else "  cached"
+            if not w:
+                badge = "Loading…" if "workers:" + p in catalog.pending else "Enter to load workers"
             missing = (
-                count and state["verified"] and p == provisioner and (p, w) not in live
+                count and p in catalog.verified and (p, w) not in live
             )
             if missing:
                 badge += " · missing"
             line(
                 6 + i - start,
-                f"  {'▸' if i == selected else ' '} {w}  ·  {p}  {badge}",
+                f"  {'▸' if i == selected else ' '} {p + '/' + w if w else p}  {badge}",
                 (curses.A_REVERSE if i == selected else 0)
                 | (style(5) if missing else style(3) if count else 0),
             )
         if not matches:
             line(6, "  No matches. Enter opens the typed worker type or URL.", style(4))
-        line(height - 2, "  " + state["message"], curses.A_DIM)
+        line(height - 2, "  " + (message or catalog.message()), curses.A_DIM)
         line(
             height - 1,
-            "  ↑↓ select  Enter open  Ctrl-P print URL  Ctrl-R refresh  Esc quit",
+            "  ↑↓ select  ←→ page  Enter open  Ctrl-P print URL  Ctrl-R refresh  Esc quit",
             style(1),
         )
         try:
@@ -200,25 +352,36 @@ def run_picker(screen, db, provisioner):
             selected = max(0, selected - 1)
         elif key in (curses.KEY_DOWN,):
             selected = min(len(matches) - 1, selected + 1) if matches else 0
+        elif key in (curses.KEY_LEFT, curses.KEY_PPAGE):
+            selected = max(0, selected - max(1, available))
+        elif key in (curses.KEY_RIGHT, curses.KEY_NPAGE):
+            selected = min(len(matches) - 1, selected + max(1, available)) if matches else 0
         elif key in (18, "\x12"):
-            refresh()
+            message = ""
+            catalog.refresh()
         elif key in (10, 13, curses.KEY_ENTER, 16, "\n", "\r", "\x10"):
             try:
                 target = (
-                    parse_target(query, provisioner)
+                    parse_target(query, default_provisioner)
                     if query
                     and (not matches or query.startswith(("https://", "http://")))
                     else matches[selected]
                 )
+                if not target[1]:
+                    catalog.request(target[0], force=True)
+                    query = target[0] + "/"
+                    selected = 0
+                    continue
                 return target, key in (16, "\x10")
             except (ValueError, IndexError) as exc:
-                state["message"] = str(exc) or "Enter a worker type"
+                message = str(exc) or "Enter a worker type"
         elif key in (curses.KEY_BACKSPACE, 127, 8, "\b", "\x7f"):
             query = query[:-1]
             selected = 0
         elif isinstance(key, str) and key.isprintable():
             query += key
             selected = 0
+            message = ""
 
 
 def main():
@@ -230,8 +393,7 @@ def main():
     )
     parser.add_argument(
         "--provisioner",
-        default=DEFAULT_PROVISIONER,
-        help="provisioner for discovery and bare names",
+        help="discover only this provisioner and use it for bare names (default: discover releng-hardware and proj-autophone; bare names use releng-hardware)",
     )
     parser.add_argument(
         "--print",
@@ -247,9 +409,10 @@ def main():
     )
     args = parser.parse_args()
     try:
-        parse_target(f"{args.provisioner}/validation")
+        default_provisioner = args.provisioner or DEFAULT_PROVISIONER
+        parse_target(f"{default_provisioner}/validation")
         if args.target:
-            choice = (parse_target(args.target, args.provisioner), args.print_url)
+            choice = (parse_target(args.target, default_provisioner), args.print_url)
         else:
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 parser.error(
