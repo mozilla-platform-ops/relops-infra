@@ -386,7 +386,44 @@ def test_page_navigation(terminal, tmp_path, monkeypatch, keys, worker):
         picker, "discover", lambda p: [(p, f"worker-{i:02}") for i in range(30)]
     )
     with picker.database(tmp_path / "history.sqlite") as db:
-        screen = Screen([*keys, "\x10"])
+        screen = Screen([*"worker-", *keys, "\x10"])
         assert picker.run_picker(screen, db, "releng-hardware") == (
             ("releng-hardware", worker), True
         )
+
+
+def test_empty_search_shows_favorites_then_provisioners_then_other_workers(
+    terminal, saved_db, monkeypatch
+):
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t", "infra"])
+    monkeypatch.setattr(picker, "discover", lambda p: [(p, "worker")])
+    picker.record(saved_db, ("releng-hardware", "present"))
+    screen = Screen(["\x10"])
+    assert picker.run_picker(screen, saved_db) == (("releng-hardware", "present"), True)
+    rows = [line.strip().removeprefix("▸ ") for line in screen.lines if "Enter to " in line]
+    assert [row.split()[0] for row in rows] == [
+        "gecko-t", "infra", "other", "proj-autophone", "releng-hardware"
+    ]
+    last_provisioner = next(i for i, line in enumerate(screen.lines) if "releng-hardware  Enter to browse" in line)
+    first_provisioner = next(i for i, line in enumerate(screen.lines) if "gecko-t  Enter to load" in line)
+    favorites = [i for i, line in enumerate(screen.lines) if "★" in line]
+    first_other_worker = next(i for i, line in enumerate(screen.lines) if "proj-autophone/worker" in line)
+    assert max(favorites) < first_provisioner
+    assert last_provisioner < first_other_worker
+
+
+def test_selecting_preloaded_provisioner_browses_without_refetch(
+    terminal, tmp_path, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(picker, "discover_provisioners", lambda: ["gecko-t"])
+
+    def discover(name):
+        calls.append(name)
+        return [(name, "worker")]
+
+    monkeypatch.setattr(picker, "discover", discover)
+    with picker.database(tmp_path / "history.sqlite") as db:
+        screen = Screen([picker.curses.KEY_DOWN, "\n", "\x10"])
+        assert picker.run_picker(screen, db) == (("proj-autophone", "worker"), True)
+    assert calls == ["releng-hardware", "proj-autophone"]

@@ -12,6 +12,8 @@ Type to fuzzy search, use Up/Down to select, and press Enter to open in your bro
 
 The picker preloads worker types for `releng-hardware` and `proj-autophone`, displayed as `provisioner/pool-name`. It also loads the list of provisioner names, without fetching all their workers. Fuzzy search for another provisioner (for example, `gkt` for `gecko-t`) and select its provisioner row to load its workers. Typing a complete provisioner name such as `gecko-t` or `gecko-t/` loads it automatically. You can then add a worker search, such as `gecko-t linux`.
 
+With an empty search, previously used workers appear first, ranked by usage count and recency, followed by all provisioners alphabetically, then other loaded workers. Selecting a preloaded provisioner browses its workers immediately. Typing a search ranks results by match quality, with history breaking ties.
+
 Use `--provisioner NAME` to restrict discovery to one provisioner, or provide `PROVISIONER/WORKER-TYPE` directly. Bare worker names use `releng-hardware`, or the provisioner specified with the flag. History from all provisioners is searchable. Each successful open or print increments its count, with ties broken by recency. Data is stored in `~/.tc-worker-picker.sqlite3`; use `--db PATH` to choose another location.
 
 Provisioner names and requested worker lists are cached in the same database for one hour. Cached lists appear immediately; expired lists refresh in the background and remain available if the refresh fails. Ctrl-R bypasses the cache for provisioner names and all worker lists requested in this session. Other provisioners' worker lists are only read from cache or fetched when requested.

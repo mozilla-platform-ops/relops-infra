@@ -283,8 +283,16 @@ def run_picker(screen, db, provisioner=None):
         saved = history(db)
         counts = {(p, w): n for p, w, n in saved}
         live = {target for entries in catalog.known.values() for target in entries}
-        targets = list(counts) + [x for x in sorted(live) if x not in counts]
-        targets += [(p, "") for p in sorted(catalog.names) if not catalog.known.get(p)]
+        other_workers = [x for x in sorted(live) if x not in counts]
+        provisioners = [
+            (p, "") for p in sorted(catalog.names)
+            if not query.strip() or not catalog.known.get(p)
+        ]
+        targets = (
+            list(counts) + provisioners + other_workers
+            if not query.strip()
+            else list(counts) + other_workers + provisioners
+        )
         ranked = [(fuzzy_score(query, target), i, target) for i, target in enumerate(targets)]
         matches = [target for score, _, target in sorted(
             (item for item in ranked if item[0] is not None), key=lambda item: item[:2]
@@ -316,7 +324,12 @@ def run_picker(screen, db, provisioner=None):
             count = counts.get((p, w))
             badge = f"★ {count}" if count else "  live" if p in catalog.verified else "  cached"
             if not w:
-                badge = "Loading…" if "workers:" + p in catalog.pending else "Enter to load workers"
+                if "workers:" + p in catalog.pending:
+                    badge = "Loading…"
+                elif p in catalog.known:
+                    badge = f"Enter to browse {len(catalog.known[p])} workers"
+                else:
+                    badge = "Enter to load workers"
             missing = (
                 count and p in catalog.verified and (p, w) not in live
             )
@@ -368,7 +381,7 @@ def run_picker(screen, db, provisioner=None):
                     else matches[selected]
                 )
                 if not target[1]:
-                    catalog.request(target[0], force=True)
+                    catalog.request(target[0], force="workers:" + target[0] in catalog.errors)
                     query = target[0] + "/"
                     selected = 0
                     continue
