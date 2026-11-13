@@ -45,7 +45,8 @@ class ScriptPathTests(unittest.TestCase):
                 script = bundle / f'reimage_{version}.exp'
                 script.write_text('#!/bin/bash\nprintf "REIMAGE_FIXTURE %s\\n" "$*"\nexit 42\n')
                 script.chmod(0o755)
-            for name, body in {'flock': 'exit 0', 'uv': 'exit 1', 'sleep': 'exit 0', 'ps': 'echo oneshot_wrapper.sh'}.items():
+            for name, body in {'flock': 'exit 0', 'uv': 'exit 1', 'sleep': 'exit 0', 'ps': 'echo oneshot_wrapper.sh',
+                               'ssh-add': 'echo "4096 SHA256:iPO+iaKxEP9QOyIm3zC8/os20+GHLerfndIFRlgh5FQ fixture (RSA)"'}.items():
                 script = binary / name
                 script.write_text(f'#!/bin/bash\n{body}\n')
                 script.chmod(0o755)

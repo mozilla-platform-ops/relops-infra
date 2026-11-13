@@ -11,6 +11,10 @@ Add the HP ILO SSH key (search `Relops Common Keys 2020-05-07` in Relops 1P) to 
 ssh-add ~/.ssh/id_rsa_relops_2020-05-07
 ```
 
+The oneshot tools check `ssh-add -l` for this key's fingerprint before imaging
+and stop with instructions if the key is missing or the agent is unavailable.
+Dry runs and `SKIP_REIMAGE=1` runs do not require the iLO key.
+
 ## Console Access
 
 ### ms_javaws_runner

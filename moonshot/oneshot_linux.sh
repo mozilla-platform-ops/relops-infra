@@ -162,6 +162,24 @@ if [[ ! "$CHASSIS" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
+# Require the Relops common RSA key before any imaging work. Match the
+# fingerprint, since agent comments and local key filenames can vary.
+if [[ -z "${SKIP_REIMAGE:-}" ]]; then
+  ILO_KEY_FINGERPRINT='SHA256:iPO+iaKxEP9QOyIm3zC8/os20+GHLerfndIFRlgh5FQ'
+  if ! AGENT_KEYS=$(ssh-add -l 2>&1); then
+    printf 'Error: could not list SSH-agent identities: %s\n' "$AGENT_KEYS" >&2
+    echo 'Start or connect to ssh-agent, then run: ssh-add ~/.ssh/id_rsa_relops_2020-05-07' >&2
+    exit 1
+  fi
+  if ! awk -v fingerprint="$ILO_KEY_FINGERPRINT" '$2 == fingerprint { found=1 } END { exit !found }' <<< "$AGENT_KEYS"; then
+    echo 'Error: the HP iLO SSH key (Relops common RSA key) is not loaded in ssh-agent.' >&2
+    echo "Expected fingerprint: $ILO_KEY_FINGERPRINT" >&2
+    echo 'Run: ssh-add ~/.ssh/id_rsa_relops_2020-05-07' >&2
+    echo 'Find the key under "Relops Common Keys 2020-05-07" in Relops 1Password.' >&2
+    exit 1
+  fi
+fi
+
 # calculated
 if (( CHASSIS > 7 )); then
   DATACENTER="mdc2"
