@@ -70,7 +70,7 @@ def send_reboot(system_url, headers, verbose=False, label=None, progress=None):
     }
     prefix = f"{progress}: " if progress else ""
     prefix += f"{label}: " if label else ""
-    print(f"{prefix}Sending ColdReset reboot request via POST {system_url}...")
+    print(f"{prefix}Sending cartridge power reset request (ColdReset) via POST {system_url}...")
     if verbose:
         print(f"[VERBOSE] POST {system_url}")
         print(f"[VERBOSE] Headers: {headers}")
@@ -79,7 +79,7 @@ def send_reboot(system_url, headers, verbose=False, label=None, progress=None):
     if verbose:
         print(f"[VERBOSE] Response: {response.status_code} {response.text}")
     if not response.ok:
-        print(f"[ERROR] Failed to send reboot: {response.status_code} {response.text}")
+        print(f"[ERROR] Failed to send cartridge power reset: {response.status_code} {response.text}")
         sys.exit(1)
 
 
