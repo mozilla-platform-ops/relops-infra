@@ -129,9 +129,12 @@ def test_generator_writes_a_separate_html_snapshot(tmp_path):
                 self.payload += data
 
     parser = SnapshotData()
-    parser.feed(path.read_text())
+    html = path.read_text()
+    parser.feed(html)
     data = json.loads(parser.payload)
     assert path.name == "OVERVIEW2.html"
+    assert '<link rel="icon" href="favicon.svg" type="image/svg+xml">' in html
+    assert (tmp_path / "favicon.svg").read_text().startswith("<svg")
     assert original.read_text() == "original"
     assert data["hosts"][0]["host"] == HOST
     assert data["hosts"][0]["latest"] is None

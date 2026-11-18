@@ -803,9 +803,10 @@ def update_overview_md(state: dict) -> None:
     OVERVIEW_FILE.write_text("\n".join(lines) + "\n")
 
 
-def update_favicon() -> None:
-    RESULTS_BASE.mkdir(parents=True, exist_ok=True)
-    FAVICON_FILE.write_text("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+def update_favicon(path: Path | None = None) -> None:
+    path = FAVICON_FILE if path is None else path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="10" fill="#111"/>
   <path d="M12 44V18h8l12 15 12-15h8v26h-8V30L34 43h-4L20 30v14z" fill="#0ff"/>
   <circle cx="50" cy="14" r="6" fill="#f90"/>

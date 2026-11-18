@@ -391,6 +391,7 @@ def generate_report(root: Path, inventory: set[str]) -> Path:
     html = html.replace("<!-- REPORT THEME -->", medic.REPORT_THEME_FILE.read_text(encoding="utf-8"))
     html = html.replace("<!-- MEDIC LOGO -->", escape("\n".join(medic.MEDIC_LOGO)))
     html = html.replace("<!-- REPORT DATA -->", payload)
+    medic.update_favicon(root / "favicon.svg")
     path = root / OUTPUT_NAME
     with NamedTemporaryFile(mode="w", encoding="utf-8", dir=root, delete_on_close=False) as draft:
         draft.write(html)
