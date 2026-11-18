@@ -18,6 +18,8 @@
       --attention: #f4c47b;
       --failure: #ff9f9a;
       --success: #a9dfa8;
+      --ilo: #64e4d5;
+      --remediation: #c2adff;
       --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
       font-family: system-ui, sans-serif;
       background: var(--page);
@@ -72,7 +74,7 @@
     .table-scroll { overflow-x: auto; }
     #history > .table-scroll { max-height: 37rem; }
     table { border-collapse: collapse; width: 100%; text-align: left; }
-    #hosts { min-width: 47rem; }
+    #hosts { min-width: 63rem; }
     #hosts > thead { position: sticky; top: 0; z-index: 1; }
     th, td { padding: .65rem 1rem; border-top: 1px solid var(--border); vertical-align: top; }
     thead { background: var(--inset); color: var(--muted); }
@@ -86,25 +88,31 @@
     .host-row .reason { margin-top: .25rem; }
     .host-row time { display: block; font-size: .875rem; color: var(--muted); margin-top: .25rem; }
     .host-row td:first-child { width: 12%; }
-    .host-row td:nth-child(2) { width: 42%; }
+    .host-row td:nth-child(2) { width: 28%; }
     .host-row .number { min-width: 7rem; }
     .host-detail > td { background: var(--inset); padding: 1rem; }
     .host-detail h3 { margin-bottom: .3rem; }
     .timeline { min-width: 40rem; margin-top: .6rem; }
     .timeline td:first-child { white-space: nowrap; }
-    .timeline td:nth-child(2) { min-width: 10rem; }
+    .timeline td:nth-child(3) { min-width: 10rem; }
     .timeline td:last-child { min-width: 11rem; }
     .evidence { display: flex; flex-wrap: wrap; gap: .35rem .75rem; font-size: .875rem; }
     .empty { padding: 1rem; color: var(--muted); }
     .chart-scroll { overflow-x: auto; padding: .3rem 1.2rem 0; }
     .chart { display: grid; grid-template-columns: repeat(30, minmax(1rem, 1fr)); gap: .2rem; min-width: 35rem; padding: .2rem .2rem .8rem; }
     .bar { display: grid; grid-template-rows: 6rem 1rem; justify-items: center; gap: .35rem; min-width: 0; border: 0; background: transparent; color: var(--muted); padding: 0; }
-    .bar-track { display: flex; align-items: end; width: 84%; height: 100%; border-bottom: 1px solid var(--border); }
-    .bar-fill { height: var(--bar-size); min-height: 2px; width: 100%; background: #508e89; border-radius: .16rem .16rem 0 0; }
-    .bar[aria-pressed="true"] .bar-fill, .bar:hover .bar-fill { background: var(--accent); }
+    .bar-track { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 84%; height: 100%; border-bottom: 1px solid var(--border); }
+    .bar-fill { height: var(--bar-size); width: 100%; opacity: .7; }
+    .ilo { background: var(--ilo); }
+    .remediation { background: var(--remediation); }
+    .bar[aria-pressed="true"] .bar-fill, .bar:hover .bar-fill { opacity: 1; }
+    .legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; padding: 0 1.2rem; }
+    .legend span::before { display: inline-block; width: .65rem; height: .65rem; margin-right: .4rem; border-radius: .15rem; content: ""; }
+    .legend-ilo::before { background: var(--ilo); }
+    .legend-remediation::before { background: var(--remediation); }
     .bar-date { white-space: nowrap; font: .78rem var(--mono); }
     .chart-detail { background: var(--inset); border-top: 1px solid var(--border); padding: .85rem 1.2rem; }
-    .chart-detail .contributors { margin-top: .45rem; display: flex; flex-wrap: wrap; gap: .4rem 1rem; }
+    .chart-detail .contributors { margin: .45rem 0 0; padding: 0; list-style: none; display: grid; gap: .35rem; }
     .chart-detail button { text-align: left; }
     .archive { padding: 0 1.2rem 1rem; }
     .archive summary { cursor: pointer; padding: .85rem 0; font-weight: 600; }
@@ -140,6 +148,20 @@
         </label>
       </div>
     </header>
+
+    <section class="panel" aria-labelledby="trend-heading">
+      <header class="panel-head">
+        <h2 id="trend-heading">Reset and remediation activity · 30 days</h2>
+        <p class="secondary">UTC days · Select a day to see its hosts</p>
+      </header>
+      <div class="legend secondary" aria-label="Chart legend">
+        <span class="legend-ilo">iLO resets</span><span class="legend-remediation">Check 2 remediations</span>
+        <p>Counts include failed and unverified attempts. Deferred actions appear in host history.</p>
+      </div>
+      <div class="chart-scroll"><div id="chart" class="chart" role="group" aria-label="Reset and remediation attempts by UTC day"></div></div>
+      <div id="chart-detail" class="chart-detail" aria-live="polite"></div>
+    </section>
+
     <div id="metrics" aria-label="Fleet totals"></div>
 
     <section class="panel" aria-labelledby="attention-heading">
@@ -156,7 +178,7 @@
 
     <section class="panel" id="history" aria-labelledby="hosts-heading">
       <header class="panel-head">
-        <div><h2 id="hosts-heading">Host history</h2><p id="host-count" class="secondary" aria-live="polite"></p></div>
+        <div><h2 id="hosts-heading">Reset and remediation history</h2><p id="host-count" class="secondary" aria-live="polite"></p></div>
         <div class="filters">
           <label for="search" class="secondary">Search host</label>
           <input class="control" id="search" type="search" placeholder="ms126" autocomplete="off">
@@ -165,7 +187,8 @@
             <option value="backoff">In backoff</option>
             <option value="failure">Failed in last 7 days</option>
             <option value="diagnosed">Latest Check 2 findings</option>
-            <option value="repeated">2+ resets in last 30 days</option>
+            <option value="repeated">2+ iLO resets in last 30 days</option>
+            <option value="remediated">Check 2 remediation in last 30 days</option>
           </select>
           <button class="control" id="priority" type="button">Sort by priority</button>
         </div>
@@ -176,22 +199,14 @@
             <th scope="col"><button type="button" data-sort="label">Host</button></th>
             <th scope="col"><button type="button" data-sort="outcome">Latest recorded outcome</button></th>
             <th scope="col"><button type="button" data-sort="time">Last action</button></th>
-            <th scope="col"><button type="button" data-sort="resets30">Resets · 30d</button></th>
+            <th scope="col"><button type="button" data-sort="resets30">iLO resets · 30d</button></th>
+            <th scope="col"><button type="button" data-sort="remediations30">Check 2 remediations · 30d</button></th>
             <th scope="col"><button type="button" data-sort="failureStreak">Reset failure streak</button></th>
           </tr></thead>
           <tbody></tbody>
         </table>
       </div>
       <p id="empty" class="empty" hidden>No hosts match these filters.</p>
-    </section>
-
-    <section class="panel" aria-labelledby="trend-heading">
-      <header class="panel-head">
-        <h2 id="trend-heading">Reset activity · 30 days</h2>
-        <p class="secondary">UTC days · Select a day to see its hosts</p>
-      </header>
-      <div class="chart-scroll"><div id="chart" class="chart" role="group" aria-label="Resets by UTC day"></div></div>
-      <div id="chart-detail" class="chart-detail" aria-live="polite"></div>
     </section>
 
     <section class="panel" aria-label="Historical counts">
@@ -201,9 +216,9 @@
         <p class="empty" id="daily-empty" hidden>No diagnostics reports found.</p>
       </details>
       <details class="archive">
-        <summary>Lifetime reset distribution</summary>
-        <p class="secondary">Counts are based on saved Medic state and configured inventory.</p>
-        <table><thead><tr><th scope="col">Recorded resets per host</th><th scope="col">Hosts</th></tr></thead><tbody id="distribution"></tbody></table>
+        <summary>Lifetime iLO reset distribution</summary>
+        <p class="secondary">Counts are based on verified resets in saved Medic state and configured inventory.</p>
+        <table><thead><tr><th scope="col">Verified iLO resets per host</th><th scope="col">Hosts</th></tr></thead><tbody id="distribution"></tbody></table>
       </details>
     </section>
     <footer class="secondary">Moonshot Medic · <a href="OVERVIEW.html">Original overview</a></footer>
@@ -214,7 +229,7 @@
     const report = JSON.parse(document.querySelector("#report-data").textContent);
     const $ = selector => document.querySelector(selector);
     const locationState = new URLSearchParams(location.hash.slice(1));
-    const keys = ["label", "outcome", "time", "resets30", "failureStreak", "priority"];
+    const keys = ["label", "outcome", "time", "resets30", "remediations30", "failureStreak", "priority"];
     const state = {
       search: locationState.get("q") || "",
       filter: "all",
@@ -226,7 +241,6 @@
         || report.trend.findLast(day => day.total > 0)?.date || report.trend.at(-1)?.date,
     };
     const diagnosed = new Set((report.latestScan?.findings || []).map(finding => finding.host));
-    const hostByLabel = new Map(report.hosts.map(host => [host.label, host.host]));
 
     function node(tag, text, className) {
       const element = document.createElement(tag);
@@ -244,10 +258,11 @@
       history.replaceState(null, "", "#" + params);
     }
 
-    function stamp(value) {
+    function stamp(value, exact = false) {
       const result = node("time");
       result.dateTime = value;
       result.dataset.time = value;
+      if (exact) result.dataset.exact = "";
       updateTime(result);
       return result;
     }
@@ -256,7 +271,8 @@
       const date = new Date(element.dataset.time);
       const timezone = state.zone === "utc" ? { timeZone: "UTC", timeZoneName: "short" } : {};
       element.textContent = date.toLocaleString(undefined, {
-        year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", ...timezone,
+        year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+        ...(Object.hasOwn(element.dataset, "exact") ? { second: "2-digit" } : {}), ...timezone,
       });
       element.title = date.toISOString();
     }
@@ -306,18 +322,19 @@
       for (const finding of latest.findings) {
         const flag = node("div", undefined, "flag");
         const label = report.hosts.find(row => row.host === finding.host)?.label || finding.host;
-        flag.append(hostButton(label, finding.host, jumpToHost), badge(finding.outcome, finding.tone),
-          node("p", finding.reason, "reason"));
+        flag.append(hostButton(label, finding.host, jumpToHost), badge(finding.outcome, finding.tone));
+        if (finding.trigger) flag.append(node("p", actionLabel(finding), "reason"));
+        if (finding.reason) flag.append(node("p", finding.reason, "reason"));
         $("#findings").append(flag);
       }
     }
 
     function renderMetrics() {
-      for (const [label, value, filter] of [
+      for (const [label, value, filter, recent] of [
         ["Hosts in backoff", report.stats.backoff, "backoff"],
         ["Hosts with failures · 7d", report.stats.recentFailures, "failure"],
-        ["Resets · 24h", report.stats.resets24],
-        ["Resets · 7d", report.stats.resets7],
+        ["iLO resets · 7d", report.stats.resets7, null, report.stats.resets24],
+        ["Check 2 remediations · 7d", report.stats.remediations7, null, report.stats.remediations24],
       ]) {
         const metric = node(filter ? "button" : "div", undefined, "metric");
         if (filter) {
@@ -332,8 +349,10 @@
             $("#history").scrollIntoView({ block: "start" });
           });
         }
-        metric.append(node("strong", value, "number" + (filter && value ? " attention-text" : "")),
-          node("span", label, "muted"));
+        const caption = node("div");
+        caption.append(node("span", label, "muted"));
+        if (recent !== undefined) caption.append(node("p", recent + " in the last 24h", "secondary"));
+        metric.append(node("strong", value, "number" + (filter && value ? " attention-text" : "")), caption);
         $("#metrics").append(metric);
       }
     }
@@ -353,6 +372,7 @@
         case "failure": return host.recentFailure;
         case "diagnosed": return diagnosed.has(host.host);
         case "repeated": return host.resets30 >= 2;
+        case "remediated": return host.remediations30 > 0;
         default: return true;
       }
     }
@@ -361,7 +381,7 @@
       if (host.backoff) return 0;
       if (diagnosed.has(host.host) && host.latest?.tone === "attention") return 1;
       if (host.recentFailure) return 2;
-      if (host.resets30 >= 2) return 3;
+      if (host.resets30 + host.remediations30 >= 2) return 3;
       return 4;
     }
 
@@ -371,7 +391,8 @@
 
     function compareHosts(a, b) {
       if (state.sort === "priority") {
-        return priority(a) - priority(b) || b.resets30 - a.resets30 || byHost(a, b);
+        return priority(a) - priority(b) ||
+          (b.resets30 + b.remediations30) - (a.resets30 + a.remediations30) || byHost(a, b);
       }
       const key = state.sort;
       const value = host => key === "outcome" ? host.latest?.outcome : key === "time" ? host.lastAction?.time : host[key];
@@ -381,11 +402,25 @@
       return (state.ascending ? order : -order) || byHost(a, b);
     }
 
+    function actionLabel(event) {
+      return [event.action, event.trigger].filter(Boolean).join(" · ");
+    }
+
+    function checkLabel(event) {
+      if (event.check) return event.check;
+      return event.action === "iLO reset" || event.action === "Clock repair" ? "Check unrecorded" : "—";
+    }
+
+    function appendEventTime(cell, event, exact = false) {
+      cell.append(stamp(event.time, exact));
+      if (event.time_note) cell.append(node("p", event.time_note, "reason"));
+    }
+
     function timeline(host) {
       const detail = node("tr", undefined, "host-detail");
       detail.id = "events-" + host.host;
       const cell = detail.insertCell();
-      cell.colSpan = 5;
+      cell.colSpan = 6;
       cell.append(node("h3", host.label + " · Activity in the last 30 days"), node("p", host.host, "secondary"));
       if (!host.events.length) {
         cell.append(node("p", "No recorded events in this window.", "empty"));
@@ -394,7 +429,7 @@
       const wrapper = node("div", undefined, "table-scroll");
       const table = node("table", undefined, "timeline");
       const header = table.createTHead().insertRow();
-      for (const label of ["Time", "Action", "Outcome", "Evidence"]) {
+      for (const label of ["Time", "Source", "Action", "Outcome", "Evidence"]) {
         const heading = node("th", label);
         heading.scope = "col";
         header.append(heading);
@@ -402,8 +437,9 @@
       const body = table.createTBody();
       for (const event of host.events) {
         const row = body.insertRow();
-        row.insertCell().append(stamp(event.time));
-        row.insertCell().textContent = event.action;
+        appendEventTime(row.insertCell(), event, true);
+        row.insertCell().textContent = checkLabel(event);
+        row.insertCell().textContent = actionLabel(event);
         const outcome = row.insertCell();
         outcome.append(badge(event.outcome, event.tone));
         if (event.reason) outcome.append(node("p", event.reason, "reason"));
@@ -418,6 +454,13 @@
       wrapper.append(table);
       cell.append(wrapper);
       return detail;
+    }
+
+    function recoveryCell(cell, count, event, showAction) {
+      cell.append(node("span", count, "number"));
+      if (!event) return;
+      cell.append(node("p", showAction ? actionLabel(event) : checkLabel(event), "reason"));
+      appendEventTime(cell, event);
     }
 
     function hostRow(host, body) {
@@ -444,16 +487,18 @@
       if (host.latest) {
         outcome.append(badge(host.latest.outcome, host.latest.tone));
         if (host.latest.reason) outcome.append(node("p", host.latest.reason, "reason"));
-        if (!host.lastAction || host.latest.time !== host.lastAction.time) outcome.append(stamp(host.latest.time));
+        if (!host.lastAction || host.latest.time !== host.lastAction.time) appendEventTime(outcome, host.latest);
       } else {
         outcome.append(node("span", "No recorded outcome", "muted"));
       }
       const lastAction = row.insertCell();
-      if (host.lastAction) lastAction.append(host.lastAction.action, stamp(host.lastAction.time));
+      if (host.lastAction) {
+        lastAction.append(actionLabel(host.lastAction));
+        appendEventTime(lastAction, host.lastAction);
+      }
       else lastAction.append(node("span", "No recorded action", "muted"));
-      const resets = row.insertCell();
-      resets.className = "number";
-      resets.textContent = host.resets30;
+      recoveryCell(row.insertCell(), host.resets30, host.lastReset, false);
+      recoveryCell(row.insertCell(), host.remediations30, host.lastRemediation, true);
       const streak = row.insertCell();
       streak.className = host.failureStreak ? "number attention-text" : "number";
       streak.textContent = host.failureStreak;
@@ -476,16 +521,31 @@
       }
     }
 
+    function dayTotals(day) {
+      const totals = { ilo: 0, remediation: 0 };
+      for (const action of day.actions) totals[action.category] += action.count;
+      return totals;
+    }
+
+    function dayLabel(day) {
+      const totals = dayTotals(day);
+      return day.date + " UTC · " + totals.ilo + " iLO " + (totals.ilo === 1 ? "reset" : "resets") +
+        " · " + totals.remediation + " Check 2 " + (totals.remediation === 1 ? "remediation" : "remediations");
+    }
+
     function selectDay(day) {
       state.day = day.date;
       for (const bar of document.querySelectorAll(".bar")) bar.setAttribute("aria-pressed", bar.dataset.day === day.date);
       const detail = $("#chart-detail");
-      const headline = day.date + " UTC · " + day.total + " " + (day.total === 1 ? "reset" : "resets");
-      detail.replaceChildren(node("strong", headline));
-      if (day.total === 0) detail.append(node("p", "No recorded resets on this day.", "secondary"));
-      const contributors = node("div", undefined, "contributors");
-      for (const [label, count] of Object.entries(day.hosts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))) {
-        contributors.append(hostButton(label + " · " + count, hostByLabel.get(label) || label, jumpToHost));
+      detail.replaceChildren(node("strong", dayLabel(day)));
+      if (day.total === 0) return;
+      const contributors = node("ul", undefined, "contributors");
+      for (const action of [...day.actions].sort((a, b) => b.count - a.count || byHost(a, b))) {
+        const item = node("li");
+        const description = [checkLabel(action), actionLabel(action)].join(" · ");
+        item.append(hostButton(action.label, action.host, jumpToHost),
+          node("span", " · " + description + (action.count > 1 ? " ×" + action.count : ""), "secondary"));
+        contributors.append(item);
       }
       detail.append(contributors);
     }
@@ -496,12 +556,15 @@
         const control = node("button", undefined, "bar");
         control.type = "button";
         control.dataset.day = day.date;
-        control.title = day.date + " UTC · " + day.total + " resets";
+        control.title = dayLabel(day);
         control.setAttribute("aria-label", control.title);
         const track = node("span", undefined, "bar-track");
-        const fill = node("span", undefined, "bar-fill");
-        fill.style.setProperty("--bar-size", 100 * day.total / peak + "%");
-        track.append(fill);
+        for (const [category, count] of Object.entries(dayTotals(day))) {
+          if (!count) continue;
+          const fill = node("span", undefined, "bar-fill " + category);
+          fill.style.setProperty("--bar-size", 100 * count / peak + "%");
+          track.append(fill);
+        }
         control.append(track, node("span", index % 7 === 0 ? day.date.slice(5) : "", "bar-date"));
         control.addEventListener("click", () => { selectDay(day); saveView(); });
         $("#chart").append(control);

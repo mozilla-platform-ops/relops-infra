@@ -41,6 +41,8 @@ OUTCOMES = {
     "saved": ("Diagnostics saved", "success"),
 }
 VERIFIED_ACTIONS = {"iLO reset": "SSH restored", "Clock repair": "Clock repair verified"}
+CHECK_2_ACTIONS = {"SSH reboot", "GDM restart"}
+SCAN_CHECKS = {"confirmed auto": "Check 1", "manual recovery": "Manual"}
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,9 @@ class Event:
     tone: str
     reason: str = ""
     links: list[Evidence] = field(default_factory=list)
+    check: str = ""
+    trigger: str = ""
+    time_note: str = ""
 
 
 @dataclass
@@ -114,6 +119,27 @@ def action_outcome(action: str, outcome: str) -> tuple[str, str]:
     return OUTCOMES.get(outcome, (outcome.replace("_", " ").capitalize(), "neutral"))
 
 
+def recorded_event(root: Path, item: dict) -> Event | None:
+    time = utc_time(item.get("timestamp"))
+    key = item.get("action")
+    if not time or not key:
+        return None
+    action = ACTION_NAMES.get(key, key.replace("_", " ").capitalize())
+    result = item.get("outcome") or (
+        ("saved" if key == "diagnostics" else "verified") if item.get("success") else "failed"
+    )
+    label, tone = action_outcome(action, result)
+    trigger = DIAGNOSIS_NAMES.get(item.get("trigger"), "")
+    reason = ""
+    if key == "clock_fix" and item.get("skew_seconds") is not None:
+        reason = f"Initial skew {item['skew_seconds']}s"
+        if item.get("verified_skew_seconds") is not None:
+            reason += f" · verified skew {item['verified_skew_seconds']}s"
+    check = "Check 2" if action in CHECK_2_ACTIONS else item.get("check", "")
+    return Event(time, action, label, tone, reason, evidence_link(root, item.get("report")),
+                 check=check, trigger=trigger)
+
+
 def state_events(root: Path, host: dict) -> list[Event]:
     # Older states retain reset timestamps and last outcomes without typed history.
     events = {}
@@ -128,24 +154,8 @@ def state_events(root: Path, host: dict) -> list[Event]:
     if clock := host.get("last_clock_fix"):
         recorded.append({"action": "clock_fix", **clock})
     for item in recorded:
-        time = utc_time(item.get("timestamp"))
-        key = item.get("action", "")
-        if not time:
-            continue
-        action = ACTION_NAMES.get(key, key.replace("_", " ").capitalize())
-        result = item.get("outcome") or (
-            ("saved" if key == "diagnostics" else "verified") if item.get("success") else "failed"
-        )
-        label, tone = action_outcome(action, result)
-        event_key = (time[:19], key, result)
-        if event_key in events:
-            continue
-        reason = DIAGNOSIS_NAMES.get(item.get("trigger"), "")
-        if key == "clock_fix" and item.get("skew_seconds") is not None:
-            reason = f"Initial skew {item['skew_seconds']}s"
-            if item.get("verified_skew_seconds") is not None:
-                reason += f" · verified skew {item['verified_skew_seconds']}s"
-        events[event_key] = Event(time, action, label, tone, reason, evidence_link(root, item.get("report")))
+        if event := recorded_event(root, item):
+            events.setdefault((event.time[:19], event.action, event.outcome), event)
     return list(events.values())
 
 
@@ -168,22 +178,34 @@ def scan_log_records(root: Path, log: Path, resolve_host: dict) -> tuple[list[Sc
             pending = None
         elif pending and (marker := "Check 2 — Fleetroll health: ") in line:
             pending.health = line.partition(marker)[2]
+        elif line.startswith("{"):
+            try:
+                action_record = json.loads(line)
+            except ValueError:
+                continue
+            if action_record.get("event") != "medic_action":
+                continue
+            fqdn = medic.canonical_moonshot_fqdn(action_record.get("host", ""))
+            if fqdn and (event := recorded_event(root, action_record)):
+                event.links = event.links or evidence_link(root, log)
+                events.append((fqdn, event))
         else:
             fields = line.split(" | ", 5)
             if len(fields) != 6 or fields[1] not in ("Check 1", "Check 2", "Manual"):
                 continue
-            stamp, _, short, action, outcome, detail = fields
+            stamp, check, short, action, outcome, detail = fields
             time = utc_time(stamp)
             if time and (fqdn := resolve_host.get(short) or medic.canonical_moonshot_fqdn(short)):
                 reason, _, path = detail.partition(" | Evidence: ")
                 action = {"Clock fix": "Clock repair"}.get(action, action)
                 label, tone = action_outcome(action, outcome)
                 links = evidence_link(root, path) or evidence_link(root, log)
-                events.append((fqdn, Event(time, action, label, tone, reason, links)))
+                events.append((fqdn, Event(time, action, label, tone, reason, links, check=check)))
     return scans, pending, events
 
 
-def diagnosis_events(root: Path, report: Path, data: dict, time: str) -> list[tuple[str, Event, dict]]:
+def diagnosis_events(root: Path, report: Path, data: dict, time: str, scan: Scan | None,
+                     history: dict[str, list[Event]]) -> list[dict]:
     events = []
     links = evidence_link(root, report)
     for entry in data.get("results", []):
@@ -195,14 +217,29 @@ def diagnosis_events(root: Path, report: Path, data: dict, time: str) -> list[tu
         reason = diagnosis.get("reason") or entry.get("reason", "")
         label = DIAGNOSIS_NAMES.get(state, state.replace("_", " ").capitalize())
         tone = "neutral" if state in ("live", "not_zombie") else "attention"
-        event = Event(time, "Worker diagnosis", label, tone, reason, links)
+        check = "Check 2" if scan and scan.mode in ("confirmed auto", "recovery preview") else ""
+        event = Event(time, "Worker diagnosis", label, tone, reason, links, check=check)
+        history[fqdn].append(event)
         finding = asdict(event)
         if recovery := entry.get("recovery"):
             action = "GDM restart" if state == "gdm_autologin_stall" else "SSH reboot"
             outcome, outcome_tone = action_outcome(action, recovery["outcome"])
-            finding.update(outcome=outcome, tone=outcome_tone,
-                           reason=f"{label} · {recovery['reason']}")
-        events.append((fqdn, event, {"host": fqdn, **finding}))
+            fallback = Event(scan.end if scan else time, action, outcome, outcome_tone, recovery["reason"], links,
+                             check="Check 2", trigger=label,
+                             time_note="Recorded by scan end" if scan else "Diagnosis time · action time unrecorded")
+            match = next((existing for existing in sorted(history[fqdn], key=lambda item: item.time)
+                          if existing.action == action and existing.outcome == outcome
+                          and time[:19] <= existing.time[:19]
+                          and (existing.time <= scan.end if scan else existing.time[:10] == time[:10])), None)
+            if match:
+                match.trigger = label
+                match.reason = fallback.reason
+                match.links = list(dict.fromkeys([*match.links, *links]))
+            else:
+                history[fqdn].append(fallback)
+                match = fallback
+            finding = asdict(match)
+        events.append({"host": fqdn, **finding})
     return events
 
 
@@ -213,9 +250,21 @@ def merge_action(events: list[Event], new: Event) -> None:
         if old.action == new.action and old.outcome == new.outcome and old.time[:19] == new.time[:19]:
             new.time = max(old.time, new.time)
             new.links = list(dict.fromkeys([*old.links, *new.links]))
+            new.trigger = new.trigger or old.trigger
+            new.check = new.check or old.check
+            new.reason = new.reason or old.reason
             events[index] = new
             return
     events.append(new)
+
+
+def recovery_category(event: Event) -> str:
+    if event.outcome != "Deferred":
+        if event.action == "iLO reset":
+            return "ilo"
+        if event.check == "Check 2" and event.action in CHECK_2_ACTIONS:
+            return "remediation"
+    return ""
 
 
 def build_report(root: Path, state: dict, inventory: set[str], now: dt.datetime) -> dict:
@@ -227,6 +276,8 @@ def build_report(root: Path, state: dict, inventory: set[str], now: dt.datetime)
     cutoff = utc_time(earliest.isoformat())
     current_time = utc_time(now.isoformat())
     latest_scan = None
+    all_scans = []
+    reports = []
     daily = []
     for day in sorted(root.iterdir()):
         if not (day.is_dir() and len(day.name) == 8 and day.name.isdecimal()):
@@ -244,14 +295,16 @@ def build_report(root: Path, state: dict, inventory: set[str], now: dt.datetime)
             time = utc_time(data.get("checked_at"))
             if not time or (pending and pending.start and time >= pending.start):
                 continue
-            findings = diagnosis_events(root, report, data, time)
-            for fqdn, event, _ in findings:
-                history[fqdn].append(event)
-            if scan := next((scan for scan in reversed(scans) if scan.start <= time <= scan.end), None):
-                scan.findings.extend(finding for _, _, finding in findings)
+            reports.append((report, data, time))
+        all_scans.extend(scans)
         for scan in scans:
             if scan.mode == "confirmed auto" and (latest_scan is None or scan.end > latest_scan.end):
                 latest_scan = scan
+    for report, data, time in reports:
+        scan = next((scan for scan in reversed(all_scans) if scan.start <= time <= scan.end), None)
+        findings = diagnosis_events(root, report, data, time, scan, history)
+        if scan:
+            scan.findings.extend(findings)
 
     days = [(first_day + dt.timedelta(days=offset)).isoformat() for offset in range(HISTORY_DAYS)]
     trend = {day: Counter() for day in days}
@@ -259,19 +312,33 @@ def build_report(root: Path, state: dict, inventory: set[str], now: dt.datetime)
     rows = []
     rolling = {hours: utc_time((now - dt.timedelta(hours=hours)).isoformat()) for hours in (24, 168)}
     older_than_7d = rolling[168]
-    resets_24h = resets_7d = 0
+    counts = {24: Counter(), 168: Counter()}
     for fqdn in sorted(hosts.keys() | history.keys() | inventory):
         host = hosts.get(fqdn, {})
         label = medic.short_label(fqdn)
-        resets = [time for stamp in host.get("reset_timestamps", []) if (time := utc_time(stamp))]
-        resets_24h += sum(time >= rolling[24] for time in resets)
-        resets_7d += sum(time >= rolling[168] for time in resets)
-        for time in resets:
-            if time[:10] in trend:
-                trend[time[:10]][label] += 1
         distribution[host.get("total_resets", 0)] += 1
 
         events = sorted(history[fqdn], key=lambda event: event.time, reverse=True)
+        recent_counts = Counter()
+        last_recovery = {}
+        for event in events:
+            if not event.check and event.action in ("iLO reset", "Clock repair"):
+                sources = {SCAN_CHECKS[scan.mode] for scan in all_scans
+                           if scan.mode in SCAN_CHECKS and scan.start <= event.time <= scan.end}
+                if len(sources) == 1:
+                    event.check = sources.pop()
+            if not (category := recovery_category(event)):
+                continue
+            last_recovery.setdefault(category, event)
+            if event.time < cutoff:
+                continue
+            recent_counts[category] += 1
+            for hours, since in rolling.items():
+                if event.time >= since:
+                    counts[hours][category] += 1
+            if event.time[:10] in trend:
+                trend[event.time[:10]][fqdn, label, event.action, event.check, event.trigger, category] += 1
+
         last_action = next((event for event in events if event.action != "Worker diagnosis"), None)
         failure = next((event for event in events if event.tone == "failure" and event.time >= older_than_7d), None)
         until = utc_time(host.get("skip_until"))
@@ -288,16 +355,27 @@ def build_report(root: Path, state: dict, inventory: set[str], now: dt.datetime)
             "latest": asdict(events[0]) if events else None,
             "lastAction": asdict(last_action) if last_action else None,
             "recentFailure": bool(failure), "failureStreak": streak,
-            "resets30": sum(time >= cutoff for time in resets),
+            "resets30": recent_counts["ilo"], "remediations30": recent_counts["remediation"],
+            "lastReset": asdict(last_recovery["ilo"]) if "ilo" in last_recovery else None,
+            "lastRemediation": asdict(last_recovery["remediation"]) if "remediation" in last_recovery else None,
             "events": [asdict(event) for event in events if event.time >= cutoff],
         })
     return {
         "generated": utc_time(now.isoformat()),
         "hosts": rows,
-        "stats": {"backoff": sum(bool(row["backoff"]) for row in rows), "resets24": resets_24h, "resets7": resets_7d,
+        "stats": {"backoff": sum(bool(row["backoff"]) for row in rows),
+                  "resets24": counts[24]["ilo"], "resets7": counts[168]["ilo"],
+                  "remediations24": counts[24]["remediation"], "remediations7": counts[168]["remediation"],
                   "recentFailures": sum(row["recentFailure"] for row in rows)},
         "latestScan": asdict(latest_scan) if latest_scan else None,
-        "trend": [{"date": day, "total": trend[day].total(), "hosts": trend[day]} for day in days],
+        "trend": [
+            {"date": day, "total": trend[day].total(), "actions": [
+                {"host": fqdn, "label": label, "action": action, "check": check,
+                 "trigger": trigger, "category": category, "count": count}
+                for (fqdn, label, action, check, trigger, category), count in sorted(trend[day].items())
+            ]}
+            for day in days
+        ],
         "distribution": sorted(distribution.items()),
         "daily": daily[::-1],
     }

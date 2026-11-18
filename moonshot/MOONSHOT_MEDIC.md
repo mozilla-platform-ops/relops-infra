@@ -359,8 +359,12 @@ moonshot_debugging_results/
 
 Generate the experimental browser report with `uv run moonshot_medic_overview2.py`.
 Open `moonshot_debugging_results/OVERVIEW2.html` to search hosts, expand a
-30-day activity timeline, or select a day in the reset chart. The generator
-reads the saved Medic state and scan records and writes a fresh snapshot.
+30-day activity timeline, or select a day in the reset and remediation chart.
+The report shows iLO resets and Check 2 SSH reboots and GDM restarts
+separately. It shows the source check when saved records identify it.
+Counts include failed and unverified attempts. Deferrals appear in the
+timeline. The generator reads saved Medic state and scan records and writes
+a fresh snapshot.
 
 ## Dependencies
 
