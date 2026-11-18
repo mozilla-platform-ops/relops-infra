@@ -30,6 +30,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from moonshot_gdm_probe import SIGNATURE_KEYS
+
 FLEETROLL_DIR = Path.home() / "git/fleetroll_mvp"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 RESET_DIR = SCRIPT_DIR
@@ -40,6 +42,7 @@ CLOCK_SKEW_SECONDS = 5 * 60
 RECENCY_MINUTES = 60
 AUTO_BATCH_SIZE = 10
 SSH_REBOOT_WAIT_SECONDS = 180
+GDM_VERIFY_WAIT_SECONDS = 60
 SCRIPT_VOICE_NAME = "Moonshot Medic"
 MEDIC_LOGO = (
     " ▄▀▄▀▄ ▄▀▄ ▄▀▄ ▄▀█ █▀ █░░ ▄▀▄ ▄█▄    ▄▀▄▀▄ ██▀ ▄▄█ ▀ ▄▀▀",
@@ -60,6 +63,7 @@ MOONSHOT_OBSERVED_FILTER = "host~t-linux64-ms os=L sort:host:asc"
 RECOVERY_FILTER_FILE = "configs/filters/moonshots-hung.yaml"
 UNHEALTHY_MOONSHOTS_FILTER = "host~t-linux64-ms healthy=n note= sort:host:asc"
 INACTIVE_MOONSHOTS_FILTER = "host~t-linux64-ms tc_act>4h note= sort:host:asc"
+STOPPED_WORKERS_FILTER = "host~t-linux64-ms gwhc_worker=stopped note= sort:host:asc"
 WORKER_EVIDENCE_SCHEMA_VERSION = 3
 HUNG_SECONDS = 4 * 60 * 60
 DEFAULT_MAX_IDENTITY_AGE_HOURS = 7 * 24
@@ -1356,7 +1360,9 @@ def historical_identity_problem(record: dict, *, now: datetime.datetime,
 def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
                                lookup_started: datetime.datetime, freshness_seconds: int,
                                max_identity_age_hours: int,
-                               allow_recent_identity: bool = False) -> str | None:
+                               allow_recent_identity: bool = False,
+                               allow_missing_worker: bool = False,
+                               activity_since: datetime.datetime | None = None) -> str | None:
     """Require a fresh successful lookup pinned to this exact historical baseline."""
     problem = historical_identity_problem(
         record, now=now, max_identity_age_hours=max_identity_age_hours,
@@ -1368,6 +1374,31 @@ def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
             and (now - _evidence_timestamp(baseline["observation_ts"])).total_seconds() <= HUNG_SECONDS):
         return "host identity was successfully observed within the last four hours"
     tc = record.get("taskcluster")
+    if (allow_missing_worker and activity_since is None and isinstance(tc, dict)
+            and tc.get("latest_lookup_status") == "worker_missing"):
+        attempt = tc.get("latest_lookup")
+        identity = {key: baseline[key] for key in WORKER_IDENTITY_FIELDS}
+        if (not isinstance(attempt, dict) or attempt.get("status") != "worker_missing"
+                or attempt.get("resolution_source") != "historical_worker_identity"
+                or attempt.get("identity") != identity or attempt.get("historical_identity_match") != "match"
+                or attempt.get("historical_baseline") != baseline["provenance"]
+                or attempt.get("historical_baseline_match") != "match"
+                or attempt.get("successful_observation_ts") is not None):
+            return "missing-worker lookup does not match the historical identity"
+        try:
+            started = _evidence_timestamp(attempt.get("started_ts"))
+            completed = _evidence_timestamp(attempt.get("ts"))
+            if (not lookup_started.replace(microsecond=0) <= started <= completed <= now
+                    or (now - started).total_seconds() >= min(freshness_seconds, 3600)):
+                return "missing-worker lookup is stale or does not belong to this check"
+        except (ValueError, TypeError, OverflowError):
+            return "invalid missing-worker lookup timestamp"
+        retained = tc.get("record")
+        if isinstance(retained, dict) and (retained.get("task_id") or retained.get("task_state")) and (
+            retained.get("task_state") not in ("completed", "failed", "exception")
+        ):
+            return "retained Taskcluster task was not known to be finished"
+        return None
     if not isinstance(tc, dict) or tc.get("record_status") != "stored_success":
         return "no successful Taskcluster observation"
     attempt = tc.get("latest_lookup")
@@ -1394,6 +1425,10 @@ def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
         if (now - started).total_seconds() >= min(freshness_seconds, 3600):
             return "Taskcluster lookup is stale"
         active = _evidence_timestamp(tc.get("last_date_active"))
+        if activity_since is not None:
+            if not activity_since <= active <= completed:
+                return "no fresh Taskcluster activity after the GDM restart"
+            return None if isinstance(tc.get("record"), dict) else "missing Taskcluster worker record"
         # Measure inactivity at query time, not after an unusually slow query.
         if not (started - active).total_seconds() > HUNG_SECONDS:
             return "worker is active or activity timestamp is future-dated"
@@ -1410,6 +1445,9 @@ def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
 def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
                         max_identity_age_hours: int,
                         allow_recent_identity: bool = False,
+                        allow_missing_worker: bool = False,
+                        activity_since: datetime.datetime | None = None,
+                        lookup_timeout: int = 300,
                         decisions: dict | None = None) -> list[str]:
     """Refresh exact identities; only validated per-host evidence authorizes actions."""
     if not hosts:
@@ -1440,7 +1478,7 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
             host_file.flush()
             started = datetime.datetime.now(datetime.timezone.utc)
             try:
-                _fleetroll_command("gather", "tc", host_file.name, "--use-historical-identity", timeout=300)
+                _fleetroll_command("gather", "tc", host_file.name, "--use-historical-identity", timeout=lookup_timeout)
             except subprocess.CalledProcessError as exc:
                 if exc.returncode != 2:
                     raise
@@ -1459,20 +1497,27 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
                 freshness_seconds=freshness_seconds,
                 max_identity_age_hours=max_identity_age_hours,
                 allow_recent_identity=allow_recent_identity,
+                allow_missing_worker=allow_missing_worker, activity_since=activity_since,
             )
-            if allow_recent_identity and not problem:
+            tc = after.get(host, {}).get("taskcluster", {})
+            if not isinstance(tc, dict):
+                tc = {}
+            missing = tc.get("latest_lookup_status") == "worker_missing"
+            if allow_recent_identity and not problem and not missing and activity_since is None:
                 task = after[host]["taskcluster"]["record"]
                 if task.get("task_id") and task.get("task_state") not in ("completed", "failed", "exception"):
                     problem = "latest Taskcluster task state is unknown"
             if decisions is not None:
-                tc = after.get(host, {}).get("taskcluster", {})
-                if not isinstance(tc, dict):
-                    tc = {}
+                evidence = {key: tc.get(key) for key in (
+                    "identity", "observation_ts", "last_date_active", "latest_lookup_status",
+                )}
+                if missing and not problem:
+                    evidence["identity"] = tc["latest_lookup"]["identity"]
+                reason = ("fresh exact-identity lookup confirms worker missing" if missing else
+                          "fresh exact-identity lookup confirms post-restart activity" if activity_since else
+                          "fresh exact-identity lookup confirms old Taskcluster activity")
                 decisions[host] = {
-                    "reason": problem or "fresh exact-identity lookup confirms old Taskcluster activity",
-                    "taskcluster": {key: tc.get(key) for key in (
-                        "identity", "observation_ts", "last_date_active", "latest_lookup_status",
-                    )},
+                    "reason": problem or reason, "taskcluster": evidence,
                 }
             if problem:
                 warn(f"Skipping {short_label(host)}: {problem}")
@@ -1704,17 +1749,54 @@ def worker_audit_problem(host: str, record: object, *, now: datetime.datetime,
     return None
 
 
+def run_gdm_probe(host: str, mode: str, grace_seconds: int, signature: dict | None = None):
+    if canonical_moonshot_fqdn(host) != host:
+        raise ValueError("invalid Moonshot target")
+    program = (SCRIPT_DIR / "moonshot_gdm_probe.py").read_text()
+    remote = shlex.join(["sudo", "-n", "python3", "-c", program, mode, str(grace_seconds),
+                         json.dumps(signature or {}, separators=(",", ":"))])
+    return subprocess.run(
+        ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", host, remote],
+        capture_output=True, text=True, check=False, timeout=45,
+    )
+
+
+def gdm_probe_evidence(host: str, mode: str, grace_seconds: int, signature: dict | None = None) -> dict:
+    try:
+        result = run_gdm_probe(host, mode, grace_seconds, signature)
+        if result.returncode != 0 or len(result.stdout) > 16384:
+            return {}
+        evidence = json.loads(result.stdout)
+        if (not isinstance(evidence, dict) or not re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(evidence.get("boot_id", ""))
+        ) or not re.fullmatch(r"[0-9a-f]{32}", str(evidence.get("gdm_invocation", "")))):
+            return {}
+        if mode == "detect" and not all(type(evidence.get(key)) is int and evidence[key] > 0
+                                        for key in ("pid", "start_ticks")):
+            return {}
+        if mode == "verify" and (type(evidence.get("worker_ready_us")) is not int or evidence["worker_ready_us"] <= 0):
+            return {}
+        return evidence
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
+
+
 def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours: int,
                                limit: int, startup_grace_seconds: int,
                                candidate_filter: str = INACTIVE_MOONSHOTS_FILTER) -> dict:
     """A separate, diagnosis-only path. No clock repair, reset, or recovery state writes."""
     _tui_phase("Selecting workers for diagnosis")
-    raw = json.loads(_fleetroll_command(
-        "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--json",
-        "--filter", candidate_filter,
-    ))
-    if not isinstance(raw, dict):
-        raise TypeError("Fleetroll snapshot is not a host-keyed object")
+    raw = {}
+    primary_candidates = set()
+    for query in (candidate_filter, STOPPED_WORKERS_FILTER):
+        snapshot = json.loads(_fleetroll_command(
+            "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--json", "--filter", query,
+        ))
+        if not isinstance(snapshot, dict):
+            raise TypeError("Fleetroll snapshot is not a host-keyed object")
+        raw.update(snapshot)
+        if query == candidate_filter:
+            primary_candidates.update(snapshot)
     inventory = _configured_linux_moonshot_hosts()
     if not inventory or any(canonical_moonshot_fqdn(h) != h or h not in inventory for h in raw):
         raise ValueError("diagnosis candidates cannot be validated against inventory")
@@ -1738,7 +1820,8 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
         _tui_phase("Checking Taskcluster before worker diagnosis", f"{len(candidates)} candidate hosts")
     eligible = set(eligible_auto_hosts(
         candidates, freshness_seconds=freshness_seconds,
-        max_identity_age_hours=max_identity_age_hours, allow_recent_identity=True, decisions=decisions,
+        max_identity_age_hours=max_identity_age_hours, allow_recent_identity=True,
+        allow_missing_worker=True, decisions=decisions,
     ))
     for host in candidates:
         if host not in eligible:
@@ -1747,7 +1830,13 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
             continue
         _tui_phase("Diagnosing worker", short_label(host))
         diagnosis = diagnose_worker(host, startup_grace_seconds=startup_grace_seconds)
+        if diagnosis["worker_state"] in ("absent", "not_zombie"):
+            gdm = gdm_probe_evidence(host, "detect", startup_grace_seconds)
+            if gdm:
+                diagnosis = {**diagnosis, "worker_state": "gdm_autologin_stall",
+                             "reason": "cltbld GDM autologin is stuck before desktop startup", "gdm": gdm}
         results.append({"host": host, "selection": "diagnosed",
+                        "candidate_filter": candidate_filter if host in primary_candidates else STOPPED_WORKERS_FILTER,
                         "host_audit_ts": raw[host]["ts"],
                         **decisions.get(host, {}), "diagnosis": diagnosis})
     return {"schema_version": 1, "mode": "diagnosis_only",
@@ -1776,9 +1865,12 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
 
     diagnosed = sum(entry["selection"] == "diagnosed" for entry in results)
     zombies = sum(entry.get("diagnosis", {}).get("worker_state") == "zombie" for entry in results)
+    gdm_stalls = sum(entry.get("diagnosis", {}).get("worker_state") == "gdm_autologin_stall" for entry in results)
     zombie_label = "zombie" if zombies == 1 else "zombies"
     title = (f"Worker diagnosis: {diagnosed} diagnosed, {zombies} confirmed {zombie_label}, "
              f"{len(results) - diagnosed} deferred")
+    if gdm_stalls:
+        title += f", {gdm_stalls} GDM autologin {'stall' if gdm_stalls == 1 else 'stalls'}"
     rows = []
     for entry in sorted(results, key=lambda entry: entry["host"]):
         diagnosis = entry.get("diagnosis")
@@ -1795,7 +1887,13 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
     for row in rows:
         _emit(f"  {row}")
     info(f"Worker diagnosis report: {report_path}")
-    candidates = [entry for entry in results if entry.get("diagnosis", {}).get("worker_state") == "zombie"]
+    candidates = [
+        entry for entry in results
+        if entry.get("diagnosis", {}).get("worker_state") == "gdm_autologin_stall"
+        or (entry.get("diagnosis", {}).get("worker_state") == "zombie"
+            and entry.get("candidate_filter") != STOPPED_WORKERS_FILTER
+            and entry.get("taskcluster", {}).get("latest_lookup_status") != "worker_missing")
+    ]
     if not candidates or args.no_reset or _interrupt_count:
         return True
     hosts = [entry["host"] for entry in candidates]
@@ -1806,8 +1904,14 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         warn(f"Check 2 recovery skipped: {summary}")
         return False
     if not args.confirm:
-        info("Check 2 recovery preview: collect diagnostics, then reboot over SSH if idle")
-        show_host_labels(hosts)
+        for worker_state, action in (
+            ("zombie", "collect diagnostics, then reboot over SSH if idle"),
+            ("gdm_autologin_stall", "restart GDM and verify worker registration"),
+        ):
+            matching = [entry["host"] for entry in candidates if entry["diagnosis"]["worker_state"] == worker_state]
+            if matching:
+                info(f"Check 2 recovery preview: {action}")
+                show_host_labels(matching)
         return True
 
     report["mode"] = "check_2_recovery"
@@ -1817,13 +1921,19 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
             break
         host = entry["host"]
         try:
-            recovery = recover_reachable_zombie(host, args, freshness_seconds, state, run_dir)
+            if entry["diagnosis"]["worker_state"] == "gdm_autologin_stall":
+                recovery = recover_gdm_autologin(entry, args, freshness_seconds, state, report_path)
+            else:
+                recovery = recover_reachable_zombie(host, args, freshness_seconds, state, run_dir)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             warn(f"Check 2 recovery error for {short_label(host)}: {type(exc).__name__}")
             recovery = {"outcome": "failed", "reason": "could not complete recovery workflow"}
         entry["recovery"] = recovery
         report_path.write_text(json.dumps(report, indent=2) + "\n")
-        info(f"Check 2 recovery {short_label(host)}: {recovery['outcome']} — {recovery['reason']}")
+        result = f"{short_label(host)}: {recovery['outcome']} — {recovery['reason']}"
+        info(f"Check 2 recovery {result}")
+        rows.append(f"Recovery {result}")
+        _tui_result("diagnosis", title, *rows)
     return all(entry.get("recovery", {}).get("outcome") not in ("failed", "unverified") for entry in candidates)
 
 
@@ -1964,6 +2074,89 @@ def recover_reachable_zombie(host: str, args: argparse.Namespace, freshness_seco
     return recovery
 
 
+def recover_gdm_autologin(entry: dict, args: argparse.Namespace, freshness_seconds: int,
+                          state: dict, report_path: Path) -> dict:
+    host = entry["host"]
+    label = short_label(host)
+    grace_seconds = args.startup_grace_minutes * 60
+    before = entry["diagnosis"]["gdm"]
+    signature = {key: before[key] for key in SIGNATURE_KEYS}
+    host_state = _host_entry(state, host)
+    if (host_state.get("gdm_restart_boot_id") == signature["boot_id"]
+            or recently_processed(label) or is_skipped(state, host) or _interrupt_count):
+        return {"outcome": "deferred", "reason": "already attempted this boot, recent processing, backoff, or interrupt"}
+
+    if not check_fleetroll_data_freshness(freshness_seconds, args.freshness_min_pct):
+        return {"outcome": "deferred", "reason": "Fleetroll freshness check failed before GDM restart"}
+    # Either Check 2 health selection or the recorded stopped-worker selection.
+    # Both filters also recheck that the host has no operator note.
+    query = entry["candidate_filter"]
+    snapshot = fleetroll_worker_snapshot(host, filter_query=query)
+    problem = worker_audit_problem(host, snapshot.get(host), now=datetime.datetime.now(datetime.UTC),
+                                   freshness_seconds=freshness_seconds)
+    if problem:
+        return {"outcome": "deferred", "reason": problem}
+    decisions: dict = {}
+    eligible = eligible_auto_hosts(
+        [host], freshness_seconds=freshness_seconds, max_identity_age_hours=args.max_identity_age_hours,
+        allow_recent_identity=True, allow_missing_worker=True, decisions=decisions,
+    )
+    if not eligible or _interrupt_count:
+        return {"outcome": "deferred", "reason": "interrupted or Taskcluster inactivity could not be verified",
+                "decision": decisions.get(host)}
+    expected_identity = decisions[host]["taskcluster"]["identity"]
+    original_identity = entry.get("taskcluster", {}).get("identity")
+    if not expected_identity or expected_identity != original_identity:
+        return {"outcome": "deferred", "reason": "Taskcluster identity changed after diagnosis"}
+
+    _tui_phase("Restarting GDM and verifying worker readiness", label)
+    # Persist the attempt before SSH. A timeout may mean the request already ran.
+    host_state["gdm_restart_boot_id"] = signature["boot_id"]
+    save_state(state)
+    if _interrupt_count:
+        return {"outcome": "deferred", "reason": "interrupted before requesting the GDM restart"}
+    requested_at = datetime.datetime.now(datetime.UTC)
+    evidence = {"taskcluster_before": decisions[host]["taskcluster"]}
+    try:
+        result = run_gdm_probe(host, "restart", grace_seconds, signature)
+        request = {0: "requested", 3: "refused", 255: "unknown"}.get(result.returncode, "failed")
+    except subprocess.TimeoutExpired:
+        request = "unknown"
+    except OSError:
+        request = "failed"
+    evidence["restart_request"] = request
+    if request == "refused":
+        recovery = {"outcome": "deferred", "reason": "the remote GDM stall or safety checks changed"}
+    elif request == "failed":
+        recovery = {"outcome": "failed", "reason": "GDM restart command failed"}
+    else:
+        recovery = {"outcome": "unverified", "reason": "worker readiness after the GDM restart could not be verified"}
+        deadline = time.monotonic() + GDM_VERIFY_WAIT_SECONDS
+        while not _interrupt_count and time.monotonic() < deadline:
+            ready = gdm_probe_evidence(host, "verify", grace_seconds, signature)
+            if (ready and ready["boot_id"] == signature["boot_id"]
+                    and ready["gdm_invocation"] != signature["gdm_invocation"]):
+                evidence["worker_ready"] = ready
+                post: dict = {}
+                _tui_phase("Verifying Taskcluster contact after GDM restart", label)
+                contacted = eligible_auto_hosts(
+                    [host], freshness_seconds=freshness_seconds, max_identity_age_hours=args.max_identity_age_hours,
+                    allow_recent_identity=True, activity_since=requested_at, decisions=post,
+                    lookup_timeout=max(1, int(deadline - time.monotonic())),
+                )
+                post_tc = post.get(host, {}).get("taskcluster", {})
+                evidence["taskcluster_after"] = post_tc
+                if contacted and post_tc.get("identity") == expected_identity:
+                    recovery = {"outcome": "recovered", "reason": "workerReady and fresh contact for the expected Taskcluster identity"}
+                    break
+                recovery["reason"] = "workerReady observed but fresh Taskcluster contact was not verified"
+            time.sleep(min(5, max(0, deadline - time.monotonic())))
+    record_action(state, host, "gdm_restart", recovery["outcome"] == "recovered",
+                  outcome=recovery["outcome"], request=request, report=str(report_path))
+    save_state(state)
+    return {**evidence, **recovery}
+
+
 # --- main ---
 
 def parse_args() -> argparse.Namespace:
@@ -1984,7 +2177,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--startup-grace-minutes", type=int, default=15,
                         help="Minimum uptime for Check 2 recovery and for classifying an absent worker (default: 15).")
     parser.add_argument("-n", "--no-reset", action="store_true",
-                        help="Skip iLO reset and SSH reboot.")
+                        help="Skip iLO reset, SSH reboot, and GDM restart.")
     parser.add_argument("--freshness-requirement", type=int, default=None, metavar="MINUTES",
                         help="Max acceptable age of fleetroll data in minutes (default: same as --loop-interval). "
                              "Set a large value to effectively disable the check.")

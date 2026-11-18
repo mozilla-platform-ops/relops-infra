@@ -92,6 +92,33 @@ def test_active_task_blocks_reset_even_with_old_last_active(evidence, state):
     assert "active Taskcluster task" in problem(evidence)
 
 
+def test_gdm_path_accepts_only_a_fresh_exact_missing_worker_lookup(evidence):
+    tc = evidence["taskcluster"]
+    tc["latest_lookup_status"] = "worker_missing"
+    attempt = tc["latest_lookup"]
+    attempt.update(status="worker_missing", successful_observation_ts=None)
+    options = {"allow_recent_identity": True, "allow_missing_worker": True}
+    assert problem(evidence, allow_recent_identity=True)
+    assert problem(evidence, **options) is None
+    tc["record"]["task_state"] = "running"
+    assert "not known to be finished" in problem(evidence, **options)
+    tc["record"]["task_state"] = "completed"
+    attempt["started_ts"] = (STARTED - datetime.timedelta(minutes=1)).isoformat()
+    assert "stale" in problem(evidence, **options)
+    attempt["started_ts"] = STARTED.isoformat()
+    attempt["identity"]["worker_type"] = "wrong-pool"
+    assert "does not match" in problem(evidence, **options)
+
+
+def test_gdm_verification_requires_new_activity_on_the_pinned_identity(evidence):
+    options = {"allow_recent_identity": True, "activity_since": NOW - datetime.timedelta(seconds=30)}
+    assert "no fresh Taskcluster activity" in problem(evidence, **options)
+    evidence["taskcluster"]["last_date_active"] = stamp(seconds=5)
+    assert problem(evidence, **options) is None
+    evidence["taskcluster"]["identity"]["worker_type"] = "wrong-pool"
+    assert "different identity" in problem(evidence, **options)
+
+
 @pytest.mark.parametrize("status", ["identity_unresolved", "pool_query_failed", "worker_missing",
                                    "worker_ambiguous", "task_lookup_failed", "unknown"])
 def test_failed_lookup_cannot_reuse_retained_success(evidence, status):
@@ -445,9 +472,10 @@ def test_auto_main_gates_actions_with_override_evidence(
         "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--hostname-only",
         "--filter", "host~t-linux64-ms healthy=n note= sort:host:asc",
     )
-    assert [cmd[:2] for cmd in fleetroll[:-1]] == expected
-    assert fleetroll[-1][:2] == ("host", "monitor")
-    assert fleetroll[-1][-2:] == ("--filter", "host~t-linux64-ms healthy=n note= sort:host:asc")
+    assert [cmd[:2] for cmd in fleetroll[:-2]] == expected
+    assert [cmd[-2:] for cmd in fleetroll[-2:]] == [
+        ("--filter", mm.UNHEALTHY_MOONSHOTS_FILTER), ("--filter", mm.STOPPED_WORKERS_FILTER),
+    ]
 
 
 def test_clock_repair_delay_cannot_authorize_an_active_worker(evidence, fleetroll, monkeypatch):

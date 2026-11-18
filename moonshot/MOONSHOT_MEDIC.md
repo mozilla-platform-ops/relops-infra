@@ -194,21 +194,24 @@ no Fleetroll note and a recorded `HEALTHY=N` value. Check 2 uses
 `host~t-linux64-ms healthy=n note= sort:host:asc`
 and uses the same Fleetroll freshness gate as Check 1. When fleet host or
 Taskcluster observations fail that gate, Medic skips Check 2 for the cycle.
-In normal auto mode, the worker diagnosis scan uses this same filter. The
-standalone `--diagnose-workers` scan selects unnoted workers with `TC_ACT>4h`.
+In normal auto mode, worker diagnosis starts with that same filter. The
+standalone `--diagnose-workers` scan starts with unnoted workers with `TC_ACT>4h`.
+Both add unnoted hosts with `gwhc_worker=stopped`, so a Puppet-healthy host
+without a running worker can be checked for a GDM autologin stall.
 
 Diagnosis candidates have no Fleetroll note. Medic requires configured inventory
 membership, a successful host audit within the freshness requirement, a trusted
-worker identity, and a new
-exact-identity TC lookup confirming activity over four hours old. Running/pending
-tasks, unknown state for an identified task, identity contradictions, failed
+worker identity, and a new exact-identity TC lookup confirming activity over
+four hours old or an explicit worker-missing result. Only GDM recovery can
+use a worker-missing result. Running/pending tasks, unknown state for an
+identified task, identity contradictions, other lookup failures,
 lookups, recent processing, and failure backoff defer diagnosis. The normal
 four-hour minimum identity age is bypassed only in this diagnosis path; fleet
 freshness gates and the maximum identity age still apply.
 
 `--diagnosis-limit` bounds candidates submitted for fresh TC checks and live probes
-(default 10). This limit is separate from the reset circuit breaker because these
-candidates never enter recovery. Deferred hosts and their reasons appear in the
+(default 10). Confirmed recovery candidates also count toward the fleet
+circuit breaker. Deferred hosts and their reasons appear in the
 report; rerun after reviewing them or adjust the limit for an attended scan.
 
 Medic first runs `fleetroll host diagnose HOST --json`, with a 45-second timeout
@@ -250,6 +253,23 @@ and audit, and Taskcluster inactivity for the exact worker identity again. A
 final SSH-side check verifies the boot ID, process state, and hold before
 requesting a reboot. The fleet circuit breaker counts both paths in the same
 cycle. `--no-reset` keeps Check 2 read-only.
+
+#### Ubuntu 24.04 GDM autologin stall
+
+Medic checks for this stall when the worker is absent or Fleetroll reports no
+zombie. The SSH probe requires Ubuntu 24.04, completed same-boot Puppet,
+`cltbld` autologin, and a current GDM PAM login and session worker stalled
+for at least five minutes in `futex_wait_queue`. A running desktop, worker,
+other graphical session, or operator hold blocks detection. The diagnosis
+report saves the matching journal timestamp and bounded GDM process tree.
+
+In confirmed auto mode Medic rechecks selection, the host audit, and the exact
+Taskcluster identity. The remote command rechecks the same boot, GDM
+invocation, and stalled process immediately before restarting `gdm.service`.
+Medic attempts this at most once per boot. Recovery is verified when the
+same boot has a new GDM invocation, a live worker that logged `workerReady`,
+and fresh Taskcluster contact for the original identity. This path restarts
+only GDM.
 
 The one-shot command emits `medic_worker_diagnosis` JSON events. Diagnosis reports
 are saved under `moonshot_debugging_results/YYYYMMDD/*-worker-diagnosis.json`.
