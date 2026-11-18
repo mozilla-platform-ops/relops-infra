@@ -196,6 +196,8 @@ def fleetroll(monkeypatch, evidence):
             assert Path(args[2]).read_text().splitlines() == [HOST]
             return "gathered"
         assert args[:2] == ("host", "monitor")
+        if "--hostname-only" in args:
+            return "\n".join(mm.worker_fqdn(f"ms{n:03d}") for n in range(31, 43))
         assert "--json" in args
         if "--filter" in args:
             return "{}"  # No reachable workers qualify for the read-only diagnosis scan.
@@ -341,16 +343,19 @@ def test_snapshot_rejects_invalid_contract(monkeypatch, payload):
         mm.fleetroll_worker_snapshot("hosts.list")
 
 
-@pytest.mark.parametrize("preview,active,missing_identity", [
-    (True, True, False), (False, True, False), (False, False, False),
-    (False, False, True),
+@pytest.mark.parametrize("preview,active,missing_identity,no_reset", [
+    (True, True, False, False), (False, True, False, False),
+    (False, False, False, False), (False, False, True, False),
+    (True, False, False, False), (True, False, False, True),
 ])
 def test_auto_main_gates_actions_with_override_evidence(
-    monkeypatch, tmp_path, evidence, fleetroll, capsys, preview, active, missing_identity,
+    monkeypatch, tmp_path, evidence, fleetroll, capsys, preview, active, missing_identity, no_reset,
 ):
     args = ["moonshot_medic.py", "--auto", "--once", "--no-voice", "--max-fleet-reset-pct", "100"]
     if not preview:
         args.append("--confirm")
+    if no_reset:
+        args.append("--no-reset")
     monkeypatch.setattr(sys, "argv", args)
     monkeypatch.setattr(mm, "RESULTS_BASE", tmp_path)
     monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
@@ -383,6 +388,16 @@ def test_auto_main_gates_actions_with_override_evidence(
     eligible = not active and not missing_identity
     assert actions == ([HOST] if not preview and eligible else [])
     output = capsys.readouterr().out
+    assert "Check 2: 12 unnoted Moonshots with recorded HEALTHY=N" in output
+    assert all(f"ms{n:03d}" in output for n in range(31, 43))
+    if preview and eligible:
+        if no_reset:
+            assert "Action: Would check clocks, repair skew if needed, and collect diagnostics." in output
+            assert "reset via iLO" not in output
+        else:
+            assert "Action: Would repair clock skew or reset via iLO, then collect diagnostics." in output
+    else:
+        assert "Action:" not in output
     if not preview:
         if eligible:
             assert "Hosts to process: 1 host(s)" in output
@@ -401,7 +416,11 @@ def test_auto_main_gates_actions_with_override_evidence(
     expected += [("host", "monitor")] if missing_identity else check
     if not preview and eligible:
         expected += check * 2  # Per-batch and immediately before reset.
-    assert [cmd[:2] for cmd in fleetroll[:-1]] == expected
+    assert fleetroll[0] == (
+        "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--hostname-only",
+        "--filter", "host~t-linux64-ms healthy=n note= sort:host:asc",
+    )
+    assert [cmd[:2] for cmd in fleetroll[1:-1]] == expected
     assert fleetroll[-1][:2] == ("host", "monitor")
     assert fleetroll[-1][-2:] == ("--filter", "host~t-linux64-ms tc_act>4h note= sort:host:asc")
 

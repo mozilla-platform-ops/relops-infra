@@ -200,6 +200,8 @@ def selection(monkeypatch):
     def command(*args):
         commands.append(args)
         assert "note=" in args[-1] and "data>" not in args[-1]
+        if "--hostname-only" in args:
+            return ""
         return json.dumps(records)
     monkeypatch.setattr(mm, "_fleetroll_command", command)
     monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: {HOST, mm.worker_fqdn("ms026")})
@@ -275,8 +277,13 @@ def test_diagnosis_main_cannot_reach_host_actions(monkeypatch, tmp_path, selecti
 
 
 @pytest.mark.parametrize("confirm,exit_code", [([], 1), (["--confirm"], 0)])
+@pytest.mark.parametrize("state,zombies", [
+    ("absent", "0 confirmed zombies"),
+    ("live", "0 confirmed zombies"),
+    ("zombie", "1 confirmed zombie"),
+])
 def test_auto_prints_diagnoses_without_reset_candidates(
-    monkeypatch, tmp_path, capsys, selection, confirm, exit_code,
+    monkeypatch, tmp_path, capsys, selection, confirm, exit_code, state, zombies,
 ):
     results_base = tmp_path / "results"
     monkeypatch.setattr(sys, "argv", ["medic", "--auto", "--once", "--no-voice", *confirm])
@@ -288,6 +295,10 @@ def test_auto_prints_diagnoses_without_reset_candidates(
     monkeypatch.setattr(mm, "check_fleet_reset_circuit_breaker", lambda *a: (True, [], ""))
     eligible = mm.eligible_auto_hosts
     monkeypatch.setattr(mm, "eligible_auto_hosts", lambda hosts, **kw: eligible(hosts, **kw) if hosts else [])
+    diagnose = mm.diagnose_worker
+    monkeypatch.setattr(mm, "diagnose_worker", lambda *a, **kw: {
+        **diagnose(*a, **kw), "worker_state": state, "reason": "test diagnosis",
+    })
     monkeypatch.setattr(mm, "reset_batch", lambda *a, **kw: pytest.fail("diagnosis triggered reset"))
     records, calls = selection
     second = mm.worker_fqdn("ms026")
@@ -299,9 +310,10 @@ def test_auto_prints_diagnoses_without_reset_candidates(
     assert exc.value.code == exit_code
     assert calls == [HOST]
     output = capsys.readouterr().out
-    assert "1 diagnosed, 1 confirmed zombie, 1 deferred" in output
-    assert "ms025  zombie — confirmed zombie generic-worker" in output
+    assert f"1 diagnosed, {zombies}, 1 deferred" in output
+    assert f"ms025  {state} — test diagnosis" in output
     assert "ms026  deferred — latest host audit did not succeed" in output
+    assert "Action:" not in output
     assert "medic_worker_diagnosis" not in output
     report_path, = results_base.rglob("*-worker-diagnosis.json")
     assert str(report_path) in output

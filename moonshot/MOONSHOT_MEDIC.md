@@ -157,13 +157,21 @@ uv run moonshot_medic.py --auto --diagnose-workers --no-voice
 ```
 
 Normal `--auto` previews and confirmed loops show the diagnosed, confirmed zombie,
-and deferred counts, followed by each host's state and reason. Confirmed loops
-scan after recovery work, even when there are no reset candidates. When the scan
-finds candidates, Medic saves the full evidence in a worker diagnosis JSON report.
+and deferred counts, followed by each host's state and reason. The recovery
+preview shows an action only when it finds eligible recovery candidates.
+Confirmed loops scan after recovery work, even when there are no reset candidates.
+When the scan finds candidates, Medic saves the full evidence in a worker
+diagnosis JSON report.
 
 Use `--diagnose-workers` to run only the read-only scan and emit its JSON events.
 Do not combine this flag with `--confirm` or named hosts. Worker diagnosis has
 no effect on automatic recovery eligibility.
+
+Normal `--auto` also shows **Check 2**, a read-only list of every Moonshot with
+no Fleetroll note and a recorded `HEALTHY=N` value. Check 2 uses
+`host~t-linux64-ms healthy=n note= sort:host:asc`
+and runs even if the recovery freshness check fails. It displays recorded
+Fleetroll values and does not select hosts for diagnosis or recovery.
 
 Candidates have old TC activity and no Fleetroll note, without requiring old
 observation data. Medic requires configured inventory membership, a successful

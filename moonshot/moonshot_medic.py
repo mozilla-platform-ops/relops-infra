@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -1191,6 +1192,25 @@ def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False) -> 
     return report
 
 
+def show_unnoted_unhealthy_moonshots() -> None:
+    try:
+        output = _fleetroll_command(
+            "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--hostname-only",
+            "--filter", "host~t-linux64-ms healthy=n note= sort:host:asc",
+        )
+        hosts = output.split()
+        if any(canonical_moonshot_fqdn(host) != host for host in hosts):
+            raise ValueError("Fleetroll returned an invalid Moonshot hostname")
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        warn(f"Check 2 unavailable: {exc}")
+        return
+
+    info(f"Check 2: {len(hosts)} unnoted Moonshots with recorded HEALTHY=N")
+    if hosts:
+        _emit(textwrap.fill(" ".join(short_label(host) for host in hosts), width=88,
+                            initial_indent="  ", subsequent_indent="  "))
+
+
 def historical_identity_problem(record: dict, *, now: datetime.datetime,
                                 max_identity_age_hours: int) -> str | None:
     """A failed latest SSH audit is allowed; a contradictory baseline is not."""
@@ -1628,9 +1648,9 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int) ->
          f"{len(results) - diagnosed} deferred")
     for entry in sorted(results, key=lambda entry: entry["host"]):
         diagnosis = entry.get("diagnosis")
-        state = diagnosis["worker_state"].replace("_", " ") if diagnosis else entry["selection"]
+        state = diagnosis["worker_state"] if diagnosis else entry["selection"]
         reason = diagnosis["reason"] if diagnosis else entry["reason"]
-        _emit(f"  {short_label(entry['host'])}  {state} — {reason}")
+        _emit(f"  {short_label(entry['host'])}  {state.replace('_', ' ')} — {reason}")
     info(f"Worker diagnosis report: {report_path}")
 
 
@@ -1810,6 +1830,7 @@ def main() -> None:
             sys.exit(1)
 
     if args.auto and not args.confirm:
+        show_unnoted_unhealthy_moonshots()
         info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
         if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
             err("Fleetroll host or Taskcluster data failed freshness validation. "
@@ -1840,13 +1861,17 @@ def main() -> None:
         if n:
             warn(f"Auto mode found {len(preview_hosts)} bad host(s); would process {n}:")
             warn(' '.join(preview_hosts[:n]))
+            if args.no_reset:
+                info("Action: Would check clocks, repair skew if needed, and collect diagnostics.")
+            else:
+                info("Action: Would repair clock skew or reset via iLO, then collect diagnostics.")
         else:
             warn("Auto mode found no bad hosts to process.")
         if not _interrupt_count:
             show_worker_diagnoses()
-        print()
-        warn("This is an automated script that will reboot hosts and collect diagnostics.")
-        warn("You must watch and monitor the run. Re-run with --confirm to proceed.")
+        if n:
+            print()
+            warn("You must watch and monitor the run. Re-run with --confirm to proceed.")
         sys.exit(1)
 
     # --- verify dependencies ---
@@ -1873,6 +1898,7 @@ def main() -> None:
         stale = False
         # --- freshness gate ---
         if args.auto:
+            show_unnoted_unhealthy_moonshots()
             info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
             if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
                 print()
