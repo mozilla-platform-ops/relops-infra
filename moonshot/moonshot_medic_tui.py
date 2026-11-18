@@ -61,7 +61,7 @@ def status_lines(status: dict, returncode: int | None, stopping: bool) -> tuple[
     if returncode is not None:
         phase = f"{phase} | Exit status {returncode}"
     elif stopping:
-        phase = f"Stop requested | {phase}"
+        phase = "Stopping after current work finishes"
     elif next_run_at is not None:
         remaining = max(0, math.ceil(next_run_at - time.time()))
         timer = f"Next run in {remaining // 60}:{remaining % 60:02d}"
@@ -154,7 +154,10 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
         screen.erase()
         height, width = screen.getmaxyx()
         header, results = status_lines(status, returncode, stop_requested.requested)
-        footer = "q: close" if returncode is not None else "q: stop"
+        if stop_requested.requested:
+            footer = "Ctrl-C: exit immediately"
+        else:
+            footer = "q: close" if returncode is not None else "q: stop"
         if height >= 12 and width >= 36:
             try:
                 main_height = (height - 1) * 3 // 5
@@ -193,6 +196,8 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
             if returncode is not None:
                 return returncode
             request_stop(process, stop_requested)
+        elif key == 3:  # Ctrl-C can also arrive as a character in raw terminals.
+            request_stop(process, stop_requested, escalate=True)
         elif key in (ord("r"), ord("R")) and can_rescan:
             process.send_signal(signal.SIGUSR1)
         elif key == ord("\t"):
@@ -215,13 +220,21 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
 class StopRequest:
     def __init__(self) -> None:
         self.requested = False
+        self.forced = False
 
 
-def request_stop(process: subprocess.Popen, stop_requested: StopRequest) -> None:
+def request_stop(process: subprocess.Popen, stop_requested: StopRequest, *, escalate: bool = False) -> None:
     if not stop_requested.requested:
         stop_requested.requested = True
         if process.poll() is None:
             process.send_signal(signal.SIGINT)
+    elif escalate and not stop_requested.forced and process.poll() is None:
+        stop_requested.forced = True
+        # Medic runs in its own process group so an immediate exit also ends its commands.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def run_dashboard(command: list[str]) -> int:
@@ -239,11 +252,17 @@ def run_dashboard(command: list[str]) -> int:
                 logs = MedicLogs(process.stdout.fileno())
                 stop_requested = StopRequest()
                 signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+                def handle_signal(sig, _frame):
+                    request_stop(process, stop_requested, escalate=sig == signal.SIGINT)
+
                 previous = {
-                    sig: signal.signal(sig, lambda *_: request_stop(process, stop_requested)) for sig in signals
+                    sig: signal.signal(sig, handle_signal) for sig in signals
                 }
                 try:
                     returncode = display(screen, process, status_file, logs, stop_requested)
+                    if stop_requested.forced:
+                        return 128 + signal.SIGINT
                     return returncode if returncode >= 0 else 128 - returncode
                 finally:
                     request_stop(process, stop_requested)

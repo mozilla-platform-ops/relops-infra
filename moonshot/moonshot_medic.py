@@ -86,7 +86,7 @@ def _sigint_handler(sig, frame):
     global _interrupt_count
     _interrupt_count += 1
     if _interrupt_count == 1:
-        print("\n[Ctrl-C] Will stop after current batch finishes. Press again to exit immediately.",
+        print("\n[Ctrl-C] Will exit when current work finishes. Press Ctrl-C again to exit immediately.",
               file=sys.stderr)
     else:
         print("\n[Ctrl-C] Exiting immediately.", file=sys.stderr)

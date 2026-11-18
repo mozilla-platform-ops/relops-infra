@@ -168,8 +168,9 @@ The bottom pane streams Medic's logs, including warnings from cycles that found
 no recovery candidates.
 
 Press `Tab` to switch panes, use arrows or Page Up and Page Down to scroll,
-and press `End` to resume following the log. `q` or `Ctrl-C` requests the
-usual graceful stop. The bottom key line shows `r` for recheck during recurring
+and press `End` to resume following the log. `q` or the first `Ctrl-C` asks
+Medic to exit when its current work finishes. Press `Ctrl-C` again to exit
+immediately. The bottom key line shows `r` for recheck during recurring
 runs. Press it during the countdown to start the next scan early.
 A completed preview or one-shot run stays visible until
 you press `q`. Recovery still requires `--confirm`.

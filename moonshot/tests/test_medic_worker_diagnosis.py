@@ -316,7 +316,7 @@ def test_tui_header_animates_while_active_and_counts_down_while_waiting(monkeypa
     assert tui.status_lines(idle, None, False)[0] == ["Waiting for next scan", "Next run in 1:01"]
     monkeypatch.setattr(tui.time, "time", lambda: 161.0)
     assert tui.status_lines(idle, None, False)[0] == ["Waiting for next scan", "Next run in 0:00"]
-    assert tui.status_lines(idle, None, True)[0] == ["Stop requested | Waiting for next scan"]
+    assert tui.status_lines(idle, None, True)[0] == ["Stopping after current work finishes"]
     assert tui.status_lines(idle, 0, False)[0] == ["Waiting for next scan | Exit status 0"]
 
 
@@ -358,6 +358,32 @@ def test_tui_rescan_key_only_signals_during_countdown(monkeypatch, tmp_path, wai
         assert not any(line.startswith("Next run in") for line in rendered)
         assert footer.startswith("r: recheck when idle | ")
         process.send_signal.assert_not_called()
+
+
+def test_tui_second_ctrl_c_forces_exit_after_showing_shutdown_instructions(monkeypatch, tmp_path):
+    import moonshot_medic_tui as tui
+
+    screen = Mock()
+    screen.getmaxyx.return_value = (10, 84)
+    screen.getch.side_effect = [3, ord("q"), 3]
+    process = Mock(pid=123)
+    process.poll.return_value = None
+    stop = tui.StopRequest()
+    monkeypatch.setattr(tui, "logo_attribute", lambda: 0)
+    monkeypatch.setattr(tui.curses, "curs_set", lambda *_: None)
+
+    def kill_process_group(pid, sig):
+        assert (pid, sig) == (process.pid, signal.SIGKILL)
+        process.send_signal.assert_called_once_with(signal.SIGINT)
+        assert screen.getch.call_count == 3
+        process.poll.return_value = -sig
+
+    monkeypatch.setattr(tui.os, "killpg", kill_process_group)
+    assert tui.display(screen, process, tmp_path / "status.json", Mock(), stop) == -signal.SIGKILL
+    assert stop.forced
+    rendered = [call.args[2] for call in screen.addnstr.call_args_list]
+    assert "Stopping after current work finishes" in rendered
+    assert any(line.startswith("Ctrl-C: exit immediately") for line in rendered)
 
 
 def test_rescan_shortens_only_the_current_wait(monkeypatch):
