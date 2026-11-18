@@ -357,6 +357,11 @@ moonshot_debugging_results/
     ...
 ```
 
+Generate the experimental browser report with `uv run moonshot_medic_overview2.py`.
+Open `moonshot_debugging_results/OVERVIEW2.html` to search hosts, expand a
+30-day activity timeline, or select a day in the reset chart. The generator
+reads the saved Medic state and scan records and writes a fresh snapshot.
+
 ## Dependencies
 
 Medic calls into two sibling repositories that must be checked out locally:
