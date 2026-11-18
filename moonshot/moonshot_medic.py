@@ -31,6 +31,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from moonshot_gdm_probe import SIGNATURE_KEYS
+from moonshot_oom_probe import SIGNATURE_KEYS as OOM_SIGNATURE_KEYS
 
 FLEETROLL_DIR = Path.home() / "git/fleetroll_mvp"
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -1451,7 +1452,7 @@ def automatic_recovery_problem(record: dict, *, now: datetime.datetime,
         active = _evidence_timestamp(tc.get("last_date_active"))
         if activity_since is not None:
             if not activity_since <= active <= completed:
-                return "no fresh Taskcluster activity after the GDM restart"
+                return "no fresh Taskcluster activity after recovery"
             return None if isinstance(tc.get("record"), dict) else "missing Taskcluster worker record"
         # Measure inactivity at query time, not after an unusually slow query.
         if not (started - active).total_seconds() > HUNG_SECONDS:
@@ -1773,16 +1774,43 @@ def worker_audit_problem(host: str, record: object, *, now: datetime.datetime,
     return None
 
 
-def run_gdm_probe(host: str, mode: str, grace_seconds: int, signature: dict | None = None):
+def run_worker_recovery_probe(host: str, program: str, mode: str, grace_seconds: int,
+                              signature: dict | None):
     if canonical_moonshot_fqdn(host) != host:
         raise ValueError("invalid Moonshot target")
-    program = (SCRIPT_DIR / "moonshot_gdm_probe.py").read_text()
     remote = shlex.join(["sudo", "-n", "python3", "-c", program, mode, str(grace_seconds),
                          json.dumps(signature or {}, separators=(",", ":"))])
     return subprocess.run(
         ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", host, remote],
         capture_output=True, text=True, check=False, timeout=45,
     )
+
+
+def run_gdm_probe(host: str, mode: str, grace_seconds: int, signature: dict | None = None):
+    program = (SCRIPT_DIR / "moonshot_gdm_probe.py").read_text()
+    return run_worker_recovery_probe(host, program, mode, grace_seconds, signature)
+
+
+def run_oom_probe(host: str, mode: str, grace_seconds: int, signature: dict | None = None):
+    program = (WORKER_PROCESS_INSPECTION + "\n" + (SCRIPT_DIR / "moonshot_oom_probe.py").read_text()
+               + "\nif __name__ == '__main__':\n    sys.exit(main(collect))\n")
+    return run_worker_recovery_probe(host, program, mode, grace_seconds, signature)
+
+
+def oom_probe_evidence(host: str, mode: str, grace_seconds: int, signature: dict | None = None) -> dict:
+    try:
+        result = run_oom_probe(host, mode, grace_seconds, signature)
+        if result.returncode != 0 or len(result.stdout) > 4096:
+            return {}
+        evidence = json.loads(result.stdout)
+        timestamps = ("worker_ready_us",) if mode == "verify" else OOM_SIGNATURE_KEYS[1:]
+        if (not isinstance(evidence, dict) or not re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(evidence.get("boot_id", ""))
+        ) or not all(type(evidence.get(key)) is int and evidence[key] > 0 for key in timestamps)):
+            return {}
+        return {key: evidence[key] for key in ("boot_id", *timestamps)}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {}
 
 
 def gdm_probe_evidence(host: str, mode: str, grace_seconds: int, signature: dict | None = None) -> dict:
@@ -1849,10 +1877,12 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
         _tui_phase("Diagnosing worker", short_label(host))
         diagnosis = diagnose_worker(host, startup_grace_seconds=startup_grace_seconds)
         if diagnosis["worker_state"] in ("absent", "not_zombie"):
-            gdm = gdm_probe_evidence(host, "detect", startup_grace_seconds)
-            if gdm:
+            if gdm := gdm_probe_evidence(host, "detect", startup_grace_seconds):
                 diagnosis = {**diagnosis, "worker_state": "gdm_autologin_stall",
                              "reason": "cltbld GDM autologin is stuck before desktop startup", "gdm": gdm}
+            elif oom := oom_probe_evidence(host, "detect", startup_grace_seconds):
+                diagnosis = {**diagnosis, "worker_state": "worker_oom",
+                             "reason": "host OOM killed the worker's terminal service", "oom": oom}
         results.append({"host": host, "selection": "diagnosed",
                         "candidate_filter": candidate_filter,
                         "host_audit_ts": raw[host]["ts"],
@@ -1884,11 +1914,14 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
     diagnosed = sum(entry["selection"] == "diagnosed" for entry in results)
     zombies = sum(entry.get("diagnosis", {}).get("worker_state") == "zombie" for entry in results)
     gdm_stalls = sum(entry.get("diagnosis", {}).get("worker_state") == "gdm_autologin_stall" for entry in results)
+    worker_ooms = sum(entry.get("diagnosis", {}).get("worker_state") == "worker_oom" for entry in results)
     zombie_label = "zombie" if zombies == 1 else "zombies"
     title = (f"Worker diagnosis: {diagnosed} diagnosed, {zombies} confirmed {zombie_label}, "
              f"{len(results) - diagnosed} deferred")
     if gdm_stalls:
         title += f", {gdm_stalls} GDM autologin {'stall' if gdm_stalls == 1 else 'stalls'}"
+    if worker_ooms:
+        title += f", {worker_ooms} worker OOM"
     rows = []
     for entry in sorted(results, key=lambda entry: entry["host"]):
         diagnosis = entry.get("diagnosis")
@@ -1908,7 +1941,7 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
     candidates = [
         entry for entry in results
         if entry.get("diagnosis", {}).get("worker_state") == "gdm_autologin_stall"
-        or (entry.get("diagnosis", {}).get("worker_state") == "zombie"
+        or (entry.get("diagnosis", {}).get("worker_state") in ("zombie", "worker_oom")
             and entry.get("taskcluster", {}).get("latest_lookup_status") != "worker_missing")
     ]
     if not candidates or args.no_reset or _interrupt_count:
@@ -1924,6 +1957,7 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         for worker_state, action in (
             ("zombie", "collect diagnostics, then reboot over SSH if idle"),
             ("gdm_autologin_stall", "restart GDM and verify worker registration"),
+            ("worker_oom", "collect diagnostics, then reboot over SSH and verify worker registration"),
         ):
             matching = [entry["host"] for entry in candidates if entry["diagnosis"]["worker_state"] == worker_state]
             if matching:
@@ -1940,6 +1974,8 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         try:
             if entry["diagnosis"]["worker_state"] == "gdm_autologin_stall":
                 recovery = recover_gdm_autologin(entry, args, freshness_seconds, state, report_path)
+            elif entry["diagnosis"]["worker_state"] == "worker_oom":
+                recovery = recover_worker_oom(entry, args, freshness_seconds, state, run_dir)
             else:
                 recovery = recover_reachable_zombie(host, args, freshness_seconds, state, run_dir)
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
@@ -2089,6 +2125,90 @@ def recover_reachable_zombie(host: str, args: argparse.Namespace, freshness_seco
                   request=request, outcome=recovery["outcome"], report=str(out_file))
     save_state(state)
     return recovery
+
+
+def recover_worker_oom(entry: dict, args: argparse.Namespace, freshness_seconds: int,
+                       state: dict, run_dir: Path) -> dict:
+    host = entry["host"]
+    label = short_label(host)
+    grace_seconds = args.startup_grace_minutes * 60
+    signature = {key: entry["diagnosis"]["oom"][key] for key in OOM_SIGNATURE_KEYS}
+    host_state = _host_entry(state, host)
+    if (host_state.get("oom_reboot_boot_id") == signature["boot_id"] or recently_processed(label)
+            or is_skipped(state, host) or _interrupt_count):
+        return {"outcome": "deferred", "reason": "already attempted this boot, recent processing, backoff, or interrupt"}
+    if oom_probe_evidence(host, "detect", grace_seconds) != signature:
+        return {"outcome": "deferred", "reason": "live SSH check did not confirm the same unrecovered OOM"}
+
+    _tui_phase("Collecting diagnostics before OOM reboot", label)
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+    out_file = run_dir / f"{stamp}-{label}.md"
+    if not collect_diagnostics(host, label, out_file, state, boot=0):
+        return {"outcome": "failed", "reason": "pre-reboot diagnostics failed"}
+    evidence = {"diagnostics": str(out_file)}
+    if not check_fleetroll_data_freshness(freshness_seconds, args.freshness_min_pct):
+        return {**evidence, "outcome": "deferred", "reason": "Fleetroll freshness check failed before reboot"}
+    snapshot = fleetroll_worker_snapshot(host, filter_query=entry["candidate_filter"])
+    problem = worker_audit_problem(host, snapshot.get(host), now=datetime.datetime.now(datetime.UTC),
+                                   freshness_seconds=freshness_seconds)
+    if problem:
+        return {**evidence, "outcome": "deferred", "reason": problem}
+    decisions: dict = {}
+    eligible = eligible_auto_hosts(
+        [host], freshness_seconds=freshness_seconds, max_identity_age_hours=args.max_identity_age_hours,
+        allow_recent_identity=True, decisions=decisions,
+    )
+    before = decisions.get(host, {}).get("taskcluster", {})
+    identity = before.get("identity")
+    evidence["taskcluster_before"] = before
+    if not eligible or not identity or identity != entry.get("taskcluster", {}).get("identity") or _interrupt_count:
+        return {**evidence, "outcome": "deferred", "reason": "idle Taskcluster identity could not be reconfirmed or interrupted"}
+
+    _tui_phase("Rebooting after worker OOM", label)
+    host_state["oom_reboot_boot_id"] = signature["boot_id"]
+    save_state(state)
+    if _interrupt_count:
+        return {**evidence, "outcome": "deferred", "reason": "interrupted before requesting reboot"}
+    requested_at = datetime.datetime.now(datetime.UTC)
+    try:
+        result = run_oom_probe(host, "reboot", grace_seconds, signature)
+        request = {0: "requested", 3: "refused", 255: "unknown"}.get(result.returncode, "failed")
+    except subprocess.TimeoutExpired:
+        request = "unknown"
+    except OSError:
+        request = "failed"
+    evidence["reboot_request"] = request
+    if request == "refused":
+        recovery = {"outcome": "deferred", "reason": "remote OOM, worker, hold, or boot check changed"}
+    elif request == "failed":
+        recovery = {"outcome": "failed", "reason": "SSH reboot command failed"}
+    else:
+        recovery = {"outcome": "unverified", "reason": "new boot with a ready worker could not be verified"}
+        _tui_phase("Waiting for a new boot and ready worker", label)
+        deadline = time.monotonic() + SSH_REBOOT_WAIT_SECONDS
+        while not _interrupt_count and time.monotonic() < deadline:
+            ready = oom_probe_evidence(host, "verify", grace_seconds, signature)
+            if ready and ready["boot_id"] != signature["boot_id"]:
+                evidence["post_reboot"] = ready
+                _tui_phase("Verifying Taskcluster contact after OOM reboot", label)
+                post: dict = {}
+                contacted = eligible_auto_hosts(
+                    [host], freshness_seconds=freshness_seconds, max_identity_age_hours=args.max_identity_age_hours,
+                    allow_recent_identity=True, activity_since=requested_at, decisions=post,
+                    lookup_timeout=max(1, int(deadline - time.monotonic())),
+                )
+                after = post.get(host, {}).get("taskcluster", {})
+                evidence["taskcluster_after"] = after
+                if contacted and after.get("identity") == identity:
+                    recovery = {"outcome": "recovered",
+                                "reason": "new boot, workerReady, and fresh contact for the expected Taskcluster identity"}
+                    break
+                recovery["reason"] = "new boot and workerReady observed but fresh Taskcluster contact was not verified"
+            time.sleep(min(5, max(0, deadline - time.monotonic())))
+    record_action(state, host, "ssh_reboot", recovery["outcome"] == "recovered", trigger="worker_oom",
+                  outcome=recovery["outcome"], request=request, report=str(out_file))
+    save_state(state)
+    return {**evidence, **recovery}
 
 
 def recover_gdm_autologin(entry: dict, args: argparse.Namespace, freshness_seconds: int,

@@ -271,6 +271,21 @@ same boot has a new GDM invocation, a live worker that logged `workerReady`,
 and fresh Taskcluster contact for the original identity. This path restarts
 only GDM.
 
+#### Ubuntu 24.04 worker OOM
+
+Medic checks an absent worker for a current-boot kernel `global_oom` and a
+`gnome-terminal-server.service` failure with result `oom-kill` within ten
+seconds. Systemd records the service in the journal's `USER_UNIT` field.
+The probe accepts any kernel victim and requires no later `workerReady`, no
+worker process, and no operator hold.
+
+Confirmed auto mode saves current-boot diagnostics and refreshes the audit
+and Taskcluster evidence. An SSH reboot requires an idle, exact worker
+identity and the same OOM signature immediately before the request. Medic
+attempts this at most once per boot. It verifies a changed boot ID, a live
+worker that logged `workerReady`, and new Taskcluster contact for the same
+identity. Preview, diagnosis-only mode, and `--no-reset` leave the host alone.
+
 The one-shot command emits `medic_worker_diagnosis` JSON events. Diagnosis reports
 are saved under `moonshot_debugging_results/YYYYMMDD/*-worker-diagnosis.json`.
 Selection reasons, refreshed TC evidence for queried hosts, and live diagnosis
