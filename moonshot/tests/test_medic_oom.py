@@ -151,7 +151,18 @@ def test_check_2_reports_oom_and_dispatches_only_in_confirmed_mode(monkeypatch, 
         return {"outcome": "recovered", "reason": "verified"}
 
     monkeypatch.setattr(medic, "recover_worker_oom", recover)
-    assert medic.report_worker_diagnoses(args, 900)
+    with medic.scan_log("test scan") as run_dir:
+        medic.record_reset_success({"hosts": {}}, medic.worker_fqdn("ms025"))
+        assert medic.report_worker_diagnoses(args, 900)
     saved, = tmp_path.rglob("*-worker-diagnosis.json")
     assert json.loads(saved.read_text())["results"][0]["diagnosis"]["worker_state"] == "worker_oom"
     assert calls == ([HOST] if acts else [])
+    log = (run_dir / "run.log").read_text()
+    assert "Check 1 | ms025 | iLO reset | verified | Host unreachable" in log
+    if confirm:
+        outcome, reason = ("recovered", "verified") if acts else ("deferred", "--no-reset requested")
+        assert (f"Check 2 | ms236 | SSH reboot | {outcome} | "
+                f"host OOM killed the worker's terminal service. {reason} | Evidence: {saved}") in log
+    else:
+        assert "Check 2 | ms236 | SSH reboot" not in log
+    assert log.index("Worker diagnosis:") < log.index("Scan ended at")

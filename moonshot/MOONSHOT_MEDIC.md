@@ -336,14 +336,22 @@ subsequent Taskcluster activity.
 
 ## Output
 
+Start with `YYYYMMDD/run.log` to review a scan. It opens before the freshness
+check and records Medic's messages from both checks, including scans with no
+recovery candidates. Intervention lines give a UTC timestamp, check, host,
+action, outcome, reason, and an evidence path when available. They include
+deferred recoveries. Follow the evidence path for the per-host report,
+worker diagnosis JSON, or action details in `state.json`.
+
 ```
 moonshot_debugging_results/
   state.json                    # Persistent per-host reset/failure history
   OVERVIEW.md                   # Human-readable summary table
   OVERVIEW.html                 # Sortable, interactive HTML report
   YYYYMMDD/
-    run.log                     # Full timestamped log for the day's runs
+    run.log                     # One daily transcript and intervention history
     YYYYMMDDTHHMMSSz-ms025.md   # Per-host hang report + fleetroll audit
+    *-worker-diagnosis.json     # Check 2 diagnosis and recovery evidence
     ...
 ```
 

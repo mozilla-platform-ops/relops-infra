@@ -438,6 +438,12 @@ def test_auto_main_gates_actions_with_override_evidence(
     check_2 = ("Check 2 — Fleetroll health: 12 unnoted Moonshots with HEALTHY=N "
                "and Taskcluster activity older than 1h")
     assert output.index(check_1) < output.index(check_2) < output.index("Worker diagnosis:")
+    log_path, = tmp_path.rglob("run.log")
+    transcript = log_path.read_text()
+    assert transcript.index("Scan started at") < transcript.index(check_1) < transcript.index(check_2)
+    assert transcript.index(check_2) < transcript.index("Worker diagnosis:") < transcript.index("Scan ended at")
+    if not eligible:
+        assert f"Check 1 | {mm.short_label(HOST)} | Recovery | deferred |" in transcript
     assert f"Fleetroll candidate filter: {recovery_filter}" in output
     assert "Fleetroll filter: host~t-linux64-ms healthy=n tc_act>1h note= sort:host:asc" in output
     assert all(f"ms{n:03d}" in output for n in range(31, 43))
@@ -453,15 +459,13 @@ def test_auto_main_gates_actions_with_override_evidence(
         if eligible:
             assert "Hosts to process: 1 host(s)" in output
             assert "Starting run. 1 host detected." in announcements
-            assert list(tmp_path.rglob("run.log"))
         else:
             assert "Check 1 — Automated recovery: 0 hosts eligible" in output
             assert "Hosts to process:" not in output
-            assert "Run started at" not in output
-            assert "Run complete:" not in output
+            assert "Check 1 recovery started at" not in output
+            assert "Check 1 recovery complete:" not in output
             assert not any(message.startswith("Starting run.") for message in announcements)
             assert not any(message.startswith("All 0 hosts succeeded.") for message in announcements)
-            assert not list(tmp_path.rglob("run.log"))
     check = [("host", "monitor"), ("gather", "tc"), ("host", "monitor")]
     expected = [("host", "monitor")]
     expected += [("host", "monitor")] if missing_identity else check

@@ -28,6 +28,7 @@ import tempfile
 import textwrap
 import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from http.client import HTTPException
 from pathlib import Path
 from urllib.request import urlopen
@@ -106,6 +107,7 @@ def _rescan_signal_handler(sig, frame):
 
 _use_color = sys.stdout.isatty()
 _log_fh = None
+_log_recovery_label = "Check 1"
 _tui_status_path: Path | None = None
 _tui_status: dict = {}
 
@@ -160,8 +162,42 @@ def _c(code: str, text: str) -> str:
 
 def _emit(line: str, *, stderr: bool = False) -> None:
     print(line, file=sys.stderr if stderr else sys.stdout)
+    _append_run_log(line)
+
+
+def _append_run_log(line: str) -> None:
     if _log_fh:
         print(re.sub(r'\033\[[0-9;]*m', '', line), file=_log_fh)
+
+
+@contextmanager
+def scan_log(mode: str, *, recovery_label: str = "Check 1"):
+    global _log_fh, _log_recovery_label
+    started = datetime.datetime.now(datetime.UTC)
+    run_dir = RESULTS_BASE / started.strftime("%Y%m%d")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    previous = _log_fh, _log_recovery_label
+    with (run_dir / "run.log").open("a", encoding="utf-8", buffering=1) as log:
+        _log_fh, _log_recovery_label = log, recovery_label
+        try:
+            _append_run_log(f"Scan started at {started.isoformat()} | {mode}")
+            info(f"Log: {run_dir / 'run.log'}")
+            yield run_dir
+        finally:
+            try:
+                _append_run_log(f"Scan ended at {datetime.datetime.now(datetime.UTC).isoformat()}\n")
+            finally:
+                _log_fh, _log_recovery_label = previous
+
+
+def log_intervention(check: str, host: str, action: str, outcome: str, reason: str,
+                     evidence: str | Path = "") -> None:
+    if _log_fh is None:
+        return
+    timestamp = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+    reason = " ".join(reason.split())
+    _append_run_log(f"{timestamp} | {check} | {short_label(host)} | {action} | {outcome} | {reason}"
+                    + (f" | Evidence: {evidence}" if evidence else ""))
 
 
 def info(msg: str) -> None:
@@ -299,8 +335,10 @@ def unreachable_recovery_hosts(hosts: list[str]) -> list[str]:
             pass
         except OSError as exc:
             warn(f"Skipping {short_label(host)}: could not verify network reachability ({exc})")
+            log_intervention("Check 1", host, "Recovery", "deferred", "could not verify network reachability")
             continue
         info(f"Skipping {short_label(host)} in Check 1: host responded on the network")
+        log_intervention("Check 1", host, "Recovery", "deferred", "host responded on the network")
     return unreachable
 
 
@@ -383,6 +421,9 @@ def remediate_clock_skew(fqdn: str, state: dict) -> bool | None:
                           skew_seconds=round(skew),
                           verified_skew_seconds=round(verified[0]) if verified else None,
                           duration_seconds=round(time.monotonic() - started, 1))
+    log_intervention(_log_recovery_label, fqdn, "Clock fix", "verified" if repaired else "failed",
+                     f"Ubuntu 18.04 clock skew was {skew:.0f}s and correction "
+                     f"{'was verified' if repaired else 'could not be verified'}", STATE_FILE)
     entry["last_clock_fix"] = event.copy()
     if repaired:
         entry["total_clock_fixes"] = entry.get("total_clock_fixes", 0) + 1
@@ -485,6 +526,10 @@ def record_reset_success(state: dict, fqdn: str) -> None:
     h["skip_until"] = None
     h.setdefault("reset_timestamps", []).append(now_iso)
     record_action(state, fqdn, "reset", True)
+    reason = "SSH responded after reset"
+    if _log_recovery_label == "Check 1":
+        reason = "Host unreachable with stale Taskcluster activity. " + reason
+    log_intervention(_log_recovery_label, fqdn, "iLO reset", "verified", reason, STATE_FILE)
 
 
 def record_reset_failure(state: dict, fqdn: str) -> None:
@@ -493,6 +538,10 @@ def record_reset_failure(state: dict, fqdn: str) -> None:
     h["last_failure"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     h["total_failures"] = h.get("total_failures", 0) + 1
     record_action(state, fqdn, "reset", False)
+    reason = "SSH did not return after reset"
+    if _log_recovery_label == "Check 1":
+        reason = "Host unreachable with stale Taskcluster activity. " + reason
+    log_intervention(_log_recovery_label, fqdn, "iLO reset", "failed", reason, STATE_FILE)
     if h["consecutive_reset_failures"] >= SKIP_THRESHOLD_CONSECUTIVE:
         skip_until = (
             datetime.datetime.now(datetime.timezone.utc)
@@ -2025,7 +2074,13 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         or (entry.get("diagnosis", {}).get("worker_state") in ("zombie", "worker_oom", "task_resolution_stall")
             and entry.get("taskcluster", {}).get("latest_lookup_status") != "worker_missing")
     ]
-    if not candidates or args.no_reset or _interrupt_count:
+    if args.no_reset or _interrupt_count:
+        if args.confirm:
+            reason = "interrupted" if _interrupt_count else "--no-reset requested"
+            for entry in candidates:
+                log_check_2_intervention(entry, "deferred", reason, report_path)
+        return True
+    if not candidates:
         return True
     hosts = [entry["host"] for entry in candidates]
     circuit_ok, _, summary = check_fleet_reset_circuit_breaker(
@@ -2033,6 +2088,9 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
     )
     if not circuit_ok:
         warn(f"Check 2 recovery skipped: {summary}")
+        if args.confirm:
+            for entry in candidates:
+                log_check_2_intervention(entry, "deferred", "fleet reset circuit breaker tripped", report_path)
         return False
     if not args.confirm:
         for worker_state, action in (
@@ -2051,7 +2109,8 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
     state = load_state()
     for entry in candidates:
         if _interrupt_count:
-            break
+            log_check_2_intervention(entry, "deferred", "interrupted", report_path)
+            continue
         host = entry["host"]
         try:
             if entry["diagnosis"]["worker_state"] == "gdm_autologin_stall":
@@ -2067,11 +2126,19 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
             recovery = {"outcome": "failed", "reason": "could not complete recovery workflow"}
         entry["recovery"] = recovery
         report_path.write_text(json.dumps(report, indent=2) + "\n")
+        log_check_2_intervention(entry, recovery["outcome"], recovery["reason"], report_path)
         result = f"{short_label(host)}: {recovery['outcome']} — {recovery['reason']}"
         info(f"Check 2 recovery {result}")
         rows.append(f"Recovery {result}")
         _tui_result("diagnosis", title, *rows)
     return all(entry.get("recovery", {}).get("outcome") not in ("failed", "unverified") for entry in candidates)
+
+
+def log_check_2_intervention(entry: dict, outcome: str, reason: str, report_path: Path) -> None:
+    diagnosis = entry["diagnosis"]
+    action = "GDM restart" if diagnosis["worker_state"] == "gdm_autologin_stall" else "SSH reboot"
+    log_intervention("Check 2", entry["host"], action, outcome,
+                     f"{diagnosis['reason']}. {reason}", report_path)
 
 
 # --- per-host collection ---
@@ -2124,6 +2191,10 @@ def collect_diagnostics(fqdn: str, label: str, out_file: Path, state: dict, *, b
         record_action(state, fqdn, "diagnostics", collected,
                       duration_seconds=round(time.monotonic() - started, 1),
                       report=str(out_file) if collected else None)
+        if boot == -1:
+            log_intervention(_log_recovery_label, fqdn, "Collect diagnostics", "saved" if collected else "failed",
+                             "host diagnostics collected" if collected else "host diagnostics collection failed",
+                             out_file if collected else "")
         save_state(state)
 
 
@@ -2453,7 +2524,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    global _log_fh, _voice_enabled, _voice_all_hours, _tui_status_path
+    global _voice_enabled, _voice_all_hours, _tui_status_path
 
     args = parse_args()
     _voice_enabled = not args.no_voice
@@ -2533,13 +2604,20 @@ def main() -> None:
             return False
 
     def check_1_eligible_hosts(hosts: list[str]) -> list[str]:
+        decisions: dict = {}
         eligible = eligible_auto_hosts(
             hosts, freshness_seconds=stale_threshold,
             max_identity_age_hours=args.max_identity_age_hours,
+            decisions=decisions,
         )
+        eligible_set = set(eligible)
+        for host in hosts:
+            if host not in eligible_set:
+                log_intervention("Check 1", host, "Recovery", "deferred",
+                                 decisions.get(host, {}).get("reason", "Taskcluster eligibility could not be verified"))
         return unreachable_recovery_hosts(eligible)
 
-    if args.diagnose_workers:
+    def diagnose_only() -> None:
         if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
             err("Fleetroll freshness validation failed; diagnosis skipped.")
             sys.exit(1)
@@ -2550,7 +2628,7 @@ def main() -> None:
             err(f"Worker diagnosis failed: {exc}")
             sys.exit(1)
 
-    if args.auto and not args.confirm:
+    def preview_recovery() -> None:
         if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
             show_auto_checks("Skipped — Fleetroll freshness check failed", fleetroll_fresh=False)
             sys.exit(1)
@@ -2592,6 +2670,15 @@ def main() -> None:
         _tui_phase("Recovery preview complete")
         sys.exit(1)
 
+    if args.diagnose_workers:
+        with scan_log("diagnosis only"):
+            diagnose_only()
+        return
+    if args.auto and not args.confirm:
+        with scan_log("recovery preview"):
+            preview_recovery()
+        return
+
     # --- verify dependencies ---
     for d in (FLEETROLL_DIR, RESET_DIR):
         if not d.is_dir():
@@ -2608,10 +2695,7 @@ def main() -> None:
     if args.auto:
         announce_overview_report()
 
-    last_failed = False
-    first_run = True
-
-    while True:
+    def run_scan(first_run: bool, run_dir: Path) -> tuple[bool, bool]:
         last_failed = False
         stale = False
         check_1_hosts: tuple[str, ...] = ()
@@ -2633,8 +2717,7 @@ def main() -> None:
                 except (OSError, subprocess.SubprocessError, ValueError) as exc:
                     err(f"Cannot read automatic recovery candidates: {exc}")
                     show_auto_checks("Unavailable — could not read recovery candidates")
-                    last_failed = True
-                    break
+                    return True, True
                 circuit_ok, hosts, circuit_summary = check_fleet_reset_circuit_breaker(
                     host_tokens, args.max_fleet_reset_pct,
                 )
@@ -2642,8 +2725,7 @@ def main() -> None:
                     err(circuit_summary)
                     show_auto_checks("Skipped — fleet reset circuit breaker tripped")
                     say("Moonshot Medic circuit breaker tripped")
-                    last_failed = True
-                    break
+                    return True, True
             elif args.hostname:
                 hosts = [worker_fqdn(h) for h in args.hostname]
             else:
@@ -2668,18 +2750,21 @@ def main() -> None:
                         label = short_label(h)
                         if recently_processed(label):
                             skipped.append(h)
+                            log_intervention(_log_recovery_label, fqdn, "Recovery", "deferred", "recently processed")
                         elif is_skipped(state, fqdn):
                             skip_until = state["hosts"].get(fqdn, {}).get("skip_until", "")
                             warn(f"Skipping {label}: {SKIP_THRESHOLD_CONSECUTIVE}+ consecutive reset failures "
                                  f"(skip until {skip_until[:16]}Z — use --ignore-recency to override)")
                             skipped.append(h)
+                            log_intervention(_log_recovery_label, fqdn, "Recovery", "deferred",
+                                             f"reset failure backoff until {skip_until}")
                         else:
                             filtered.append(h)
                     if skipped:
                         warn(f"Skipping {len(skipped)} host(s): {' '.join(short_label(h) for h in skipped)}")
                     hosts = filtered
 
-                # Resolve eligibility before announcing work or creating a run log.
+                # Resolve eligibility before announcing recovery work.
                 # Keep the batch/reset checks below to catch changes during waits.
                 if args.auto:
                     _tui_phase("Checking Taskcluster eligibility", f"{len(hosts)} candidate hosts")
@@ -2706,113 +2791,117 @@ def main() -> None:
                             time.sleep(1)
                         if _interrupt_count:
                             warn("Aborted before first run.")
+                            for host in hosts:
+                                log_intervention(_log_recovery_label, host, "Recovery", "deferred",
+                                                 "interrupted before recovery")
+                            return last_failed, True
+
+                    info(f"Results will be saved to: {run_dir}")
+                    run_started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    _emit(f"{_log_recovery_label} recovery started at {run_started}")
+                    _emit(f"Hosts: {' '.join(hosts)}")
+                    _emit("")
+
+                    if args.no_reset:
+                        warn("Skipping reset (--no-reset).")
+                        for host in hosts:
+                            log_intervention(_log_recovery_label, host, "iLO reset", "deferred", "--no-reset requested")
+
+                    ok_hosts: list[str] = []
+                    fail_hosts: list[str] = []
+
+                    for batch_num, batch in enumerate(batches, 1):
+                        if _interrupt_count:
+                            warn("Stopping after interrupt.")
                             break
 
-                    # --- create results dir and open log ---
-                    run_dir = RESULTS_BASE / datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
-                    run_dir.mkdir(parents=True, exist_ok=True)
-                    log_path = run_dir / "run.log"
-                    info(f"Results will be saved to: {run_dir}")
-                    info(f"Log: {log_path}")
+                        if len(batches) > 1:
+                            section(f"Batch {batch_num}/{len(batches)}: {' '.join(short_label(h) for h in batch)}")
 
-                    _log_fh = log_path.open("a")
-                    try:
-                        run_started = datetime.datetime.now(datetime.timezone.utc).isoformat()
-                        _emit(f"Run started at {run_started}")
-                        _emit(f"Hosts: {' '.join(hosts)}")
-                        _emit("")
+                        # --- reset batch ---
+                        reset_fail_labels: list[str] = []
+                        if args.auto:
+                            _tui_phase("Rechecking recovery batch eligibility",
+                                       " ".join(short_label(host) for host in batch))
+                            batch = check_1_eligible_hosts(batch)
+                            if not batch:
+                                continue
+                        if not args.no_reset:
+                            authorize_reset = check_1_eligible_hosts if args.auto else None
+                            batch, reset_fail_labels = reset_batch(
+                                batch, state, authorize_reset=authorize_reset,
+                            )
+                            save_state(state)
+                            update_overview_md(state)
+                            update_overview_html(state)
 
-                        if args.no_reset:
-                            warn("Skipping reset (--no-reset).")
+                        fail_hosts.extend(reset_fail_labels)
 
-                        ok_hosts: list[str] = []
-                        fail_hosts: list[str] = []
+                        # --- collect batch ---
+                        for host in batch:
+                            fqdn = worker_fqdn(host)
+                            label = short_label(host)
+                            ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                            out_file = run_dir / f"{ts}-{label}.md"
 
-                        for batch_num, batch in enumerate(batches, 1):
-                            if _interrupt_count:
-                                warn("Stopping after interrupt.")
-                                break
-
-                            if len(batches) > 1:
-                                section(f"Batch {batch_num}/{len(batches)}: {' '.join(short_label(h) for h in batch)}")
-
-                            # --- reset batch ---
-                            reset_fail_labels: list[str] = []
-                            if args.auto:
-                                _tui_phase("Rechecking recovery batch eligibility",
-                                           " ".join(short_label(host) for host in batch))
-                                batch = check_1_eligible_hosts(batch)
-                                if not batch:
-                                    continue
-                            if not args.no_reset:
-                                authorize_reset = check_1_eligible_hosts if args.auto else None
-                                batch, reset_fail_labels = reset_batch(
-                                    batch, state, authorize_reset=authorize_reset,
-                                )
+                            try:
+                                _tui_phase("Checking clock and collecting diagnostics", label)
+                                # Reboots can expose the bad RTC again; also run with --no-reset.
+                                clock_result = remediate_clock_skew(fqdn, state)
                                 save_state(state)
-                                update_overview_md(state)
-                                update_overview_html(state)
-
-                            fail_hosts.extend(reset_fail_labels)
-
-                            # --- collect batch ---
-                            for host in batch:
-                                fqdn = worker_fqdn(host)
-                                label = short_label(host)
-                                ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                                out_file = run_dir / f"{ts}-{label}.md"
-
-                                try:
-                                    _tui_phase("Checking clock and collecting diagnostics", label)
-                                    # Reboots can expose the bad RTC again; also run with --no-reset.
-                                    clock_result = remediate_clock_skew(fqdn, state)
-                                    save_state(state)
-                                    collected = collect_diagnostics(fqdn, label, out_file, state)
-                                    if collected and clock_result is not False:
-                                        ok_hosts.append(label)
-                                    else:
-                                        if not collected:
-                                            err(f"[{label}] collection failed")
-                                        fail_hosts.append(label)
-                                except Exception as exc:
-                                    err(f"[{label}] unexpected error: {exc}")
+                                collected = collect_diagnostics(fqdn, label, out_file, state)
+                                if collected and clock_result is not False:
+                                    ok_hosts.append(label)
+                                else:
+                                    if not collected:
+                                        err(f"[{label}] collection failed")
                                     fail_hosts.append(label)
-                                update_overview_md(state)
-                                update_overview_html(state)
-                                print()
+                            except Exception as exc:
+                                err(f"[{label}] unexpected error: {exc}")
+                                fail_hosts.append(label)
+                            update_overview_md(state)
+                            update_overview_html(state)
+                            print()
 
-                        # --- summary ---
-                        _emit(_c('1', "=" * 40))
-                        _emit(f"{_c('1', 'Run complete:')} {run_dir}")
-                        for action in ("clock_fix", "reset", "diagnostics"):
-                            events = [e for h in state.get("hosts", {}).values()
-                                      for e in h.get("action_history", [])
-                                      if e["timestamp"] >= run_started and e["action"] == action]
-                            if events:
-                                successes = sum(e["success"] for e in events)
-                                _emit(f"{action}: {len(events)} attempt(s), {successes} succeeded, "
-                                      f"{len(events) - successes} failed")
-                        if ok_hosts:
-                            _emit(f"{_c('1;32', 'OK:  ')} {' '.join(ok_hosts)}")
-                        if fail_hosts:
-                            _emit(f"{_c('1;31', 'FAIL:')} {' '.join(fail_hosts)}")
-                        _emit(_c('1', "=" * 40))
+                    # --- summary ---
+                    _emit(_c('1', "=" * 40))
+                    _emit(f"{_c('1', f'{_log_recovery_label} recovery complete:')} {run_dir}")
+                    for action in ("clock_fix", "reset", "diagnostics"):
+                        events = [e for h in state.get("hosts", {}).values()
+                                  for e in h.get("action_history", [])
+                                  if e["timestamp"] >= run_started and e["action"] == action]
+                        if events:
+                            successes = sum(e["success"] for e in events)
+                            _emit(f"{action}: {len(events)} attempt(s), {successes} succeeded, "
+                                  f"{len(events) - successes} failed")
+                    if ok_hosts:
+                        _emit(f"{_c('1;32', 'OK:  ')} {' '.join(ok_hosts)}")
+                    if fail_hosts:
+                        _emit(f"{_c('1;31', 'FAIL:')} {' '.join(fail_hosts)}")
+                    _emit(_c('1', "=" * 40))
 
-                        ok_n, fail_n = len(ok_hosts), len(fail_hosts)
-                        if fail_n:
-                            say(f"{ok_n} succeeded, {fail_n} failed.")
-                        else:
-                            say(f"All {ok_n} host{'s' if ok_n != 1 else ''} succeeded.")
+                    ok_n, fail_n = len(ok_hosts), len(fail_hosts)
+                    if fail_n:
+                        say(f"{ok_n} succeeded, {fail_n} failed.")
+                    else:
+                        say(f"All {ok_n} host{'s' if ok_n != 1 else ''} succeeded.")
 
-                        last_failed = bool(fail_hosts)
-                    finally:
-                        if _log_fh:
-                            _log_fh.close()
-                            _log_fh = None
+                    last_failed = bool(fail_hosts)
 
         if args.auto and not stale and not _interrupt_count:
             last_failed = not show_worker_diagnoses(check_1_hosts) or last_failed
 
+        return last_failed, False
+
+    last_failed = False
+    first_run = True
+    mode = "confirmed auto" if args.auto else "manual recovery"
+    recovery_label = "Check 1" if args.auto else "Manual"
+    while True:
+        with scan_log(mode, recovery_label=recovery_label) as run_dir:
+            last_failed, stop = run_scan(first_run, run_dir)
+        if stop:
+            break
         first_run = False
 
         if not args.auto or args.once or _interrupt_count:
