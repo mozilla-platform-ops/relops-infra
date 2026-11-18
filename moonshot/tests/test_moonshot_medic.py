@@ -734,7 +734,8 @@ class TestActionTracking:
         saved = []
         monkeypatch.setattr(mm, "save_state", lambda value: saved.append(value))
 
-        def collect(*args):
+        def collect(*args, boot):
+            assert boot == -1
             if outcome == "exception":
                 raise OSError("collection error")
             return outcome

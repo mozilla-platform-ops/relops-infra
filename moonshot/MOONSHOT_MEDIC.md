@@ -50,10 +50,11 @@ The loop is:
    missing workers, failed lookups, unverified override changes, and malformed
    evidence are skipped with a reason; none prove inactivity.
 
-   The check runs before any automatic host action and again after clock triage,
-   immediately before iLO reset. Preview mode uses the same evidence rules and
-   refreshes TC observations without changing hosts. Named-host/manual runs retain
-   their explicit operator selection.
+   Check 1 also requires the connection to the SSH port to time out. A response,
+   including a connection refusal, or another connection error skips the host.
+   Medic rechecks eligibility after clock triage, immediately before iLO reset.
+   Preview mode uses the same evidence rules and refreshes TC observations
+   without changing hosts. Named-host runs retain their explicit operator selection.
 
 3. **Repair clock or reset** — Before resetting a selected bad host, Medic checks
    its OS and UTC clock over authenticated SSH. Only confirmed Ubuntu 18.04 hosts
@@ -168,18 +169,16 @@ and press `End` to resume following the log. `q` or `Ctrl-C` requests the
 usual graceful stop. A completed preview or one-shot run stays visible until
 you press `q`. Recovery still requires `--confirm`.
 
-### Diagnose reachable workers
+### Diagnose and recover reachable workers
 
 ```
 uv run moonshot_medic.py --auto --diagnose-workers --no-voice
 ```
 
-Normal `--auto` previews and confirmed loops show **Check 1** for automated
-recovery and **Check 2** for Fleetroll health. Each check prints its result and
-the Fleetroll filter used to select candidates. The recovery preview shows an
-action only when it finds eligible recovery candidates. The worker diagnosis
-section follows with diagnosed, confirmed zombie, and deferred counts and
-each host's state and reason.
+Normal `--auto` previews and confirmed loops show **Check 1** for unreachable
+hosts and **Check 2** for Fleetroll health and reachable-worker recovery. Each
+check prints its result and Fleetroll filter. The worker diagnosis section
+includes diagnosed, confirmed zombie, and deferred counts with reasons.
 Confirmed loops scan after recovery work, even when there are no reset candidates.
 When the scan finds candidates, Medic saves the full evidence in a worker
 diagnosis JSON report.
@@ -191,12 +190,14 @@ no effect on automatic recovery eligibility.
 Normal `--auto` also shows **Check 2**, a read-only list of every Moonshot with
 no Fleetroll note and a recorded `HEALTHY=N` value. Check 2 uses
 `host~t-linux64-ms healthy=n note= sort:host:asc`
-and runs even if the recovery freshness check fails. It displays recorded
-Fleetroll values and does not select hosts for diagnosis or recovery.
+and uses the same Fleetroll freshness gate as Check 1. When fleet host or
+Taskcluster observations fail that gate, Medic skips Check 2 for the cycle.
+In normal auto mode, the worker diagnosis scan uses this same filter. The
+standalone `--diagnose-workers` scan selects unnoted workers with `TC_ACT>4h`.
 
-Candidates have old TC activity and no Fleetroll note, without requiring old
-observation data. Medic requires configured inventory membership, a successful
-host audit within the freshness requirement, a trusted worker identity, and a new
+Diagnosis candidates have no Fleetroll note. Medic requires configured inventory
+membership, a successful host audit within the freshness requirement, a trusted
+worker identity, and a new
 exact-identity TC lookup confirming activity over four hours old. Running/pending
 tasks, unknown state for an identified task, identity contradictions, failed
 lookups, recent processing, and failure backoff defer diagnosis. The normal
@@ -236,8 +237,17 @@ Results distinguish `zombie`, `live`, `startup`, `absent`, `held`, and `unverifi
 A `Z` process confirms a zombie, even beneath a live parent. A live process does
 not establish task health. An absent process is `startup` below
 `--startup-grace-minutes` (default 15); after that it remains `absent`, since this
-probe does not establish whether Puppet is still provisioning. Neither diagnosis
-authorizes recovery. Holds and incomplete process inspections take precedence.
+probe does not establish whether Puppet is still provisioning. Holds and
+incomplete process inspections take precedence.
+
+Check 2 can recover a confirmed zombie in `--auto --confirm` mode. Medic
+requires a live SSH inspection showing a zombie and no live generic-worker,
+with no operator hold and startup grace elapsed. It saves a hang report for the
+current boot, then verifies fleet freshness, the host's current Check 2 selection
+and audit, and Taskcluster inactivity for the exact worker identity again. A
+final SSH-side check verifies the boot ID, process state, and hold before
+requesting a reboot. The fleet circuit breaker counts both paths in the same
+cycle. `--no-reset` keeps Check 2 read-only.
 
 The one-shot command emits `medic_worker_diagnosis` JSON events. Diagnosis reports
 are saved under `moonshot_debugging_results/YYYYMMDD/*-worker-diagnosis.json`.
@@ -246,9 +256,10 @@ are separate fields. A successful exit means the report was produced, including
 any deferred or unverified hosts; it does not mean every worker is healthy.
 Fleet freshness or top-level collection/report failures exit nonzero.
 
-The normalized diagnosis records `source: fleetroll_host_diagnose` or
-`source: medic_proc_v1`, according to the evidence used. Automatic recovery of
-reachable zombies remains disabled pending an attended validation.
+The report records the reboot request and whether SSH returned with a new boot
+ID. When boot is confirmed, it also records the observed worker state. The boot
+result and worker state describe separate outcomes. Task completion requires
+subsequent Taskcluster activity.
 
 ### Key flags
 
@@ -261,7 +272,7 @@ reachable zombies remains disabled pending an attended validation.
 | `--freshness-requirement N` | same as loop-interval | Max acceptable fleetroll data age |
 | `--freshness-min-pct N` | 65 | Minimum host and Taskcluster freshness coverage |
 | `--max-identity-age-hours N` | 168 | Maximum historical worker identity age for automatic recovery |
-| `--no-reset` / `-n` | off | Skip iLO reboot |
+| `--no-reset` / `-n` | off | Skip iLO reset and SSH reboot |
 | `--ignore-recency` | off | Re-process hosts collected in the last 60 min |
 | `--no-voice` / `-q` | off | Suppress macOS `say` announcements |
 | `--voice-all-hours` | off | Speak outside 10:00–18:00 local time |

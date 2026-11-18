@@ -7,7 +7,7 @@ Usage:
   --auto                    Fetch bad-host list from fleetroll instead of reading argv/stdin (requires --confirm).
   --once                    Run one auto-mode iteration, then exit.
   --max-fleet-reset-pct     Maximum auto-selected percentage of configured fleet (default: 20).
-  --no-reset                Skip iLO reboot (host already freshly rebooted).
+  --no-reset                Skip iLO resets and SSH reboots.
   --freshness-requirement   Max acceptable age of fleetroll data in minutes (default: loop-interval).
   --ignore-recency          Process hosts even if collected within the last RECENCY_MINUTES minutes.
   HOST ...                  Short (ms025) or FQDN. If omitted and not --auto, reads stdin.
@@ -21,6 +21,7 @@ import os
 import re
 import shlex
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,7 @@ CLOCK_FIX_SCRIPT = SCRIPT_DIR / "install_clock_fix.py"
 CLOCK_SKEW_SECONDS = 5 * 60
 RECENCY_MINUTES = 60
 AUTO_BATCH_SIZE = 10
+SSH_REBOOT_WAIT_SECONDS = 180
 SCRIPT_VOICE_NAME = "Moonshot Medic"
 MEDIC_LOGO = (
     " ▄▀▄▀▄ ▄▀▄ ▄▀▄ ▄▀█ █▀ █░░ ▄▀▄ ▄█▄    ▄▀▄▀▄ ██▀ ▄▄█ ▀ ▄▀▀",
@@ -57,6 +59,7 @@ MOONSHOT_HOST_RE = re.compile(r'^t-linux64-ms-\d+\.test\.releng\.mdc[12]\.mozill
 MOONSHOT_OBSERVED_FILTER = "host~t-linux64-ms os=L sort:host:asc"
 RECOVERY_FILTER_FILE = "configs/filters/moonshots-hung.yaml"
 UNHEALTHY_MOONSHOTS_FILTER = "host~t-linux64-ms healthy=n note= sort:host:asc"
+INACTIVE_MOONSHOTS_FILTER = "host~t-linux64-ms tc_act>4h note= sort:host:asc"
 WORKER_EVIDENCE_SCHEMA_VERSION = 3
 HUNG_SECONDS = 4 * 60 * 60
 DEFAULT_MAX_IDENTITY_AGE_HOURS = 7 * 24
@@ -249,6 +252,26 @@ def check_fleet_reset_circuit_breaker(
 
 
 # --- SSH probe ---
+
+def unreachable_recovery_hosts(hosts: list[str]) -> list[str]:
+    """Keep Check 1 on hosts that do not answer on the SSH port."""
+    unreachable = []
+    for host in hosts:
+        try:
+            with socket.create_connection((host, 22), timeout=5):
+                pass
+        except TimeoutError:
+            unreachable.append(host)
+            continue
+        except ConnectionRefusedError:
+            # A refusal still establishes that the network endpoint responded.
+            pass
+        except OSError as exc:
+            warn(f"Skipping {short_label(host)}: could not verify network reachability ({exc})")
+            continue
+        info(f"Skipping {short_label(host)} in Check 1: host responded on the network")
+    return unreachable
+
 
 def ssh_is_online(fqdn: str, timeout: int = 10) -> bool:
     """Check that SSH can authenticate and execute a command, as scp requires."""
@@ -1216,11 +1239,14 @@ def _fleetroll_command(*args: str, timeout: int = 60) -> str:
     return result.stdout
 
 
-def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False) -> dict:
+def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False,
+                              filter_query: str | None = None) -> dict:
     args = ["host", "monitor", host_source, "--once", "--json"]
     if candidates:
         _tui_phase("Selecting automated recovery candidates")
         args.extend(["--filter-file", RECOVERY_FILTER_FILE])
+    if filter_query:
+        args.extend(["--filter", filter_query])
     report = json.loads(_fleetroll_command(*args))
     if not isinstance(report, dict):
         raise ValueError("Fleetroll worker snapshot is not a host-keyed object")
@@ -1278,7 +1304,8 @@ def show_host_labels(hosts: list[str]) -> None:
                             initial_indent="  ", subsequent_indent="  "))
 
 
-def show_auto_checks(result: str, *, hosts: list[str] | None = None, action: str = "") -> None:
+def show_auto_checks(result: str, *, hosts: list[str] | None = None, action: str = "",
+                     fleetroll_fresh: bool = True) -> None:
     title = f"Check 1 — Automated recovery: {result}"
     filter_line = f"Fleetroll candidate filter: {recovery_candidate_filter()}"
     info(title)
@@ -1288,7 +1315,12 @@ def show_auto_checks(result: str, *, hosts: list[str] | None = None, action: str
         _emit(f"  Action: {action}")
     _tui_result("recovery", title, filter_line, " ".join(short_label(host) for host in hosts or ()),
                 f"Action: {action}" if action else "")
-    show_unnoted_unhealthy_moonshots()
+    if fleetroll_fresh:
+        show_unnoted_unhealthy_moonshots()
+    else:
+        title = "Check 2 — Fleetroll health: Skipped — Fleetroll freshness check failed"
+        info(title)
+        _tui_result("fleet_health", title)
 
 
 def historical_identity_problem(record: dict, *, now: datetime.datetime,
@@ -1456,7 +1488,7 @@ def eligible_auto_hosts(hosts: list[str], *, freshness_seconds: int,
 
 # Fallback evidence source until Fleetroll supplies a supported zombie diagnosis.
 # Never read cmdline or worker configuration: either may contain credentials.
-WORKER_PROCESS_PROBE = r'''
+WORKER_PROCESS_INSPECTION = r'''
 import datetime
 import json
 import stat
@@ -1498,9 +1530,24 @@ def collect(root=Path("/proc"), hold=Path("/home/cltbld/operator_hold"),
         except (OSError, KeyError, ValueError, IndexError):
             result["unverified_pids"].append(pid)
     return result
+'''
 
+WORKER_PROCESS_PROBE = WORKER_PROCESS_INSPECTION + r'''
 if __name__ == "__main__":
     print(json.dumps(collect()))
+'''
+
+WORKER_REBOOT_IF_ZOMBIE = WORKER_PROCESS_INSPECTION + r'''
+import subprocess
+import sys
+
+current = collect()
+states = {process["state"] for process in current["processes"]}
+if (current["boot_id"] != sys.argv[1] or current["operator_hold"]
+        or current["unverified_pids"] or current["uptime_seconds"] < int(sys.argv[2])
+        or "Z" not in states or states - {"Z", "X", "x"}):
+    sys.exit(3)
+subprocess.run(["systemctl", "--no-block", "reboot"], check=True)
 '''
 
 
@@ -1642,13 +1689,29 @@ def diagnose_worker_probe(fqdn: str, *, startup_grace_seconds: int) -> dict:
                 "reason": "probe timeout" if isinstance(exc, subprocess.TimeoutExpired) else "process probe unavailable"}
 
 
+def worker_audit_problem(host: str, record: object, *, now: datetime.datetime,
+                         freshness_seconds: int) -> str | None:
+    if not isinstance(record, dict) or record.get("host") != host:
+        return "invalid host record"
+    if record.get("ok") is not True:
+        return "latest host audit did not succeed"
+    try:
+        age = (now - _evidence_timestamp(record.get("ts"))).total_seconds()
+        if not 0 <= age < freshness_seconds:
+            return "successful host audit is stale or future-dated"
+    except (ValueError, TypeError, OverflowError):
+        return "invalid host audit timestamp"
+    return None
+
+
 def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours: int,
-                               limit: int, startup_grace_seconds: int) -> dict:
+                               limit: int, startup_grace_seconds: int,
+                               candidate_filter: str = INACTIVE_MOONSHOTS_FILTER) -> dict:
     """A separate, diagnosis-only path. No clock repair, reset, or recovery state writes."""
     _tui_phase("Selecting workers for diagnosis")
     raw = json.loads(_fleetroll_command(
         "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--json",
-        "--filter", "host~t-linux64-ms tc_act>4h note= sort:host:asc",
+        "--filter", candidate_filter,
     ))
     if not isinstance(raw, dict):
         raise TypeError("Fleetroll snapshot is not a host-keyed object")
@@ -1659,18 +1722,7 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
     state = load_state()
     results, candidates = [], []
     for host, record in raw.items():
-        reason = None
-        if not isinstance(record, dict) or record.get("host") != host:
-            reason = "invalid host record"
-        elif record.get("ok") is not True:
-            reason = "latest host audit did not succeed"
-        else:
-            try:
-                age = (now - _evidence_timestamp(record.get("ts"))).total_seconds()
-                if not 0 <= age < freshness_seconds:
-                    reason = "successful host audit is stale or future-dated"
-            except (ValueError, TypeError, OverflowError):
-                reason = "invalid host audit timestamp"
+        reason = worker_audit_problem(host, record, now=now, freshness_seconds=freshness_seconds)
         if not reason:
             reason = historical_identity_problem(record, now=now, max_identity_age_hours=max_identity_age_hours)
         if not reason and (recently_processed(short_label(host)) or is_skipped(state, host)):
@@ -1703,16 +1755,18 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
             "results": results}
 
 
-def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int) -> None:
+def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
+                            check_1_hosts: tuple[str, ...] = ()) -> bool:
     report = diagnose_reachable_workers(
         freshness_seconds=freshness_seconds, max_identity_age_hours=args.max_identity_age_hours,
         limit=args.diagnosis_limit, startup_grace_seconds=args.startup_grace_minutes * 60,
+        candidate_filter=INACTIVE_MOONSHOTS_FILTER if args.diagnose_workers else UNHEALTHY_MOONSHOTS_FILTER,
     )
     results = report["results"]
     if not results and not args.diagnose_workers:
         info("Worker diagnosis: no candidates")
         _tui_result("diagnosis", "Worker diagnosis: no candidates")
-        return
+        return True
 
     now = datetime.datetime.now(datetime.UTC)
     run_dir = RESULTS_BASE / now.strftime("%Y%m%d")
@@ -1736,16 +1790,46 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int) ->
         for entry in results:
             _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
         info(f"Diagnosis-only report: {report_path}")
-        return
+        return True
     info(title)
     for row in rows:
         _emit(f"  {row}")
     info(f"Worker diagnosis report: {report_path}")
+    candidates = [entry for entry in results if entry.get("diagnosis", {}).get("worker_state") == "zombie"]
+    if not candidates or args.no_reset or _interrupt_count:
+        return True
+    hosts = [entry["host"] for entry in candidates]
+    circuit_ok, _, summary = check_fleet_reset_circuit_breaker(
+        [*check_1_hosts, *hosts], args.max_fleet_reset_pct,
+    )
+    if not circuit_ok:
+        warn(f"Check 2 recovery skipped: {summary}")
+        return False
+    if not args.confirm:
+        info("Check 2 recovery preview: collect diagnostics, then reboot over SSH if idle")
+        show_host_labels(hosts)
+        return True
+
+    report["mode"] = "check_2_recovery"
+    state = load_state()
+    for entry in candidates:
+        if _interrupt_count:
+            break
+        host = entry["host"]
+        try:
+            recovery = recover_reachable_zombie(host, args, freshness_seconds, state, run_dir)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            warn(f"Check 2 recovery error for {short_label(host)}: {type(exc).__name__}")
+            recovery = {"outcome": "failed", "reason": "could not complete recovery workflow"}
+        entry["recovery"] = recovery
+        report_path.write_text(json.dumps(report, indent=2) + "\n")
+        info(f"Check 2 recovery {short_label(host)}: {recovery['outcome']} — {recovery['reason']}")
+    return all(entry.get("recovery", {}).get("outcome") not in ("failed", "unverified") for entry in candidates)
 
 
 # --- per-host collection ---
 
-def collect_host(fqdn: str, label: str, out_file: Path) -> bool:
+def collect_host(fqdn: str, label: str, out_file: Path, *, boot: int = -1) -> bool:
     section(f"{label}  {fqdn}")
     host_ok = True
     tmp_file = out_file.with_suffix(".tmp")
@@ -1758,7 +1842,7 @@ def collect_host(fqdn: str, label: str, out_file: Path) -> bool:
     if host_ok:
         with tmp_file.open("w") as fh:
             result = subprocess.run(
-                ["ssh"] + SSH_OPTS + [fqdn, "sudo python3 /tmp/moonshot_hang_report.py"],
+                ["ssh"] + SSH_OPTS + [fqdn, f"sudo python3 /tmp/moonshot_hang_report.py --boot {boot}"],
                 stdout=fh, check=False,
             )
         if result.returncode != 0:
@@ -1783,17 +1867,101 @@ def collect_host(fqdn: str, label: str, out_file: Path) -> bool:
     return host_ok
 
 
-def collect_diagnostics(fqdn: str, label: str, out_file: Path, state: dict) -> bool:
+def collect_diagnostics(fqdn: str, label: str, out_file: Path, state: dict, *, boot: int = -1) -> bool:
     started = time.monotonic()
     collected = False
     try:
-        collected = collect_host(fqdn, label, out_file)
+        collected = collect_host(fqdn, label, out_file, boot=boot)
         return collected
     finally:
         record_action(state, fqdn, "diagnostics", collected,
                       duration_seconds=round(time.monotonic() - started, 1),
                       report=str(out_file) if collected else None)
         save_state(state)
+
+
+def request_zombie_reboot(host: str, boot_id: str, startup_grace_seconds: int) -> str:
+    remote = shlex.join(["sudo", "-n", "python3", "-c", WORKER_REBOOT_IF_ZOMBIE,
+                         boot_id, str(startup_grace_seconds)])
+    try:
+        result = subprocess.run(
+            ["ssh", *SSH_OPTS, "-o", "BatchMode=yes", host, remote],
+            capture_output=True, check=False, timeout=45,
+        )
+    except subprocess.TimeoutExpired:
+        return "unknown"
+    except OSError:
+        return "failed"
+    return {0: "requested", 3: "refused", 255: "unknown"}.get(result.returncode, "failed")
+
+
+def wait_for_zombie_reboot(host: str, prior_boot_id: str, startup_grace_seconds: int) -> dict:
+    deadline = time.monotonic() + SSH_REBOOT_WAIT_SECONDS
+    while not _interrupt_count and time.monotonic() < deadline:
+        evidence = diagnose_worker_probe(host, startup_grace_seconds=startup_grace_seconds)
+        boot_id = evidence.get("boot_id")
+        if boot_id and boot_id != prior_boot_id:
+            return evidence
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    return {}
+
+
+def recover_reachable_zombie(host: str, args: argparse.Namespace, freshness_seconds: int,
+                             state: dict, run_dir: Path) -> dict:
+    label = short_label(host)
+    grace_seconds = args.startup_grace_minutes * 60
+    before = diagnose_worker_probe(host, startup_grace_seconds=grace_seconds)
+    if (before["worker_state"] != "zombie" or before.get("uptime_seconds", 0) < grace_seconds
+            or any(p["state"] not in ("Z", "X", "x") for p in before["processes"])):
+        return {"outcome": "deferred", "reason": "live SSH check did not confirm a zombie-only worker past startup grace",
+                "pre_reboot": before}
+    if recently_processed(label) or is_skipped(state, host) or _interrupt_count:
+        return {"outcome": "deferred", "reason": "recent processing, failure backoff, or interrupt"}
+
+    _tui_phase("Collecting diagnostics before SSH reboot", label)
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+    out_file = run_dir / f"{stamp}-{label}.md"
+    if not collect_diagnostics(host, label, out_file, state, boot=0):
+        return {"outcome": "failed", "reason": "pre-reboot diagnostics failed", "pre_reboot": before}
+
+    evidence = {"pre_reboot": before, "diagnostics": str(out_file)}
+    if not check_fleetroll_data_freshness(freshness_seconds, args.freshness_min_pct):
+        return {**evidence, "outcome": "deferred", "reason": "Fleetroll freshness check failed before reboot"}
+    snapshot = fleetroll_worker_snapshot(host, filter_query=UNHEALTHY_MOONSHOTS_FILTER)
+    if host not in snapshot:
+        return {**evidence, "outcome": "deferred", "reason": "host no longer matches the Check 2 filter"}
+    audit_problem = worker_audit_problem(host, snapshot[host], now=datetime.datetime.now(datetime.UTC),
+                                         freshness_seconds=freshness_seconds)
+    if audit_problem:
+        return {**evidence, "outcome": "deferred", "reason": audit_problem}
+    decisions: dict = {}
+    eligible = eligible_auto_hosts(
+        [host], freshness_seconds=freshness_seconds, max_identity_age_hours=args.max_identity_age_hours,
+        allow_recent_identity=True, decisions=decisions,
+    )
+    evidence.update(decisions.get(host, {}))
+    if not eligible or _interrupt_count:
+        reason = "interrupted" if _interrupt_count else evidence.get("reason", "Taskcluster inactivity could not be verified")
+        return {**evidence, "outcome": "deferred", "reason": reason}
+
+    _tui_phase("Requesting SSH reboot and verifying boot ID", label)
+    old_boot_id = before["boot_id"]
+    request = request_zombie_reboot(host, old_boot_id, grace_seconds)
+    evidence["reboot_request"] = request
+    if request == "refused":
+        return {**evidence, "outcome": "deferred", "reason": "remote zombie, hold, or boot check changed"}
+    post_boot = wait_for_zombie_reboot(host, old_boot_id, grace_seconds) if request != "failed" else {}
+    if post_boot:
+        recovery = {**evidence, "outcome": "rebooted", "reason": "new boot ID confirmed over SSH",
+                    "post_reboot": post_boot}
+    elif request == "failed":
+        recovery = {**evidence, "outcome": "failed", "reason": "SSH reboot command failed"}
+    else:
+        recovery = {**evidence, "outcome": "unverified", "reason": "new boot ID could not be confirmed"}
+    record_action(state, host, "ssh_reboot", bool(post_boot),
+                  request=request, outcome=recovery["outcome"], report=str(out_file))
+    save_state(state)
+    return recovery
 
 
 # --- main ---
@@ -1814,9 +1982,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--diagnosis-limit", type=int, default=10,
                         help="Maximum candidates queried for worker diagnosis (default: 10).")
     parser.add_argument("--startup-grace-minutes", type=int, default=15,
-                        help="Minimum uptime before an absent worker is outside startup grace (default: 15).")
+                        help="Minimum uptime for Check 2 recovery and for classifying an absent worker (default: 15).")
     parser.add_argument("-n", "--no-reset", action="store_true",
-                        help="Skip iLO reboot.")
+                        help="Skip iLO reset and SSH reboot.")
     parser.add_argument("--freshness-requirement", type=int, default=None, metavar="MINUTES",
                         help="Max acceptable age of fleetroll data in minutes (default: same as --loop-interval). "
                              "Set a large value to effectively disable the check.")
@@ -1917,12 +2085,20 @@ def main() -> None:
     freshness_mins = args.freshness_requirement if args.freshness_requirement is not None else args.loop_interval
     stale_threshold = freshness_mins * 60
 
-    def show_worker_diagnoses() -> None:
+    def show_worker_diagnoses(check_1_hosts: tuple[str, ...] = ()) -> bool:
         try:
-            report_worker_diagnoses(args, stale_threshold)
+            return report_worker_diagnoses(args, stale_threshold, check_1_hosts)
         except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
             warn(f"Worker diagnosis failed: {exc}")
             _tui_result("diagnosis", "Worker diagnosis unavailable", str(exc))
+            return False
+
+    def check_1_eligible_hosts(hosts: list[str]) -> list[str]:
+        eligible = eligible_auto_hosts(
+            hosts, freshness_seconds=stale_threshold,
+            max_identity_age_hours=args.max_identity_age_hours,
+        )
+        return unreachable_recovery_hosts(eligible)
 
     if args.diagnose_workers:
         if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
@@ -1937,7 +2113,7 @@ def main() -> None:
 
     if args.auto and not args.confirm:
         if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
-            show_auto_checks("Skipped — Fleetroll freshness check failed")
+            show_auto_checks("Skipped — Fleetroll freshness check failed", fleetroll_fresh=False)
             sys.exit(1)
         try:
             preview_hosts = list(fleetroll_worker_snapshot(
@@ -1956,10 +2132,7 @@ def main() -> None:
             say("Moonshot Medic circuit breaker tripped")
             sys.exit(1)
         _tui_phase("Checking Taskcluster eligibility", f"{len(preview_hosts)} candidate hosts")
-        preview_hosts = eligible_auto_hosts(
-            preview_hosts, freshness_seconds=stale_threshold,
-            max_identity_age_hours=args.max_identity_age_hours,
-        )
+        preview_hosts = check_1_eligible_hosts(preview_hosts)
         n = min(len(preview_hosts), AUTO_BATCH_SIZE)
         total = len(preview_hosts)
         result = f"{total} {'host' if total == 1 else 'hosts'} eligible"
@@ -1973,7 +2146,7 @@ def main() -> None:
                 action = "Would repair clock skew or reset via iLO, then collect diagnostics."
         show_auto_checks(result, hosts=preview_hosts[:n], action=action)
         if not _interrupt_count:
-            show_worker_diagnoses()
+            show_worker_diagnoses(tuple(preview_hosts))
         if n:
             print()
             warn("You must watch and monitor the run. Re-run with --confirm to proceed.")
@@ -2002,10 +2175,11 @@ def main() -> None:
     while True:
         last_failed = False
         stale = False
+        check_1_hosts: tuple[str, ...] = ()
         # --- freshness gate ---
         if args.auto:
             if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
-                show_auto_checks("Skipped — Fleetroll freshness check failed")
+                show_auto_checks("Skipped — Fleetroll freshness check failed", fleetroll_fresh=False)
                 say("Stale Fleetroll data")
                 stale = True
                 last_failed = True
@@ -2070,10 +2244,8 @@ def main() -> None:
                 # Keep the batch/reset checks below to catch changes during waits.
                 if args.auto:
                     _tui_phase("Checking Taskcluster eligibility", f"{len(hosts)} candidate hosts")
-                    hosts = eligible_auto_hosts(
-                        hosts, freshness_seconds=stale_threshold,
-                        max_identity_age_hours=args.max_identity_age_hours,
-                    )
+                    hosts = check_1_eligible_hosts(hosts)
+                    check_1_hosts = tuple(hosts)
                     total = len(hosts)
                     show_auto_checks(f"{total} {'host' if total == 1 else 'hosts'} eligible", hosts=hosts)
 
@@ -2130,19 +2302,11 @@ def main() -> None:
                             if args.auto:
                                 _tui_phase("Rechecking recovery batch eligibility",
                                            " ".join(short_label(host) for host in batch))
-                                batch = eligible_auto_hosts(
-                                    batch, freshness_seconds=stale_threshold,
-                                    max_identity_age_hours=args.max_identity_age_hours,
-                                )
+                                batch = check_1_eligible_hosts(batch)
                                 if not batch:
                                     continue
                             if not args.no_reset:
-                                authorize_reset = None
-                                if args.auto:
-                                    authorize_reset = lambda pending: eligible_auto_hosts(
-                                        pending, freshness_seconds=stale_threshold,
-                                        max_identity_age_hours=args.max_identity_age_hours,
-                                    )
+                                authorize_reset = check_1_eligible_hosts if args.auto else None
                                 batch, reset_fail_labels = reset_batch(
                                     batch, state, authorize_reset=authorize_reset,
                                 )
@@ -2208,7 +2372,7 @@ def main() -> None:
                             _log_fh = None
 
         if args.auto and not stale and not _interrupt_count:
-            show_worker_diagnoses()
+            last_failed = not show_worker_diagnoses(check_1_hosts) or last_failed
 
         first_run = False
 

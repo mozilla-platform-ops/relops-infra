@@ -1,5 +1,6 @@
 """Temporary process diagnosis is read-only, bounded, and separate from recovery."""
 
+import argparse
 import datetime
 import json
 import sys
@@ -298,16 +299,17 @@ def test_tui_diagnosis_publishes_the_result_without_relaunching(monkeypatch, tmp
 
 
 @pytest.mark.parametrize("confirm,exit_code", [([], 1), (["--confirm"], 0)])
+@pytest.mark.parametrize("no_reset", [[], ["--no-reset"]])
 @pytest.mark.parametrize("state,zombies", [
     ("absent", "0 confirmed zombies"),
     ("live", "0 confirmed zombies"),
     ("zombie", "1 confirmed zombie"),
 ])
 def test_auto_prints_diagnoses_without_reset_candidates(
-    monkeypatch, tmp_path, capsys, selection, confirm, exit_code, state, zombies,
+    monkeypatch, tmp_path, capsys, selection, confirm, exit_code, no_reset, state, zombies,
 ):
     results_base = tmp_path / "results"
-    monkeypatch.setattr(sys, "argv", ["medic", "--auto", "--once", "--no-voice", *confirm])
+    monkeypatch.setattr(sys, "argv", ["medic", "--auto", "--once", "--no-voice", *confirm, *no_reset])
     monkeypatch.setattr(mm, "RESULTS_BASE", results_base)
     monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
     monkeypatch.setattr(mm, "recovery_candidate_filter", lambda: "test recovery filter")
@@ -322,6 +324,14 @@ def test_auto_prints_diagnoses_without_reset_candidates(
         **diagnose(*a, **kw), "worker_state": state, "reason": "test diagnosis",
     })
     monkeypatch.setattr(mm, "reset_batch", lambda *a, **kw: pytest.fail("diagnosis triggered reset"))
+    monkeypatch.setattr(mm, "load_state", lambda: {"hosts": {}})
+    recoveries = []
+
+    def recover(host, *args):
+        recoveries.append(host)
+        return {"outcome": "rebooted", "reason": "test recovery"}
+
+    monkeypatch.setattr(mm, "recover_reachable_zombie", recover)
     records, calls = selection
     second = mm.worker_fqdn("ms026")
     records[second] = {**records[HOST], "host": second, "ok": False}
@@ -331,6 +341,7 @@ def test_auto_prints_diagnoses_without_reset_candidates(
 
     assert exc.value.code == exit_code
     assert calls == [HOST]
+    assert recoveries == ([HOST] if confirm and state == "zombie" and not no_reset else [])
     output = capsys.readouterr().out
     assert f"1 diagnosed, {zombies}, 1 deferred" in output
     assert f"ms025  {state} — test diagnosis" in output
@@ -340,6 +351,70 @@ def test_auto_prints_diagnoses_without_reset_candidates(
     report_path, = results_base.rglob("*-worker-diagnosis.json")
     assert str(report_path) in output
     assert len(json.loads(report_path.read_text())["results"]) == 2
+
+
+@pytest.mark.parametrize("blocked_at,outcome,expected_steps", [
+    ("", "rebooted", ["diagnostics", "freshness", "audit", "taskcluster", "reboot", "verify"]),
+    ("diagnostics", "failed", ["diagnostics"]),
+    ("freshness", "deferred", ["diagnostics", "freshness"]),
+    ("audit", "deferred", ["diagnostics", "freshness", "audit"]),
+    ("taskcluster", "deferred", ["diagnostics", "freshness", "audit", "taskcluster"]),
+    ("verify", "unverified", ["diagnostics", "freshness", "audit", "taskcluster", "reboot", "verify"]),
+])
+def test_recover_zombie_collects_and_revalidates_before_reboot(
+    monkeypatch, tmp_path, blocked_at, outcome, expected_steps,
+):
+    args = argparse.Namespace(startup_grace_minutes=15, freshness_min_pct=65, max_identity_age_hours=168)
+    steps = []
+
+    def step(name, value):
+        steps.append(name)
+        return value if name != blocked_at else None
+
+    before = {"worker_state": "zombie", "boot_id": "old", "uptime_seconds": 1200,
+              "processes": [{"state": "Z"}]}
+    record = {"host": HOST, "ok": True, "ts": datetime.datetime.now(datetime.UTC).isoformat()}
+    monkeypatch.setattr(mm, "diagnose_worker_probe", lambda *a, **kw: before)
+    monkeypatch.setattr(mm, "recently_processed", lambda *a: False)
+    def collect(*args, boot):
+        assert boot == 0
+        return step("diagnostics", True)
+
+    monkeypatch.setattr(mm, "collect_diagnostics", collect)
+    monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: step("freshness", True))
+    monkeypatch.setattr(mm, "fleetroll_worker_snapshot", lambda *a, **kw: step("audit", {HOST: record}) or {})
+    monkeypatch.setattr(mm, "eligible_auto_hosts", lambda *a, **kw: step("taskcluster", [HOST]))
+    monkeypatch.setattr(mm, "request_zombie_reboot", lambda *a: step("reboot", "requested"))
+    monkeypatch.setattr(mm, "wait_for_zombie_reboot", lambda *a: step("verify", {"boot_id": "new"}))
+    monkeypatch.setattr(mm, "save_state", lambda *a: None)
+
+    state = {"hosts": {}}
+    result = mm.recover_reachable_zombie(HOST, args, 900, state, tmp_path)
+    assert result["outcome"] == outcome
+    assert steps == expected_steps
+    if "reboot" in steps:
+        assert state["hosts"][HOST]["last_actions"]["ssh_reboot"]["success"] == (outcome == "rebooted")
+
+
+@pytest.mark.parametrize("changes", [
+    {}, {"operator_hold": True}, {"boot_id": "new"}, {"uptime_seconds": 30},
+    {"processes": [{"state": "Z"}, {"state": "S"}]}, {"unverified_pids": [25]},
+])
+def test_remote_reboot_requires_same_boot_and_zombie_only(monkeypatch, changes):
+    evidence = {"boot_id": "old", "operator_hold": False, "unverified_pids": [],
+                "uptime_seconds": 1200, "processes": [{"state": "Z"}], **changes}
+    reboot_calls = []
+    monkeypatch.setattr(sys, "argv", ["script", "old", "900"])
+    monkeypatch.setattr(mm.subprocess, "run", lambda command, **kwargs: reboot_calls.append(command))
+    program = mm.WORKER_REBOOT_IF_ZOMBIE.removeprefix(mm.WORKER_PROCESS_INSPECTION)
+    if changes:
+        with pytest.raises(SystemExit) as refused:
+            exec(program, {"collect": lambda: evidence})
+        assert refused.value.code == 3
+        assert not reboot_calls
+    else:
+        exec(program, {"collect": lambda: evidence})
+        assert reboot_calls == [["systemctl", "--no-block", "reboot"]]
 
 
 @pytest.mark.parametrize("args", [[], ["--auto", "--confirm"], ["--auto", "ms025"],
@@ -358,3 +433,17 @@ def test_fleet_freshness_blocks_diagnosis(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         mm.main()
     assert exc.value.code == 1
+
+
+@pytest.mark.parametrize("confirm", [[], ["--confirm"]])
+def test_fleet_freshness_blocks_check_2(monkeypatch, capsys, tmp_path, confirm):
+    monkeypatch.setattr(sys, "argv", ["medic", "--auto", "--once", "--no-voice", *confirm])
+    monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+    monkeypatch.setattr(mm, "announce_overview_report", lambda: None)
+    monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: False)
+    monkeypatch.setattr(mm, "show_unnoted_unhealthy_moonshots", lambda: pytest.fail("stale health queried"))
+    monkeypatch.setattr(mm, "diagnose_reachable_workers", lambda **kw: pytest.fail("stale fleet diagnosed"))
+    with pytest.raises(SystemExit) as exc:
+        mm.main()
+    assert exc.value.code == 1
+    assert "Check 2 — Fleetroll health: Skipped — Fleetroll freshness check failed" in capsys.readouterr().out

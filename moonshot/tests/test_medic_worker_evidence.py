@@ -1,5 +1,6 @@
 """Automatic resets require exact override-pool evidence, even after SSH fails."""
 
+import contextlib
 import datetime
 import json
 import sys
@@ -217,6 +218,21 @@ def test_batch_queries_exact_identity_then_checks_activity(evidence, fleetroll, 
     assert [cmd[:2] for cmd in fleetroll] == [("host", "monitor"), ("gather", "tc"), ("host", "monitor")]
 
 
+def test_check_1_keeps_only_ssh_connection_timeouts(monkeypatch):
+    responding, timed_out, refused, unknown = [mm.worker_fqdn(f"ms{n:03d}") for n in range(25, 29)]
+    errors = {timed_out: TimeoutError(), refused: ConnectionRefusedError(), unknown: OSError()}
+
+    def connect(address, *, timeout):
+        host, port = address
+        assert port == 22 and timeout == 5
+        if host in errors:
+            raise errors[host]
+        return contextlib.nullcontext()
+
+    monkeypatch.setattr(mm.socket, "create_connection", connect)
+    assert mm.unreachable_recovery_hosts([responding, timed_out, refused, unknown]) == [timed_out]
+
+
 @pytest.mark.parametrize("task_state,allowed", [("completed", True), (None, False), ("other", False)])
 def test_diagnosis_records_refreshed_tc_evidence_and_unknown_tasks(evidence, fleetroll, task_state, allowed):
     evidence["taskcluster"]["record"].update(task_id="test-task", task_state=task_state)
@@ -364,6 +380,7 @@ def test_auto_main_gates_actions_with_override_evidence(
     monkeypatch.setattr(mm, "load_state", lambda: {"hosts": {}})
     monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: {HOST})
     monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: True)
+    monkeypatch.setattr(mm, "unreachable_recovery_hosts", lambda hosts: hosts)
     monkeypatch.setattr(mm, "recently_processed", lambda *a: False)
     monkeypatch.setattr(mm.time, "sleep", lambda *a: None)
     announcements = []
@@ -430,7 +447,7 @@ def test_auto_main_gates_actions_with_override_evidence(
     )
     assert [cmd[:2] for cmd in fleetroll[:-1]] == expected
     assert fleetroll[-1][:2] == ("host", "monitor")
-    assert fleetroll[-1][-2:] == ("--filter", "host~t-linux64-ms tc_act>4h note= sort:host:asc")
+    assert fleetroll[-1][-2:] == ("--filter", "host~t-linux64-ms healthy=n note= sort:host:asc")
 
 
 def test_clock_repair_delay_cannot_authorize_an_active_worker(evidence, fleetroll, monkeypatch):
