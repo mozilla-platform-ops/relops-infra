@@ -146,6 +146,7 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
         returncode = process.poll()
         if stop_requested.requested and returncode is not None:
             return returncode
+        can_rescan = returncode is None and not stop_requested.requested and status.get("next_run_at") is not None
 
         screen.erase()
         height, width = screen.getmaxyx()
@@ -172,6 +173,8 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
             footer = "Tab: switch pane | ↑/↓: scroll | q: close"
         elif height < 12 or width < 36:
             footer = "Resize for dashboard | q: stop"
+        elif can_rescan:
+            footer = "r: rescan now | " + footer
         if width > 1:
             screen.addnstr(height - 1, 0, footer, width - 1)
         screen.refresh()
@@ -181,6 +184,8 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
             if returncode is not None:
                 return returncode
             request_stop(process, stop_requested)
+        elif key in (ord("r"), ord("R")) and can_rescan:
+            process.send_signal(signal.SIGUSR1)
         elif key == ord("\t"):
             focus = 1 - focus
         elif key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME):

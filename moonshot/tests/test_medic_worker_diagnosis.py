@@ -3,9 +3,11 @@
 import argparse
 import datetime
 import json
+import signal
 import sys
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -315,6 +317,45 @@ def test_tui_header_animates_while_active_and_counts_down_while_waiting(monkeypa
     assert tui.status_lines(idle, None, False)[0] == ["Waiting for next scan", "Next run in 0:00"]
     assert tui.status_lines(idle, None, True)[0] == ["Stop requested | Waiting for next scan"]
     assert tui.status_lines(idle, 0, False)[0] == ["Waiting for next scan | Exit status 0"]
+
+
+@pytest.mark.parametrize("waiting", [False, True])
+def test_tui_rescan_key_only_signals_during_countdown(monkeypatch, tmp_path, waiting):
+    import moonshot_medic_tui as tui
+
+    status = tmp_path / "status.json"
+    status.write_text(json.dumps({"next_run_at": 100 if waiting else None}))
+    screen = Mock()
+    screen.getmaxyx.return_value = (24, 84)
+    screen.getch.side_effect = [ord("r"), ord("q")]
+    process = Mock()
+    process.poll.side_effect = [None, 0]
+    monkeypatch.setattr(tui, "logo_attribute", lambda: 0)
+    monkeypatch.setattr(tui.curses, "curs_set", lambda *_: None)
+    monkeypatch.setattr(tui, "draw_pane", lambda *a, **kw: (0, 1))
+    assert tui.display(screen, process, status, Mock(), tui.StopRequest()) == 0
+    if waiting:
+        process.send_signal.assert_called_once_with(signal.SIGUSR1)
+    else:
+        process.send_signal.assert_not_called()
+
+
+def test_rescan_shortens_only_the_current_wait(monkeypatch):
+    monkeypatch.setattr(mm, "_rescan_requested", None)
+    monkeypatch.setattr(mm, "_interrupt_count", 0)
+    mm._rescan_signal_handler(signal.SIGUSR1, None)
+    assert mm._rescan_requested is None
+
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        mm._rescan_signal_handler(signal.SIGUSR1, None)
+
+    monkeypatch.setattr(mm.time, "sleep", sleep)
+    mm.wait_for_next_scan(15)
+    assert sleeps == [1]
+    assert mm._rescan_requested is None
 
 
 @pytest.mark.parametrize("confirm,exit_code", [([], 1), (["--confirm"], 0)])

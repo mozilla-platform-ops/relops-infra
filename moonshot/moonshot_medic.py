@@ -61,9 +61,8 @@ FLEETROLL_FRESHNESS_REQUIRED_SOURCES = {"host", "tc"}
 MOONSHOT_HOST_RE = re.compile(r'^t-linux64-ms-\d+\.test\.releng\.mdc[12]\.mozilla\.com$', re.IGNORECASE)
 MOONSHOT_OBSERVED_FILTER = "host~t-linux64-ms os=L sort:host:asc"
 RECOVERY_FILTER_FILE = "configs/filters/moonshots-hung.yaml"
-UNHEALTHY_MOONSHOTS_FILTER = "host~t-linux64-ms healthy=n note= sort:host:asc"
+UNHEALTHY_MOONSHOTS_FILTER = "host~t-linux64-ms healthy=n tc_act>1h note= sort:host:asc"
 INACTIVE_MOONSHOTS_FILTER = "host~t-linux64-ms tc_act>4h note= sort:host:asc"
-STOPPED_WORKERS_FILTER = "host~t-linux64-ms gwhc_worker=stopped note= sort:host:asc"
 WORKER_EVIDENCE_SCHEMA_VERSION = 3
 HUNG_SECONDS = 4 * 60 * 60
 DEFAULT_MAX_IDENTITY_AGE_HOURS = 7 * 24
@@ -79,6 +78,7 @@ SSH_OPTS = [
 # --- interrupt handling ---
 
 _interrupt_count = 0
+_rescan_requested: bool | None = None
 
 
 def _sigint_handler(sig, frame):
@@ -90,6 +90,12 @@ def _sigint_handler(sig, frame):
     else:
         print("\n[Ctrl-C] Exiting immediately.", file=sys.stderr)
         sys.exit(130)
+
+
+def _rescan_signal_handler(sig, frame):
+    global _rescan_requested
+    if _rescan_requested is False:
+        _rescan_requested = True
 
 
 # --- color / logging ---
@@ -116,6 +122,23 @@ def _publish_tui(**changes) -> None:
 
 def _tui_phase(phase: str, detail: str = "", *, next_run_at: float | None = None) -> None:
     _publish_tui(phase=phase, detail=detail, next_run_at=next_run_at)
+
+
+def wait_for_next_scan(loop_interval: int) -> None:
+    global _rescan_requested
+    _rescan_requested = False
+    try:
+        _tui_phase("Waiting for next scan", next_run_at=time.time() + loop_interval * 60)
+        info(f"Next run in {loop_interval} minute{'s' if loop_interval != 1 else ''}. Press Ctrl-C to stop.")
+        for _ in range(loop_interval * 60):
+            if _interrupt_count or _rescan_requested:
+                break
+            time.sleep(1)
+        if _rescan_requested and not _interrupt_count:
+            _tui_phase("Starting requested scan")
+            info("Rescan requested. Starting the next scan.")
+    finally:
+        _rescan_requested = None
 
 
 def _tui_result(key: str, title: str, *lines: str) -> None:
@@ -1280,7 +1303,8 @@ def show_unnoted_unhealthy_moonshots() -> None:
         _tui_result("fleet_health", title, filter_line)
         return
 
-    title = f"Check 2 — Fleetroll health: {len(hosts)} unnoted Moonshots with HEALTHY=N"
+    title = (f"Check 2 — Fleetroll health: {len(hosts)} unnoted Moonshots with HEALTHY=N "
+             "and Taskcluster activity older than 1h")
     info(title)
     _emit(f"  {filter_line}")
     show_host_labels(hosts)
@@ -1786,17 +1810,11 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
                                candidate_filter: str = INACTIVE_MOONSHOTS_FILTER) -> dict:
     """A separate, diagnosis-only path. No clock repair, reset, or recovery state writes."""
     _tui_phase("Selecting workers for diagnosis")
-    raw = {}
-    primary_candidates = set()
-    for query in (candidate_filter, STOPPED_WORKERS_FILTER):
-        snapshot = json.loads(_fleetroll_command(
-            "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--json", "--filter", query,
-        ))
-        if not isinstance(snapshot, dict):
-            raise TypeError("Fleetroll snapshot is not a host-keyed object")
-        raw.update(snapshot)
-        if query == candidate_filter:
-            primary_candidates.update(snapshot)
+    raw = json.loads(_fleetroll_command(
+        "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--json", "--filter", candidate_filter,
+    ))
+    if not isinstance(raw, dict):
+        raise TypeError("Fleetroll snapshot is not a host-keyed object")
     inventory = _configured_linux_moonshot_hosts()
     if not inventory or any(canonical_moonshot_fqdn(h) != h or h not in inventory for h in raw):
         raise ValueError("diagnosis candidates cannot be validated against inventory")
@@ -1836,7 +1854,7 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
                 diagnosis = {**diagnosis, "worker_state": "gdm_autologin_stall",
                              "reason": "cltbld GDM autologin is stuck before desktop startup", "gdm": gdm}
         results.append({"host": host, "selection": "diagnosed",
-                        "candidate_filter": candidate_filter if host in primary_candidates else STOPPED_WORKERS_FILTER,
+                        "candidate_filter": candidate_filter,
                         "host_audit_ts": raw[host]["ts"],
                         **decisions.get(host, {}), "diagnosis": diagnosis})
     return {"schema_version": 1, "mode": "diagnosis_only",
@@ -1891,7 +1909,6 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         entry for entry in results
         if entry.get("diagnosis", {}).get("worker_state") == "gdm_autologin_stall"
         or (entry.get("diagnosis", {}).get("worker_state") == "zombie"
-            and entry.get("candidate_filter") != STOPPED_WORKERS_FILTER
             and entry.get("taskcluster", {}).get("latest_lookup_status") != "worker_missing")
     ]
     if not candidates or args.no_reset or _interrupt_count:
@@ -2088,8 +2105,7 @@ def recover_gdm_autologin(entry: dict, args: argparse.Namespace, freshness_secon
 
     if not check_fleetroll_data_freshness(freshness_seconds, args.freshness_min_pct):
         return {"outcome": "deferred", "reason": "Fleetroll freshness check failed before GDM restart"}
-    # Either Check 2 health selection or the recorded stopped-worker selection.
-    # Both filters also recheck that the host has no operator note.
+    # Recheck Check 2 selection, including the absence of an operator note.
     query = entry["candidate_filter"]
     snapshot = fleetroll_worker_snapshot(host, filter_query=query)
     problem = worker_audit_problem(host, snapshot.get(host), now=datetime.datetime.now(datetime.UTC),
@@ -2267,6 +2283,8 @@ def main() -> None:
         return
 
     signal.signal(signal.SIGINT, _sigint_handler)
+    if args.tui:
+        signal.signal(signal.SIGUSR1, _rescan_signal_handler)
 
     if not args.tui:
         print()
@@ -2572,13 +2590,7 @@ def main() -> None:
         if not args.auto or args.once or _interrupt_count:
             break
 
-        _tui_phase("Waiting for next scan", next_run_at=time.time() + args.loop_interval * 60)
-        info(f"Next run in {args.loop_interval} minute{'s' if args.loop_interval != 1 else ''}. "
-             f"Press Ctrl-C to stop.")
-        for _ in range(args.loop_interval * 60):
-            if _interrupt_count:
-                break
-            time.sleep(1)
+        wait_for_next_scan(args.loop_interval)
 
         if _interrupt_count:
             break

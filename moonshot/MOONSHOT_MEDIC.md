@@ -168,7 +168,8 @@ no recovery candidates.
 
 Press `Tab` to switch panes, use arrows or Page Up and Page Down to scroll,
 and press `End` to resume following the log. `q` or `Ctrl-C` requests the
-usual graceful stop. A completed preview or one-shot run stays visible until
+usual graceful stop. Press `r` during the countdown to start the next scan early.
+A completed preview or one-shot run stays visible until
 you press `q`. Recovery still requires `--confirm`.
 
 ### Diagnose and recover reachable workers
@@ -189,15 +190,14 @@ Use `--diagnose-workers` to run only the read-only scan and emit its JSON events
 Do not combine this flag with `--confirm` or named hosts. Worker diagnosis has
 no effect on automatic recovery eligibility.
 
-Normal `--auto` also shows **Check 2**, a read-only list of every Moonshot with
-no Fleetroll note and a recorded `HEALTHY=N` value. Check 2 uses
-`host~t-linux64-ms healthy=n note= sort:host:asc`
+Normal `--auto` also shows **Check 2**, a read-only list of Moonshots with
+no Fleetroll note, a recorded `HEALTHY=N` value, and recorded Taskcluster
+activity older than one hour. Check 2 uses
+`host~t-linux64-ms healthy=n tc_act>1h note= sort:host:asc`
 and uses the same Fleetroll freshness gate as Check 1. When fleet host or
 Taskcluster observations fail that gate, Medic skips Check 2 for the cycle.
 In normal auto mode, worker diagnosis starts with that same filter. The
 standalone `--diagnose-workers` scan starts with unnoted workers with `TC_ACT>4h`.
-Both add unnoted hosts with `gwhc_worker=stopped`, so a Puppet-healthy host
-without a running worker can be checked for a GDM autologin stall.
 
 Diagnosis candidates have no Fleetroll note. Medic requires configured inventory
 membership, a successful host audit within the freshness requirement, a trusted

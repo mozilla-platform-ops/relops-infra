@@ -84,7 +84,7 @@ def test_restart_rechecks_the_same_stalled_process(monkeypatch, tmp_path, change
 
 def test_gdm_recovery_rechecks_tc_and_records_only_one_attempt_per_boot(monkeypatch, tmp_path):
     args = argparse.Namespace(startup_grace_minutes=15, freshness_min_pct=65, max_identity_age_hours=168)
-    entry = {"host": HOST, "candidate_filter": medic.STOPPED_WORKERS_FILTER,
+    entry = {"host": HOST, "candidate_filter": medic.UNHEALTHY_MOONSHOTS_FILTER,
              "taskcluster": {"identity": IDENTITY}, "diagnosis": {"gdm": SIGNATURE}}
     state = {"hosts": {}}
     steps = []
@@ -92,7 +92,7 @@ def test_gdm_recovery_rechecks_tc_and_records_only_one_attempt_per_boot(monkeypa
     monkeypatch.setattr(medic, "check_fleetroll_data_freshness", lambda *_: True)
 
     def snapshot(host, *, filter_query):
-        assert filter_query == medic.STOPPED_WORKERS_FILTER
+        assert filter_query == medic.UNHEALTHY_MOONSHOTS_FILTER
         return {host: {"host": host, "ok": True, "ts": datetime.datetime.now(datetime.UTC).isoformat()}}
 
     def eligible(hosts, *, decisions, allow_missing_worker=False, activity_since=None, **kwargs):
@@ -118,11 +118,12 @@ def test_gdm_recovery_rechecks_tc_and_records_only_one_attempt_per_boot(monkeypa
     assert steps == ["tc-before", "restart", "tc-after"]
 
 
-def test_stopped_worker_selector_detects_gdm_outside_the_health_filter(monkeypatch):
+def test_check_2_health_filter_can_find_a_gdm_stall(monkeypatch):
     audit = {"host": HOST, "ok": True, "ts": datetime.datetime.now(datetime.UTC).isoformat()}
 
     def monitor(*args):
-        return json.dumps({HOST: audit}) if args[-1] == medic.STOPPED_WORKERS_FILTER else "{}"
+        assert args[-2:] == ("--filter", medic.UNHEALTHY_MOONSHOTS_FILTER)
+        return json.dumps({HOST: audit})
 
     monkeypatch.setattr(medic, "_fleetroll_command", monitor)
     monkeypatch.setattr(medic, "_configured_linux_moonshot_hosts", lambda: {HOST})
@@ -137,7 +138,7 @@ def test_stopped_worker_selector_detects_gdm_outside_the_health_filter(monkeypat
                                               limit=10, startup_grace_seconds=900,
                                               candidate_filter=medic.UNHEALTHY_MOONSHOTS_FILTER)
     entry, = report["results"]
-    assert entry["candidate_filter"] == medic.STOPPED_WORKERS_FILTER
+    assert entry["candidate_filter"] == medic.UNHEALTHY_MOONSHOTS_FILTER
     assert entry["diagnosis"]["worker_state"] == "gdm_autologin_stall"
 
 

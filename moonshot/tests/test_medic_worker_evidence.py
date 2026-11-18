@@ -435,10 +435,11 @@ def test_auto_main_gates_actions_with_override_evidence(
     assert actions == ([HOST] if not preview and eligible else [])
     output = capsys.readouterr().out
     check_1 = f"Check 1 — Automated recovery: {'1 host' if eligible else '0 hosts'} eligible"
-    check_2 = "Check 2 — Fleetroll health: 12 unnoted Moonshots with HEALTHY=N"
+    check_2 = ("Check 2 — Fleetroll health: 12 unnoted Moonshots with HEALTHY=N "
+               "and Taskcluster activity older than 1h")
     assert output.index(check_1) < output.index(check_2) < output.index("Worker diagnosis:")
     assert f"Fleetroll candidate filter: {recovery_filter}" in output
-    assert "Fleetroll filter: host~t-linux64-ms healthy=n note= sort:host:asc" in output
+    assert "Fleetroll filter: host~t-linux64-ms healthy=n tc_act>1h note= sort:host:asc" in output
     assert all(f"ms{n:03d}" in output for n in range(31, 43))
     if preview and eligible:
         if no_reset:
@@ -470,12 +471,10 @@ def test_auto_main_gates_actions_with_override_evidence(
         expected += check * 2  # Per-batch and immediately before reset.
     assert fleetroll[health_check_index] == (
         "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--hostname-only",
-        "--filter", "host~t-linux64-ms healthy=n note= sort:host:asc",
+        "--filter", "host~t-linux64-ms healthy=n tc_act>1h note= sort:host:asc",
     )
-    assert [cmd[:2] for cmd in fleetroll[:-2]] == expected
-    assert [cmd[-2:] for cmd in fleetroll[-2:]] == [
-        ("--filter", mm.UNHEALTHY_MOONSHOTS_FILTER), ("--filter", mm.STOPPED_WORKERS_FILTER),
-    ]
+    assert [cmd[:2] for cmd in fleetroll[:-1]] == expected
+    assert fleetroll[-1][-2:] == ("--filter", mm.UNHEALTHY_MOONSHOTS_FILTER)
 
 
 def test_clock_repair_delay_cannot_authorize_an_active_worker(evidence, fleetroll, monkeypatch):
