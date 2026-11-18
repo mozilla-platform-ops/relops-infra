@@ -2390,7 +2390,8 @@ def main() -> None:
             mode = "Diagnosis only" if args.diagnose_workers else (
                 "Confirmed recovery" if args.confirm else "Recovery preview"
             )
-            _publish_tui(mode=mode, logo=MEDIC_LOGO)
+            _publish_tui(mode=mode, confirm=args.confirm, logo=MEDIC_LOGO,
+                         looping=args.confirm and not args.once and not args.update_report)
             _tui_phase("Starting Medic")
         else:
             sys.exit(run_dashboard([sys.executable, "-u", str(Path(__file__).resolve()), *sys.argv[1:]]))

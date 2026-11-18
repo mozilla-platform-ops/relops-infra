@@ -70,9 +70,10 @@ def status_lines(status: dict, returncode: int | None, stopping: bool) -> tuple[
         phase = f"{SPINNER_FRAMES[frame]} {phase}"
 
     header = [phase, timer] if timer else [phase]
-    lines = []
     if mode := status.get("mode"):
-        lines.append(f"Mode: {mode}")
+        confirm = "on" if status.get("confirm") else "off"
+        header.append(f"--confirm {confirm} | {mode}")
+    lines = []
     if detail := status.get("detail"):
         lines.append(detail)
     for key in SECTIONS:
@@ -91,12 +92,13 @@ def draw_pane(screen, bounds: tuple[int, int, int, int], title: str, lines: list
     pane.addnstr(0, 2, f" {title} ", width - 4, curses.A_BOLD if active else 0)
     content_width = width - 4
     body_height = height - 2
+    header_rows = [row for line in header or () for row in wrap(line, content_width)]
     pinned = []
     logo_height = 0
-    if logo and body_height >= len(logo) + 4 and all(len(row) <= content_width for row in logo):
+    if (logo and body_height >= len(logo) + len(header_rows) + 2
+            and all(len(row) <= content_width for row in logo)):
         pinned.extend((*logo, ""))
         logo_height = len(logo)
-    header_rows = [row for line in header or () for row in wrap(line, content_width)]
     pinned.extend(header_rows[:body_height - len(pinned) - 1])
     rows = [row for line in lines for row in (wrap(line, content_width) or [""])]
     page = body_height - len(pinned)
@@ -146,16 +148,18 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
         returncode = process.poll()
         if stop_requested.requested and returncode is not None:
             return returncode
-        can_rescan = returncode is None and not stop_requested.requested and status.get("next_run_at") is not None
+        running = returncode is None and not stop_requested.requested
+        can_rescan = running and status.get("next_run_at") is not None
 
         screen.erase()
         height, width = screen.getmaxyx()
+        header, results = status_lines(status, returncode, stop_requested.requested)
+        footer = "q: close" if returncode is not None else "q: stop"
         if height >= 12 and width >= 36:
             try:
                 main_height = (height - 1) * 3 // 5
                 panes = ((main_height, width, 0, 0),
                          (height - 1 - main_height, width, main_height, 0))
-                header, results = status_lines(status, returncode, stop_requested.requested)
                 offsets[0], pages[0] = draw_pane(
                     screen, panes[0], "Moonshot Medic", results, offsets[0], active=focus == 0,
                     header=header, logo=tuple(status.get("logo", ())),
@@ -168,13 +172,18 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
             except curses.error:
                 # Terminal resize can invalidate a pane while it is being painted.
                 pass
-        footer = "Tab: switch pane | ↑/↓: scroll | End: follow logs | q: stop"
-        if returncode is not None:
-            footer = "Tab: switch pane | ↑/↓: scroll | q: close"
-        elif height < 12 or width < 36:
-            footer = "Resize for dashboard | q: stop"
-        elif can_rescan:
-            footer = "r: rescan now | " + footer
+            footer += " | Tab: switch pane | ↑/↓: scroll"
+            if returncode is None:
+                footer += " | End: follow logs"
+        else:
+            if width > 1:
+                for row, line in enumerate(header[:height - 1]):
+                    screen.addnstr(row, 0, line, width - 1)
+            footer += " | Resize for dashboard"
+        if can_rescan:
+            footer = "r: recheck now | " + footer
+        elif running and status.get("looping"):
+            footer = "r: recheck when idle | " + footer
         if width > 1:
             screen.addnstr(height - 1, 0, footer, width - 1)
         screen.refresh()

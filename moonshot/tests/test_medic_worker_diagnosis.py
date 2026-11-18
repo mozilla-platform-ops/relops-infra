@@ -297,7 +297,8 @@ def test_tui_diagnosis_publishes_the_result_without_relaunching(monkeypatch, tmp
     assert status["mode"] == "Diagnosis only"
     assert status["logo"] == list(mm.MEDIC_LOGO)
     assert status["diagnosis"]["lines"] == ["ms025  zombie — confirmed zombie generic-worker"]
-    _, results = tui.status_lines(status, 0, False)
+    header, results = tui.status_lines(status, 0, False)
+    assert "--confirm off | Diagnosis only" in header
     assert "ms025  zombie — confirmed zombie generic-worker" in results
 
 
@@ -320,23 +321,42 @@ def test_tui_header_animates_while_active_and_counts_down_while_waiting(monkeypa
 
 
 @pytest.mark.parametrize("waiting", [False, True])
-def test_tui_rescan_key_only_signals_during_countdown(monkeypatch, tmp_path, waiting):
+@pytest.mark.parametrize("size", [(15, 84), (10, 84)])
+def test_tui_rescan_key_only_signals_during_countdown(monkeypatch, tmp_path, waiting, size):
     import moonshot_medic_tui as tui
 
     status = tmp_path / "status.json"
-    status.write_text(json.dumps({"next_run_at": 100 if waiting else None}))
+    status.write_text(json.dumps({
+        "phase": "Waiting for next scan" if waiting else "Checking Fleetroll",
+        "next_run_at": 100 if waiting else None,
+        "mode": "Confirmed recovery",
+        "confirm": True,
+        "looping": True,
+        "logo": mm.MEDIC_LOGO,
+    }))
     screen = Mock()
-    screen.getmaxyx.return_value = (24, 84)
+    screen.getmaxyx.return_value = size
     screen.getch.side_effect = [ord("r"), ord("q")]
     process = Mock()
     process.poll.side_effect = [None, 0]
     monkeypatch.setattr(tui, "logo_attribute", lambda: 0)
     monkeypatch.setattr(tui.curses, "curs_set", lambda *_: None)
-    monkeypatch.setattr(tui, "draw_pane", lambda *a, **kw: (0, 1))
-    assert tui.display(screen, process, status, Mock(), tui.StopRequest()) == 0
+    monkeypatch.setattr(tui.time, "time", lambda: 40)
+    logs = Mock()
+    logs.display_lines.return_value = []
+    assert tui.display(screen, process, status, logs, tui.StopRequest()) == 0
+
+    footer = next(call.args[2] for call in screen.addnstr.call_args_list if call.args[0] == size[0] - 1)
+    status_pane = screen.derwin.return_value if size[0] >= 12 else screen
+    rendered = [call.args[2] for call in status_pane.addnstr.call_args_list]
+    assert "--confirm on | Confirmed recovery" in rendered
     if waiting:
+        assert "Next run in 1:00" in rendered
+        assert footer.startswith("r: recheck now | ")
         process.send_signal.assert_called_once_with(signal.SIGUSR1)
     else:
+        assert not any(line.startswith("Next run in") for line in rendered)
+        assert footer.startswith("r: recheck when idle | ")
         process.send_signal.assert_not_called()
 
 
