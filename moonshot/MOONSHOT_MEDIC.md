@@ -156,9 +156,12 @@ manually rebooted or just came back from maintenance.
 uv run moonshot_medic.py --auto --diagnose-workers --no-voice
 ```
 
-Normal `--auto` previews and confirmed loops show the diagnosed, confirmed zombie,
-and deferred counts, followed by each host's state and reason. The recovery
-preview shows an action only when it finds eligible recovery candidates.
+Normal `--auto` previews and confirmed loops show **Check 1** for automated
+recovery and **Check 2** for Fleetroll health. Each check prints its result and
+the Fleetroll filter used to select candidates. The recovery preview shows an
+action only when it finds eligible recovery candidates. The worker diagnosis
+section follows with diagnosed, confirmed zombie, and deferred counts and
+each host's state and reason.
 Confirmed loops scan after recovery work, even when there are no reset candidates.
 When the scan finds candidates, Medic saves the full evidence in a worker
 diagnosis JSON report.

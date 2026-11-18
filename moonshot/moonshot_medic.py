@@ -50,6 +50,8 @@ FLEETROLL_FRESHNESS_SCHEMA_VERSION = 2
 FLEETROLL_FRESHNESS_REQUIRED_SOURCES = {"host", "tc"}
 MOONSHOT_HOST_RE = re.compile(r'^t-linux64-ms-\d+\.test\.releng\.mdc[12]\.mozilla\.com$', re.IGNORECASE)
 MOONSHOT_OBSERVED_FILTER = "host~t-linux64-ms os=L sort:host:asc"
+RECOVERY_FILTER_FILE = "configs/filters/moonshots-hung.yaml"
+UNHEALTHY_MOONSHOTS_FILTER = "host~t-linux64-ms healthy=n note= sort:host:asc"
 WORKER_EVIDENCE_SCHEMA_VERSION = 3
 HUNG_SECONDS = 4 * 60 * 60
 DEFAULT_MAX_IDENTITY_AGE_HOURS = 7 * 24
@@ -1180,7 +1182,7 @@ def _fleetroll_command(*args: str, timeout: int = 60) -> str:
 def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False) -> dict:
     args = ["host", "monitor", host_source, "--once", "--json"]
     if candidates:
-        args.extend(["--filter-file", "configs/filters/moonshots-hung.yaml"])
+        args.extend(["--filter-file", RECOVERY_FILTER_FILE])
     report = json.loads(_fleetroll_command(*args))
     if not isinstance(report, dict):
         raise ValueError("Fleetroll worker snapshot is not a host-keyed object")
@@ -1196,19 +1198,49 @@ def show_unnoted_unhealthy_moonshots() -> None:
     try:
         output = _fleetroll_command(
             "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--hostname-only",
-            "--filter", "host~t-linux64-ms healthy=n note= sort:host:asc",
+            "--filter", UNHEALTHY_MOONSHOTS_FILTER,
         )
         hosts = output.split()
         if any(canonical_moonshot_fqdn(host) != host for host in hosts):
             raise ValueError("Fleetroll returned an invalid Moonshot hostname")
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        warn(f"Check 2 unavailable: {exc}")
+        warn(f"Check 2 — Fleetroll health: Unavailable ({exc})")
+        _emit(f"  Fleetroll filter: {UNHEALTHY_MOONSHOTS_FILTER}")
         return
 
-    info(f"Check 2: {len(hosts)} unnoted Moonshots with recorded HEALTHY=N")
+    info(f"Check 2 — Fleetroll health: {len(hosts)} unnoted Moonshots with HEALTHY=N")
+    _emit(f"  Fleetroll filter: {UNHEALTHY_MOONSHOTS_FILTER}")
+    show_host_labels(hosts)
+
+
+def recovery_candidate_filter() -> str:
+    # Use Fleetroll's environment to read its YAML, keeping the filter file authoritative.
+    try:
+        result = subprocess.run(
+            ["uv", "run", "--no-cache", "--no-sync", "python", "-c",
+             "import sys, yaml; from pathlib import Path; "
+             "print(yaml.safe_load(Path(sys.argv[1]).read_text())['query'])",
+             RECOVERY_FILTER_FILE],
+            cwd=FLEETROLL_DIR, capture_output=True, text=True, check=True, timeout=5,
+        )
+        return " ".join(result.stdout.split()) or f"--filter-file {RECOVERY_FILTER_FILE}"
+    except (OSError, subprocess.SubprocessError):
+        return f"--filter-file {RECOVERY_FILTER_FILE}"
+
+
+def show_host_labels(hosts: list[str]) -> None:
     if hosts:
         _emit(textwrap.fill(" ".join(short_label(host) for host in hosts), width=88,
                             initial_indent="  ", subsequent_indent="  "))
+
+
+def show_auto_checks(result: str, *, hosts: list[str] | None = None, action: str = "") -> None:
+    info(f"Check 1 — Automated recovery: {result}")
+    _emit(f"  Fleetroll candidate filter: {recovery_candidate_filter()}")
+    show_host_labels(hosts or [])
+    if action:
+        _emit(f"  Action: {action}")
+    show_unnoted_unhealthy_moonshots()
 
 
 def historical_identity_problem(record: dict, *, now: datetime.datetime,
@@ -1807,9 +1839,6 @@ def main() -> None:
     say(SCRIPT_VOICE_NAME)
 
     freshness_mins = args.freshness_requirement if args.freshness_requirement is not None else args.loop_interval
-    freshness_label = (f"{freshness_mins}min"
-                       if args.freshness_requirement is not None
-                       else f"{freshness_mins}min (from loop interval)")
     stale_threshold = freshness_mins * 60
 
     def show_worker_diagnoses() -> None:
@@ -1830,43 +1859,41 @@ def main() -> None:
             sys.exit(1)
 
     if args.auto and not args.confirm:
-        show_unnoted_unhealthy_moonshots()
-        info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
         if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
-            err("Fleetroll host or Taskcluster data failed freshness validation. "
-                "Refresh it before previewing.")
+            show_auto_checks("Skipped — Fleetroll freshness check failed")
             sys.exit(1)
-        info("Fetching bad-host list to preview run...")
         try:
             preview_hosts = list(fleetroll_worker_snapshot(
                 "configs/host-lists/linux/all.list", candidates=True,
             ))
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             err(f"Cannot read automatic recovery candidates: {exc}")
+            show_auto_checks("Unavailable — could not read recovery candidates")
             sys.exit(1)
         circuit_ok, preview_hosts, circuit_summary = check_fleet_reset_circuit_breaker(
             preview_hosts, args.max_fleet_reset_pct,
         )
         if not circuit_ok:
             err(circuit_summary)
+            show_auto_checks("Skipped — fleet reset circuit breaker tripped")
             say("Moonshot Medic circuit breaker tripped")
             sys.exit(1)
-        info(circuit_summary)
         preview_hosts = eligible_auto_hosts(
             preview_hosts, freshness_seconds=stale_threshold,
             max_identity_age_hours=args.max_identity_age_hours,
         )
         n = min(len(preview_hosts), AUTO_BATCH_SIZE)
-        print()
+        total = len(preview_hosts)
+        result = f"{total} {'host' if total == 1 else 'hosts'} eligible"
+        if n < total:
+            result += f" (first {n} shown)"
+        action = ""
         if n:
-            warn(f"Auto mode found {len(preview_hosts)} bad host(s); would process {n}:")
-            warn(' '.join(preview_hosts[:n]))
             if args.no_reset:
-                info("Action: Would check clocks, repair skew if needed, and collect diagnostics.")
+                action = "Would check clocks, repair skew if needed, and collect diagnostics."
             else:
-                info("Action: Would repair clock skew or reset via iLO, then collect diagnostics.")
-        else:
-            warn("Auto mode found no bad hosts to process.")
+                action = "Would repair clock skew or reset via iLO, then collect diagnostics."
+        show_auto_checks(result, hosts=preview_hosts[:n], action=action)
         if not _interrupt_count:
             show_worker_diagnoses()
         if n:
@@ -1898,12 +1925,8 @@ def main() -> None:
         stale = False
         # --- freshness gate ---
         if args.auto:
-            show_unnoted_unhealthy_moonshots()
-            info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
             if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
-                print()
-                warn("Fleetroll host or Taskcluster data failed freshness validation "
-                     "— will retry next loop.")
+                show_auto_checks("Skipped — Fleetroll freshness check failed")
                 say("Stale Fleetroll data")
                 stale = True
                 last_failed = True
@@ -1911,13 +1934,13 @@ def main() -> None:
         # --- resolve host list ---
         if not stale:
             if args.auto:
-                info("Fetching bad-host list from fleetroll...")
                 try:
                     host_tokens = list(fleetroll_worker_snapshot(
                         "configs/host-lists/linux/all.list", candidates=True,
                     ))
                 except (OSError, subprocess.SubprocessError, ValueError) as exc:
                     err(f"Cannot read automatic recovery candidates: {exc}")
+                    show_auto_checks("Unavailable — could not read recovery candidates")
                     last_failed = True
                     break
                 circuit_ok, hosts, circuit_summary = check_fleet_reset_circuit_breaker(
@@ -1925,10 +1948,10 @@ def main() -> None:
                 )
                 if not circuit_ok:
                     err(circuit_summary)
+                    show_auto_checks("Skipped — fleet reset circuit breaker tripped")
                     say("Moonshot Medic circuit breaker tripped")
                     last_failed = True
                     break
-                info(circuit_summary)
             elif args.hostname:
                 hosts = [worker_fqdn(h) for h in args.hostname]
             else:
@@ -1937,8 +1960,10 @@ def main() -> None:
                 hosts = [worker_fqdn(line.strip()) for line in sys.stdin if line.strip()]
 
             if not hosts:
-                warn("No bad hosts found." if args.auto else "No hosts specified. Nothing to do.")
-                if not args.auto:
+                if args.auto:
+                    show_auto_checks("0 hosts eligible")
+                else:
+                    warn("No hosts specified. Nothing to do.")
                     sys.exit(0)
             else:
                 state = load_state()
@@ -1969,9 +1994,12 @@ def main() -> None:
                         hosts, freshness_seconds=stale_threshold,
                         max_identity_age_hours=args.max_identity_age_hours,
                     )
+                    total = len(hosts)
+                    show_auto_checks(f"{total} {'host' if total == 1 else 'hosts'} eligible", hosts=hosts)
 
                 if not hosts:
-                    info("No eligible hosts to process. Nothing to do.")
+                    if not args.auto:
+                        info("No eligible hosts to process. Nothing to do.")
                 else:
                     batches = [hosts[i:i + AUTO_BATCH_SIZE] for i in range(0, len(hosts), AUTO_BATCH_SIZE)]
                     n_total = len(hosts)

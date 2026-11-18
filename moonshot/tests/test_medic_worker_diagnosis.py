@@ -289,6 +289,7 @@ def test_auto_prints_diagnoses_without_reset_candidates(
     monkeypatch.setattr(sys, "argv", ["medic", "--auto", "--once", "--no-voice", *confirm])
     monkeypatch.setattr(mm, "RESULTS_BASE", results_base)
     monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+    monkeypatch.setattr(mm, "recovery_candidate_filter", lambda: "test recovery filter")
     monkeypatch.setattr(mm, "announce_overview_report", lambda: None)
     monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: True)
     monkeypatch.setattr(mm, "fleetroll_worker_snapshot", lambda *a, **kw: {})

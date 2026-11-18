@@ -359,6 +359,8 @@ def test_auto_main_gates_actions_with_override_evidence(
     monkeypatch.setattr(sys, "argv", args)
     monkeypatch.setattr(mm, "RESULTS_BASE", tmp_path)
     monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+    recovery_filter = "host~t-linux64-ms tc_act>5h data>4h note= sort:host:asc"
+    monkeypatch.setattr(mm, "recovery_candidate_filter", lambda: recovery_filter)
     monkeypatch.setattr(mm, "load_state", lambda: {"hosts": {}})
     monkeypatch.setattr(mm, "_configured_linux_moonshot_hosts", lambda: {HOST})
     monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: True)
@@ -388,7 +390,11 @@ def test_auto_main_gates_actions_with_override_evidence(
     eligible = not active and not missing_identity
     assert actions == ([HOST] if not preview and eligible else [])
     output = capsys.readouterr().out
-    assert "Check 2: 12 unnoted Moonshots with recorded HEALTHY=N" in output
+    check_1 = f"Check 1 — Automated recovery: {'1 host' if eligible else '0 hosts'} eligible"
+    check_2 = "Check 2 — Fleetroll health: 12 unnoted Moonshots with HEALTHY=N"
+    assert output.index(check_1) < output.index(check_2) < output.index("Worker diagnosis:")
+    assert f"Fleetroll candidate filter: {recovery_filter}" in output
+    assert "Fleetroll filter: host~t-linux64-ms healthy=n note= sort:host:asc" in output
     assert all(f"ms{n:03d}" in output for n in range(31, 43))
     if preview and eligible:
         if no_reset:
@@ -404,7 +410,7 @@ def test_auto_main_gates_actions_with_override_evidence(
             assert "Starting run. 1 host detected." in announcements
             assert list(tmp_path.rglob("run.log"))
         else:
-            assert "No eligible hosts to process. Nothing to do." in output
+            assert "Check 1 — Automated recovery: 0 hosts eligible" in output
             assert "Hosts to process:" not in output
             assert "Run started at" not in output
             assert "Run complete:" not in output
@@ -414,13 +420,15 @@ def test_auto_main_gates_actions_with_override_evidence(
     check = [("host", "monitor"), ("gather", "tc"), ("host", "monitor")]
     expected = [("host", "monitor")]
     expected += [("host", "monitor")] if missing_identity else check
+    health_check_index = len(expected)
+    expected.append(("host", "monitor"))
     if not preview and eligible:
         expected += check * 2  # Per-batch and immediately before reset.
-    assert fleetroll[0] == (
+    assert fleetroll[health_check_index] == (
         "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--hostname-only",
         "--filter", "host~t-linux64-ms healthy=n note= sort:host:asc",
     )
-    assert [cmd[:2] for cmd in fleetroll[1:-1]] == expected
+    assert [cmd[:2] for cmd in fleetroll[:-1]] == expected
     assert fleetroll[-1][:2] == ("host", "monitor")
     assert fleetroll[-1][-2:] == ("--filter", "host~t-linux64-ms tc_act>4h note= sort:host:asc")
 
