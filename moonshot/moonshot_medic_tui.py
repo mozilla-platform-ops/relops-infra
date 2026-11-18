@@ -17,11 +17,6 @@ from textwrap import shorten, wrap
 
 STATUS_ENV = "MOONSHOT_MEDIC_TUI_STATUS"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-CHECKS = {
-    "recovery": ("Check 1 · Automated recovery", "Eligible hosts"),
-    "fleet_health": ("Check 2 · Fleetroll health", "Matched hosts"),
-    "diagnosis": ("Worker diagnosis", ""),
-}
 SPINNER_FRAMES = "◴◷◶◵"
 SPINNER_INTERVAL = 0.8
 MODES = {
@@ -37,7 +32,7 @@ HOST_STATES = {
     "failed": ("Failed", "error"),
     "gdm_autologin_stall": ("GDM autologin stall", "attention"),
     "live": ("Worker live", "accent"),
-    "matched": ("Matched", "attention"),
+    "matched": ("Not diagnosed", "attention"),
     "not_zombie": ("No zombie found", "accent"),
     "rebooted": ("Reboot verified", "success"),
     "recovered": ("Recovered", "success"),
@@ -49,10 +44,8 @@ HOST_STATES = {
 }
 HOST_GROUPS = (
     ("Needs attention", "attention", set()),
-    ("Recovered this scan", "success", {"recovered"}),
-    ("Actions completed", "success", {"clock_repaired", "rebooted", "ssh_restored"}),
+    ("Actions completed", "success", {"clock_repaired", "ssh_restored"}),
     ("Eligible for recovery", "accent", {"eligible"}),
-    ("Worker findings", "accent", {"live", "not_zombie"}),
 )
 Line = tuple[str, str]
 
@@ -110,29 +103,44 @@ def status_header(status: dict, returncode: int | None, stopping: bool) -> Line:
     return (f"{phase} · {MODES.get(mode, mode)}" if mode else phase, tone)
 
 
+def host_state(state: str) -> Line:
+    return HOST_STATES.get(state, (state.replace("_", " ").capitalize(), "attention"))
+
+
+def check_heading(result: dict, label: str) -> Line:
+    title = result["title"] or label
+    text = " · ".join(part for part in (title, result["summary"], result["updated_at"]) if part)
+    return f"  {text}", "attention" if result["alert"] else ""
+
+
+def worker_lines(fleet_health: dict, diagnosis: dict, outcomes: dict) -> list[Line]:
+    matches = fleet_health.get("hosts", {})
+    findings = diagnosis.get("hosts", {})
+    rows = []
+    for host, event in sorted({**matches, **findings, **outcomes}.items()):
+        label, tone = host_state(event["state"])
+        reason = event["reason"]
+        if host in outcomes and (finding := findings.get(host)):
+            diagnosis_label, _ = host_state(finding["state"])
+            reason = f"{diagnosis_label} ({finding['reason']}) · {reason}"
+        if fleet_health and not fleet_health["alert"] and host not in matches:
+            reason += " · Found during diagnosis"
+        rows.append((f"    {host}  {label} · {reason}", tone))
+    return sorted(rows, key=lambda row: row[1] not in ("error", "attention"))
+
+
 def dashboard_lines(status: dict) -> list[Line]:
-    findings = (status.get("diagnosis") or {}).get("hosts", {})
-    hosts = {
-        **(status.get("fleet_health") or {}).get("hosts", {}),
-        **(status.get("recovery") or {}).get("hosts", {}),
-        **status.get("recovery_outcomes", {}),
-        **findings,
-    }
-    for host, outcome in status.get("recovery_outcomes", {}).items():
-        if outcome["state"] == "failed" and hosts[host]["state"] in ("deferred", "live", "not_zombie"):
-            hosts[host] = outcome
-    for host, outcome in status.get("diagnosis_outcomes", {}).items():
-        reason = outcome["reason"]
-        if host in findings:
-            state = findings[host]["state"]
-            label, _ = HOST_STATES.get(state, (state.replace("_", " ").capitalize(), ""))
-            reason = f"{label} · {reason}"
-        hosts[host] = {**outcome, "reason": reason}
+    recovery = status.get("recovery") or {}
+    fleet_health = status.get("fleet_health") or {}
+    diagnosis = status.get("diagnosis") or {}
+    outcomes = status.get("diagnosis_outcomes", {})
+    workers = worker_lines(fleet_health, diagnosis, outcomes)
+    hosts = {**recovery.get("hosts", {}), **status.get("recovery_outcomes", {})}
 
     grouped = {title: [] for title, _, _ in HOST_GROUPS}
     for host, event in sorted(hosts.items()):
         state = event["state"]
-        label, tone = HOST_STATES.get(state, (state.replace("_", " ").capitalize(), "attention"))
+        label, tone = host_state(state)
         group = next((title for title, _, states in HOST_GROUPS if state in states),
                      "Needs attention")
         grouped[group].append((f"  {host}  {label} · {event['reason']}", tone))
@@ -142,8 +150,8 @@ def dashboard_lines(status: dict) -> list[Line]:
         if rows := grouped[title]:
             lines.extend([(f"{title} · {len(rows)}", tone), *rows, ("", "")])
 
-    if status.get("diagnosis") and not hosts and not any(
-        (status.get(key) or {}).get("alert") for key in CHECKS
+    if diagnosis and not hosts and not workers and not any(
+        check.get("alert") for check in (recovery, fleet_health, diagnosis)
     ):
         lines.append(("No hosts flagged in this scan", "success"))
 
@@ -151,19 +159,25 @@ def dashboard_lines(status: dict) -> list[Line]:
         if lines and lines[-1][0]:
             lines.append(("", ""))
         lines.append((f"Scan details · started {started_at}", "accent"))
-    for key, (label, host_label) in CHECKS.items():
-        if result := status.get(key):
-            title = result["title"] or label
-            heading = " · ".join(part for part in (title, result["summary"], result["updated_at"]) if part)
-            lines.append((f"  {heading}", "attention" if result["alert"] else ""))
-            if query := result["query"]:
-                lines.append((f"    Filter  {query}", "muted"))
-            if host_label and result["hosts"]:
-                lines.append((f"    {host_label}  {' '.join(result['hosts'])}", ""))
-            if action := result["action"]:
-                lines.append((f"    Preview  {action}", ""))
-            if report := result["report"]:
-                lines.append((f"    Report  {report}", ""))
+    if recovery:
+        lines.append(check_heading(recovery, "Check 1 · Automated recovery"))
+        if query := recovery["query"]:
+            lines.append((f"    Filter  {query}", "muted"))
+        if recovery["hosts"]:
+            lines.append((f"    Eligible hosts  {' '.join(recovery['hosts'])}", ""))
+        if action := recovery["action"]:
+            lines.append((f"    Preview  {action}", ""))
+    if fleet_health:
+        lines.append(check_heading(fleet_health, "Check 2 · Fleetroll health"))
+        if query := fleet_health["query"]:
+            lines.append((f"    Filter  {query}", "muted"))
+        if diagnosis.get("alert"):
+            lines.append((f"    {diagnosis['title']}", "attention"))
+    elif diagnosis:
+        lines.append(check_heading(diagnosis, "Worker diagnosis"))
+        if query := diagnosis["query"]:
+            lines.append((f"    Filter  {query}", "muted"))
+    lines.extend(workers)
     return lines
 
 

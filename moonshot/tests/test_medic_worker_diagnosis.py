@@ -297,11 +297,12 @@ def test_tui_diagnosis_publishes_the_result_without_relaunching(monkeypatch, tmp
     assert status["mode"] == "Diagnosis only"
     assert status["logo"] == list(mm.MEDIC_LOGO)
     assert "Diagnosis only" in tui.status_header(status, 0, False)[0]
-    assert ("  ms025  Confirmed zombie · confirmed zombie generic-worker", "attention") in (
+    assert ("    ms025  Confirmed zombie · confirmed zombie generic-worker", "attention") in (
         tui.dashboard_lines(status)
     )
     assert status["diagnosis"]["query"] == mm.INACTIVE_MOONSHOTS_FILTER
-    assert Path(status["diagnosis"]["report"]).is_file()
+    report_path, = tmp_path.rglob("*-worker-diagnosis.json")
+    assert report_path.name not in status_path.read_text()
 
 
 def test_tui_header_animates_while_active_and_counts_down_while_waiting(monkeypatch):
@@ -394,11 +395,10 @@ def test_tui_shows_scan_details_and_dated_single_row_logs(monkeypatch, tmp_path)
     monkeypatch.setattr(mm, "_tui_status", {})
     mm._publish_tui(logo=mm.MEDIC_LOGO, scan_started_at="12:43")
     mm._tui_result("recovery", summary="0 hosts eligible", query="tc_act>4h")
-    mm._tui_result("fleet_health", summary="2 hosts matched at scan time", query="healthy=n",
+    mm._tui_result("fleet_health", summary="3 hosts matched at scan time", query="healthy=n",
                    hosts={host: {"state": "matched", "reason": "Fleetroll health match"}
-                          for host in ("ms126", "ms274")})
-    report = Path("moonshot_debugging_results/20261118/worker-diagnosis.json")
-    mm._tui_result("diagnosis", report=report, hosts={
+                          for host in ("ms126", "ms155", "ms274")})
+    mm._tui_result("diagnosis", hosts={
         "ms126": {"state": "deferred", "reason": "latest host audit did not succeed"},
         "ms274": {"state": "task_resolution_stall", "reason": "claim-expired task"},
     })
@@ -408,16 +408,16 @@ def test_tui_shows_scan_details_and_dated_single_row_logs(monkeypatch, tmp_path)
     }, "recovered", "new boot and worker ready", tmp_path / "report.json")
     mm.warn("Audit retry scheduled\n  for the next scan\t" + "界" * 80)
     status = json.loads(path.read_text())
-    overview = tui.dashboard_lines(status)
-    assert overview[:5] == [
-        ("Needs attention · 1", "attention"),
-        ("  ms126  Deferred · latest host audit did not succeed", "attention"),
-        ("", ""),
-        ("Recovered this scan · 1", "success"),
-        ("  ms274  Recovered · Task resolution stall · new boot and worker ready", "success"),
-    ]
     timestamp = status["fleet_health"]["updated_at"]
-    assert (f"  Check 2 · Fleetroll health · 2 hosts matched at scan time · {timestamp}", "") in overview
+    check_2 = [
+        (f"  Check 2 · Fleetroll health · 3 hosts matched at scan time · {timestamp}", ""),
+        ("    Filter  healthy=n", "muted"),
+        ("    ms126  Deferred · latest host audit did not succeed", "attention"),
+        ("    ms155  Not diagnosed · Fleetroll health match", "attention"),
+        ("    ms274  Recovered · Task resolution stall (claim-expired task) · new boot and worker ready",
+         "success"),
+    ]
+    assert tui.dashboard_lines(status)[-len(check_2):] == check_2
 
     for event in status["activity"]:
         datetime.datetime.strptime(event["time"], "%Y-%m-%d %H:%M:%S")
@@ -442,9 +442,8 @@ def test_tui_shows_scan_details_and_dated_single_row_logs(monkeypatch, tmp_path)
         assert mm.MEDIC_LOGO[0] in frame
         assert "Scan details · started 12:43" in frame
         assert "    Filter  tc_act>4h" in frame
-        assert "    Filter  healthy=n" in frame
-        assert "    Matched hosts  ms126 ms274" in frame
-        assert f"    Report  {report}" in frame
+        assert all(row in frame for row, _ in check_2)
+        assert all("Matched hosts" not in row and "    Report " not in row for row in frame)
         assert " Logs " in frame
         entries = frame[frame.index(" Logs ") + 1:]
         assert len(entries) == 2

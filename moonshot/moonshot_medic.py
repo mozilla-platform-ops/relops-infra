@@ -149,7 +149,7 @@ def wait_for_next_scan(loop_interval: int) -> None:
 
 def _tui_result(key: str, *, title: str = "", summary: str = "",
                 hosts: dict[str, dict[str, str]] | None = None, alert: bool = False,
-                query: str = "", action: str = "", report: Path | None = None) -> None:
+                query: str = "", action: str = "") -> None:
     if _tui_status_path is not None:
         _publish_tui(**{key: {
             "title": title,
@@ -159,7 +159,6 @@ def _tui_result(key: str, *, title: str = "", summary: str = "",
             "updated_at": datetime.datetime.now().strftime("%H:%M:%S"),
             "query": query,
             "action": action,
-            "report": str(report).removeprefix(f"{SCRIPT_DIR}/") if report else "",
         }})
 
 
@@ -2119,17 +2118,17 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         label = short_label(entry["host"])
         findings[label] = {"state": state, "reason": reason}
         rows.append(f"{label}  {state.replace('_', ' ')} — {reason}")
-    _tui_result("diagnosis", hosts=findings, report=report_path,
+    _tui_result("diagnosis", hosts=findings,
                 query=INACTIVE_MOONSHOTS_FILTER if args.diagnose_workers else "")
     if args.diagnose_workers:
         for entry in results:
             _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
-        info(f"Diagnosis-only report: {report_path}")
+        info(f"Diagnosis-only report: {report_path}", dashboard=False)
         return True
     info(title)
     for row in rows:
         _emit(f"  {row}")
-    info(f"Worker diagnosis report: {report_path}")
+    info(f"Worker diagnosis report: {report_path}", dashboard=False)
     candidates = [
         entry for entry in results
         if entry.get("diagnosis", {}).get("worker_state") == "gdm_autologin_stall"

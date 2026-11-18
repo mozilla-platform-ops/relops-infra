@@ -162,8 +162,8 @@ Add `--tui` to the usual auto command to run Medic in a terminal dashboard.
 
 The dashboard shows Medic's phase and recovery mode, followed by hosts that
 need attention, recovery outcomes, and scan details. Each check shows when it
-ran, the exact Fleetroll filter, and the hosts it found. Worker diagnosis
-includes the report path when one is available.
+ran and the exact Fleetroll filter. Check 2 lists each host with its worker
+diagnosis and any recovery outcome.
 Between scans, the header counts down to the next scan. Each entry in the
 Logs pane starts with the local date and time and occupies one row. Long
 entries end with an ellipsis. The full scan transcript, including filters
