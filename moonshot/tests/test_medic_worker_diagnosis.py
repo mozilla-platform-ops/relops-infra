@@ -296,12 +296,12 @@ def test_tui_diagnosis_publishes_the_result_without_relaunching(monkeypatch, tmp
     status = json.loads(status_path.read_text())
     assert status["mode"] == "Diagnosis only"
     assert status["logo"] == list(mm.MEDIC_LOGO)
-    assert status["diagnosis"]["lines"] == ["ms025  zombie — confirmed zombie generic-worker"]
     assert "Diagnosis only" in tui.status_header(status, 0, False)[0]
     assert ("  ms025  Confirmed zombie · confirmed zombie generic-worker", "attention") in (
-        tui.overview_lines(status)
+        tui.dashboard_lines(status)
     )
-    assert ("ms025  zombie — confirmed zombie generic-worker", "") in tui.detail_lines(status)
+    assert status["diagnosis"]["query"] == mm.INACTIVE_MOONSHOTS_FILTER
+    assert Path(status["diagnosis"]["report"]).is_file()
 
 
 def test_tui_header_animates_while_active_and_counts_down_while_waiting(monkeypatch):
@@ -343,14 +343,14 @@ def test_tui_rescan_key_only_signals_during_countdown(monkeypatch, tmp_path, wai
     process.poll.side_effect = [None, 0]
     monkeypatch.setattr(tui.curses, "curs_set", lambda *_: None)
     monkeypatch.setattr(tui.time, "time", lambda: 40)
-    logs = Mock()
-    logs.display_lines.return_value = []
-    assert tui.display(screen, process, status, logs, tui.StopRequest()) == 0
+    assert tui.display(screen, process, status, Mock(), tui.StopRequest()) == 0
 
     footer = next(call.args[2] for call in screen.addnstr.call_args_list if call.args[0] == size[0] - 1)
     status_pane = screen.derwin.return_value if size[0] >= 12 else screen
     rendered = [call.args[2] for call in status_pane.addnstr.call_args_list]
     assert any("Recovery enabled" in line for line in rendered)
+    if size[0] >= 12:
+        assert mm.MEDIC_LOGO[0] in rendered
     if waiting:
         assert "Next scan in 1:00 · Recovery enabled" in rendered
         assert footer.startswith("r: recheck now | ")
@@ -386,16 +386,19 @@ def test_tui_second_ctrl_c_forces_exit_after_showing_shutdown_instructions(monke
     assert any(line.startswith("Ctrl-C: exit immediately") for line in rendered)
 
 
-def test_tui_groups_host_outcomes_and_toggles_raw_details(monkeypatch, tmp_path):
+def test_tui_shows_scan_details_and_dated_single_row_logs(monkeypatch, tmp_path):
     import moonshot_medic_tui as tui
 
     path = tmp_path / "status.json"
     monkeypatch.setattr(mm, "_tui_status_path", path)
     monkeypatch.setattr(mm, "_tui_status", {})
-    mm._publish_tui(logo=mm.MEDIC_LOGO)
-    mm._tui_result("fleet_health", "Check 2 — Fleetroll health", "Fleetroll filter: healthy=n",
-                   summary="2 hosts matched at scan time")
-    mm._tui_result("diagnosis", "Worker diagnosis", hosts={
+    mm._publish_tui(logo=mm.MEDIC_LOGO, scan_started_at="12:43")
+    mm._tui_result("recovery", summary="0 hosts eligible", query="tc_act>4h")
+    mm._tui_result("fleet_health", summary="2 hosts matched at scan time", query="healthy=n",
+                   hosts={host: {"state": "matched", "reason": "Fleetroll health match"}
+                          for host in ("ms126", "ms274")})
+    report = Path("moonshot_debugging_results/20261118/worker-diagnosis.json")
+    mm._tui_result("diagnosis", report=report, hosts={
         "ms126": {"state": "deferred", "reason": "latest host audit did not succeed"},
         "ms274": {"state": "task_resolution_stall", "reason": "claim-expired task"},
     })
@@ -403,8 +406,9 @@ def test_tui_groups_host_outcomes_and_toggles_raw_details(monkeypatch, tmp_path)
         "host": mm.worker_fqdn("ms274"),
         "diagnosis": {"worker_state": "task_resolution_stall", "reason": "claim-expired task"},
     }, "recovered", "new boot and worker ready", tmp_path / "report.json")
+    mm.warn("Audit retry scheduled\n  for the next scan\t" + "界" * 80)
     status = json.loads(path.read_text())
-    overview = tui.overview_lines(status)
+    overview = tui.dashboard_lines(status)
     assert overview[:5] == [
         ("Needs attention · 1", "attention"),
         ("  ms126  Deferred · latest host audit did not succeed", "attention"),
@@ -412,7 +416,11 @@ def test_tui_groups_host_outcomes_and_toggles_raw_details(monkeypatch, tmp_path)
         ("Recovered this scan · 1", "success"),
         ("  ms274  Recovered · Task resolution stall · new boot and worker ready", "success"),
     ]
-    assert ("  Fleetroll health  2 hosts matched at scan time", "") in overview
+    timestamp = status["fleet_health"]["updated_at"]
+    assert (f"  Check 2 · Fleetroll health · 2 hosts matched at scan time · {timestamp}", "") in overview
+
+    for event in status["activity"]:
+        datetime.datetime.strptime(event["time"], "%Y-%m-%d %H:%M:%S")
 
     screen = Mock()
     screen.getmaxyx.return_value = (32, 100)
@@ -424,21 +432,28 @@ def test_tui_groups_host_outcomes_and_toggles_raw_details(monkeypatch, tmp_path)
         pane.addnstr.reset_mock()
 
     screen.refresh.side_effect = capture_frame
-    screen.getch.side_effect = [ord("d"), ord("d"), ord("q")]
+    screen.getch.side_effect = [ord("d"), ord("q")]
     process = Mock()
     process.poll.return_value = 0
-    logs = Mock()
-    logs.display_lines.return_value = ['{"event": "medic_action"}']
-    assert tui.display(screen, process, path, logs, tui.StopRequest()) == 0
-    for frame in (frames[0], frames[2]):
+    assert tui.display(screen, process, path, Mock(), tui.StopRequest()) == 0
+    assert frames[0] == frames[1]
+    assert all(" | d:" not in call.args[2] for call in screen.addnstr.call_args_list)
+    for frame in frames:
         assert mm.MEDIC_LOGO[0] in frame
-        assert " Recent activity " in frame
-        assert any("ms274  SSH reboot recovered" in row for row in frame)
-        assert "Fleetroll filter: healthy=n" not in frame
-        assert '{"event": "medic_action"}' not in frame
-    assert " Scan details " in frames[1]
-    assert "Fleetroll filter: healthy=n" in frames[1]
-    assert '{"event": "medic_action"}' in frames[1]
+        assert "Scan details · started 12:43" in frame
+        assert "    Filter  tc_act>4h" in frame
+        assert "    Filter  healthy=n" in frame
+        assert "    Matched hosts  ms126 ms274" in frame
+        assert f"    Report  {report}" in frame
+        assert " Logs " in frame
+        entries = frame[frame.index(" Logs ") + 1:]
+        assert len(entries) == 2
+        assert entries[0].startswith(f"{status['activity'][0]['time']}  ms274  SSH reboot recovered")
+        assert entries[1].startswith(f"{status['activity'][1]['time']}  Warning · "
+                                     "Audit retry scheduled for the next scan")
+        assert all("\n" not in entry for entry in entries)
+        assert entries[1].endswith("…")
+        assert len(entries[1]) + entries[1].count("界") <= 96
 
 
 def test_rescan_shortens_only_the_current_wait(monkeypatch):

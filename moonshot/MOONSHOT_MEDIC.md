@@ -160,11 +160,14 @@ Add `--tui` to the usual auto command to run Medic in a terminal dashboard.
 ./moonshot_medic.py --auto --confirm --tui
 ```
 
-The overview shows Medic's phase and recovery mode, followed by hosts that
-need attention, recovery outcomes, and a summary of the scan's checks.
-Between scans, the header counts down to the next scan. The bottom pane shows
-recent host actions and warnings. Press `d` to view exact filters, diagnosis
-details, and raw logs, or press it again to return to the overview.
+The dashboard shows Medic's phase and recovery mode, followed by hosts that
+need attention, recovery outcomes, and scan details. Each check shows when it
+ran, the exact Fleetroll filter, and the hosts it found. Worker diagnosis
+includes the report path when one is available.
+Between scans, the header counts down to the next scan. Each entry in the
+Logs pane starts with the local date and time and occupies one row. Long
+entries end with an ellipsis. The full scan transcript, including filters
+and report paths, is in `moonshot_debugging_results/YYYYMMDD/run.log`.
 
 Press `Tab` to switch panes, use arrows or Page Up and Page Down to scroll,
 and press `End` to resume following the bottom pane. `q` or the first `Ctrl-C` asks

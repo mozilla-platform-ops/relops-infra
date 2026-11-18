@@ -1,6 +1,5 @@
 """Terminal dashboard for an ordinary Moonshot Medic process."""
 
-import codecs
 import curses
 import json
 import math
@@ -11,13 +10,18 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import deque
+import unicodedata
+from datetime import datetime
 from pathlib import Path
 from textwrap import shorten, wrap
 
 STATUS_ENV = "MOONSHOT_MEDIC_TUI_STATUS"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-SECTIONS = ("recovery", "fleet_health", "diagnosis")
+CHECKS = {
+    "recovery": ("Check 1 · Automated recovery", "Eligible hosts"),
+    "fleet_health": ("Check 2 · Fleetroll health", "Matched hosts"),
+    "diagnosis": ("Worker diagnosis", ""),
+}
 SPINNER_FRAMES = "◴◷◶◵"
 SPINNER_INTERVAL = 0.8
 MODES = {
@@ -53,13 +57,14 @@ HOST_GROUPS = (
 Line = tuple[str, str]
 
 
-class MedicLogs:
+class MedicErrors:
+    """Keep the last stderr line for failures outside Medic's normal event logging."""
+
     def __init__(self, fd: int) -> None:
         self.fd = fd
         os.set_blocking(fd, False)
-        self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        self.lines: deque[str] = deque(maxlen=1000)
-        self.pending = ""
+        self.latest = ""
+        self.pending = b""
         self.closed = False
 
     def read(self) -> None:
@@ -70,17 +75,14 @@ class MedicLogs:
         except BlockingIOError:
             return
         self.closed = not chunk
-        text = self.pending + self.decoder.decode(chunk, final=self.closed)
-        *lines, self.pending = text.split("\n")
-        self.lines.extend(line[-4096:] for line in lines)
-        self.pending = self.pending[-4096:]
-
-    def display_lines(self) -> list[str]:
-        lines = list(self.lines)
-        if self.pending:
+        *lines, self.pending = (self.pending + chunk).split(b"\n")
+        if self.closed:
             lines.append(self.pending)
-        return [ANSI_ESCAPE.sub("", line.rstrip("\r")).replace("\r", " ").expandtabs(4)
-                for line in lines]
+        self.pending = self.pending[-4096:]
+        for line in reversed(lines):
+            if text := " ".join(ANSI_ESCAPE.sub("", line[-4096:].decode(errors="replace")).split()):
+                self.latest = text
+                break
 
 
 def status_header(status: dict, returncode: int | None, stopping: bool) -> Line:
@@ -108,21 +110,7 @@ def status_header(status: dict, returncode: int | None, stopping: bool) -> Line:
     return (f"{phase} · {MODES.get(mode, mode)}" if mode else phase, tone)
 
 
-def detail_lines(status: dict) -> list[Line]:
-    lines = []
-    if detail := status.get("detail"):
-        lines.append((detail, ""))
-    for key in SECTIONS:
-        if result := status.get(key):
-            if lines:
-                lines.append(("", ""))
-            lines.extend([(result["title"], "attention" if result.get("alert") else "accent"),
-                          (f"Updated {result['updated_at']}", "muted")])
-            lines.extend((line, "") for line in result["lines"])
-    return lines or [("Scan details will appear here.", "muted")]
-
-
-def overview_lines(status: dict) -> list[Line]:
+def dashboard_lines(status: dict) -> list[Line]:
     findings = (status.get("diagnosis") or {}).get("hosts", {})
     hosts = {
         **(status.get("fleet_health") or {}).get("hosts", {}),
@@ -154,28 +142,59 @@ def overview_lines(status: dict) -> list[Line]:
         if rows := grouped[title]:
             lines.extend([(f"{title} · {len(rows)}", tone), *rows, ("", "")])
 
-    if diagnosis := status.get("diagnosis"):
-        if diagnosis.get("alert"):
-            lines.append((diagnosis["title"], "attention"))
-        elif not hosts and not any((status.get(key) or {}).get("alert") for key in SECTIONS):
-            lines.append(("No hosts flagged in this scan", "success"))
+    if status.get("diagnosis") and not hosts and not any(
+        (status.get(key) or {}).get("alert") for key in CHECKS
+    ):
+        lines.append(("No hosts flagged in this scan", "success"))
 
     if started_at := status.get("scan_started_at"):
         if lines and lines[-1][0]:
             lines.append(("", ""))
-        lines.append((f"Scan started at {started_at}", "accent"))
-    for key, label in (("recovery", "Automated recovery"), ("fleet_health", "Fleetroll health")):
-        if (result := status.get(key)) and result.get("summary"):
-            lines.append((f"  {label}  {result['summary']}", "attention" if result.get("alert") else ""))
+        lines.append((f"Scan details · started {started_at}", "accent"))
+    for key, (label, host_label) in CHECKS.items():
+        if result := status.get(key):
+            title = result["title"] or label
+            heading = " · ".join(part for part in (title, result["summary"], result["updated_at"]) if part)
+            lines.append((f"  {heading}", "attention" if result["alert"] else ""))
+            if query := result["query"]:
+                lines.append((f"    Filter  {query}", "muted"))
+            if host_label and result["hosts"]:
+                lines.append((f"    {host_label}  {' '.join(result['hosts'])}", ""))
+            if action := result["action"]:
+                lines.append((f"    Preview  {action}", ""))
+            if report := result["report"]:
+                lines.append((f"    Report  {report}", ""))
     return lines
 
 
-def activity_lines(status: dict) -> list[Line]:
+def activity_lines(status: dict, width: int, failure: str = "", failure_time: str = "") -> list[Line]:
+    events = status.get("activity", [])
+    if failure and not any(event["message"] == f"Error · {failure.removeprefix('[ERROR] ')}"
+                           for event in events):
+        events = [*events, {"time": failure_time, "host": "", "message": failure, "tone": "error"}]
     return [
-        ("  ".join(part for part in (event["time"], event["host"], event["message"]) if part),
-         event["tone"])
-        for event in status.get("activity", [])
-    ] or [("Host actions and warnings will appear here.", "muted")]
+        (clip_line("  ".join(part for part in (event["time"], event["host"], event["message"]) if part),
+                   width), event["tone"])
+        for event in events
+    ] or [(clip_line("Waiting for log entries.", width), "muted")]
+
+
+def clip_line(line: str, width: int) -> str:
+    # Leave room for an ellipsis if the message exceeds the available terminal columns.
+    line = ANSI_ESCAPE.sub("", line)
+    line = "".join(char for char in line if not unicodedata.category(char).startswith("C"))
+    if len(line) <= width and line.isascii():
+        return line
+    columns = 0
+    ellipsis_at = 0
+    for index, char in enumerate(line):
+        if not unicodedata.category(char).startswith("M"):
+            columns += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+        if columns < width:
+            ellipsis_at = index + 1
+        if columns > width:
+            return line[:ellipsis_at].rstrip() + "…"
+    return line
 
 
 def wrap_lines(lines: list[Line], width: int) -> list[Line]:
@@ -231,7 +250,7 @@ def color_palette() -> dict[str, int]:
     return palette
 
 
-def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLogs,
+def display(screen, process: subprocess.Popen, status_file: Path, errors: MedicErrors,
             stop_requested: "StopRequest") -> int:
     screen.keypad(True)
     screen.timeout(200)
@@ -242,12 +261,12 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
     palette = color_palette()
     status = {}
     focus = 0
-    details = False
-    view_offsets = {False: [0, 0], True: [0, 0]}
-    view_follow = {False: True, True: True}
+    offsets = [0, 0]
+    follow = True
     pages = [1, 1]
+    failure_time = ""
     while True:
-        logs.read()
+        errors.read()
         try:
             status = json.loads(status_file.read_text())
         except (OSError, ValueError):
@@ -255,14 +274,15 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
         returncode = process.poll()
         if stop_requested.requested and returncode is not None:
             return returncode
+        if returncode and not failure_time:
+            errors.read()
+            failure_time = datetime.now().isoformat(sep=" ", timespec="seconds")
         running = returncode is None and not stop_requested.requested
         can_rescan = running and status.get("next_run_at") is not None
 
         screen.erase()
         height, width = screen.getmaxyx()
         header = status_header(status, returncode, stop_requested.requested)
-        offsets = view_offsets[details]
-        follow = view_follow[details]
         if stop_requested.requested:
             footer = "Ctrl-C: exit immediately"
         else:
@@ -274,32 +294,26 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
                 logo = [(line, "accent") for line in status.get("logo", ())] + [("", "")]
                 if len(logo) == 1 or any(len(line) > content_width for line, _ in logo):
                     logo = []
-                results = detail_lines(status) if details else overview_lines(status)
-                results = wrap_lines(results, content_width)
-                desired = len(logo) + len(header_rows) + len(results) + 3
+                results = wrap_lines(dashboard_lines(status), content_width)
+                desired = len(logo) + len(header_rows) + max(1, len(results)) + 3
                 main_height = min(max(5, desired), height - 1 - max(4, (height - 1) // 3))
                 panes = ((main_height, width, 0, 0),
                          (height - 1 - main_height, width, main_height, 0))
                 offsets[0], pages[0] = draw_pane(
-                    screen, panes[0], "Scan details" if details else "Moonshot Medic",
+                    screen, panes[0], "Moonshot Medic",
                     results, offsets[0], active=focus == 0,
                     header=header_rows + [("", "")], logo=logo, palette=palette,
                 )
-                if details:
-                    title = "Raw logs"
-                    activity = [(line, "") for line in logs.display_lines()]
-                else:
-                    title = "Recent activity"
-                    activity = activity_lines(status)
+                failure = errors.latest if returncode and status.get("phase") != "Recovery preview complete" else ""
+                activity = activity_lines(status, content_width, failure, failure_time)
                 offsets[1], pages[1] = draw_pane(
-                    screen, panes[1], title if follow else f"{title} (paused)",
-                    wrap_lines(activity, content_width), offsets[1],
+                    screen, panes[1], "Logs" if follow else "Logs (paused)",
+                    activity, offsets[1],
                     active=focus == 1, follow=follow, palette=palette,
                 )
             except curses.error:
                 # Terminal resize can invalidate a pane while it is being painted.
                 pass
-            footer += (" | d: overview" if details else " | d: details")
             footer += " | Tab: pane | ↑/↓: scroll | End: follow"
         else:
             if width > 1:
@@ -323,13 +337,11 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
             request_stop(process, stop_requested, escalate=True)
         elif key in (ord("r"), ord("R")) and can_rescan:
             process.send_signal(signal.SIGUSR1)
-        elif key in (ord("d"), ord("D")):
-            details = not details
         elif key == ord("\t"):
             focus = 1 - focus
         elif key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE, curses.KEY_HOME):
             if focus == 1:
-                view_follow[details] = False
+                follow = False
             offsets[focus] = {
                 curses.KEY_UP: offsets[focus] - 1,
                 curses.KEY_DOWN: offsets[focus] + 1,
@@ -339,7 +351,7 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
             }[key]
         elif key == curses.KEY_END:
             focus = 1
-            view_follow[details] = True
+            follow = True
 
 
 class StopRequest:
@@ -371,10 +383,10 @@ def run_dashboard(command: list[str]) -> int:
         with tempfile.TemporaryDirectory(prefix="moonshot-medic-tui-") as directory:
             status_file = Path(directory) / "status.json"
             with subprocess.Popen(
-                command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                 start_new_session=True, env={**os.environ, STATUS_ENV: str(status_file)},
             ) as process:
-                logs = MedicLogs(process.stdout.fileno())
+                errors = MedicErrors(process.stderr.fileno())
                 stop_requested = StopRequest()
                 signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
@@ -385,14 +397,14 @@ def run_dashboard(command: list[str]) -> int:
                     sig: signal.signal(sig, handle_signal) for sig in signals
                 }
                 try:
-                    returncode = display(screen, process, status_file, logs, stop_requested)
+                    returncode = display(screen, process, status_file, errors, stop_requested)
                     if stop_requested.forced:
                         return 128 + signal.SIGINT
                     return returncode if returncode >= 0 else 128 - returncode
                 finally:
                     request_stop(process, stop_requested)
                     while process.poll() is None:
-                        logs.read()
+                        errors.read()
                         time.sleep(0.05)
                     for sig, handler in previous.items():
                         signal.signal(sig, handler)

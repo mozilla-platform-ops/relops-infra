@@ -147,24 +147,28 @@ def wait_for_next_scan(loop_interval: int) -> None:
         _rescan_requested = None
 
 
-def _tui_result(key: str, title: str, *lines: str, summary: str = "",
-                hosts: dict[str, dict[str, str]] | None = None, alert: bool = False) -> None:
+def _tui_result(key: str, *, title: str = "", summary: str = "",
+                hosts: dict[str, dict[str, str]] | None = None, alert: bool = False,
+                query: str = "", action: str = "", report: Path | None = None) -> None:
     if _tui_status_path is not None:
         _publish_tui(**{key: {
             "title": title,
-            "lines": [line for line in lines if line],
-            "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "summary": summary,
             "hosts": hosts or {},
             "alert": alert,
+            "updated_at": datetime.datetime.now().strftime("%H:%M:%S"),
+            "query": query,
+            "action": action,
+            "report": str(report).removeprefix(f"{SCRIPT_DIR}/") if report else "",
         }})
 
 
 def _tui_activity(message: str, *, host: str = "", tone: str = "") -> None:
     if _tui_status_path is None:
         return
-    event = {"time": datetime.datetime.now().strftime("%H:%M"), "host": host,
-             "message": " ".join(message.split()), "tone": tone}
+    message = " ".join(message.split()).replace(f"{SCRIPT_DIR}/", "")
+    event = {"time": datetime.datetime.now().isoformat(sep=" ", timespec="seconds"), "host": host,
+             "message": message, "tone": tone}
     _publish_tui(activity=[*_tui_status.get("activity", [])[-199:], event])
 
 
@@ -238,16 +242,20 @@ def log_intervention(check: str, host: str, action: str, outcome: str, reason: s
                     + (f" | Evidence: {evidence}" if evidence else ""))
 
 
-def info(msg: str) -> None:
+def info(msg: str, *, dashboard: bool = True) -> None:
+    if dashboard:
+        _tui_activity(msg)
     ts = datetime.datetime.now().strftime("%H:%M:%S")
     _emit(f"{_c('2', ts)} {_c('1;34', '==>')} {_c('1', msg)}")
 
 
 def section(msg: str) -> None:
+    _tui_activity(msg, tone="accent")
     _emit(f"{_c('1;36', f'--- {msg} ---')}")
 
 
 def ok(msg: str) -> None:
+    _tui_activity(msg, tone="success")
     _emit(f"{_c('1;32', '[OK]')} {msg}")
 
 
@@ -1327,6 +1335,7 @@ def check_fleetroll_data_freshness(stale_threshold: int, min_fresh_pct: int) -> 
     )
     valid, messages = validate_fleetroll_freshness(result.stdout, result.returncode)
     for message in messages:
+        _tui_activity(message, tone="" if valid else "attention")
         _emit(f"  {_c('2', message)}")
     if result.stderr.strip():
         warn(f"Fleetroll freshness stderr: {result.stderr.strip()}")
@@ -1380,11 +1389,12 @@ def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False,
 
 def show_unnoted_unhealthy_moonshots() -> None:
     _tui_phase("Checking Fleetroll health")
-    filter_line = f"Fleetroll filter: {UNHEALTHY_MOONSHOTS_FILTER}"
+    filter_query = UNHEALTHY_MOONSHOTS_FILTER
+    filter_line = f"Fleetroll filter: {filter_query}"
     try:
         output = _fleetroll_command(
             "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--hostname-only",
-            "--filter", UNHEALTHY_MOONSHOTS_FILTER,
+            "--filter", filter_query,
         )
         hosts = output.split()
         if any(canonical_moonshot_fqdn(host) != host for host in hosts):
@@ -1393,7 +1403,7 @@ def show_unnoted_unhealthy_moonshots() -> None:
         title = f"Check 2 — Fleetroll health: Unavailable ({exc})"
         warn(title)
         _emit(f"  {filter_line}")
-        _tui_result("fleet_health", title, filter_line, summary="Unavailable", alert=True)
+        _tui_result("fleet_health", summary="Unavailable", alert=True, query=filter_query)
         return
 
     title = (f"Check 2 — Fleetroll health: {len(hosts)} unnoted Moonshots with HEALTHY=N "
@@ -1402,7 +1412,7 @@ def show_unnoted_unhealthy_moonshots() -> None:
     _emit(f"  {filter_line}")
     show_host_labels(hosts)
     labels = [short_label(host) for host in hosts]
-    _tui_result("fleet_health", title, filter_line, " ".join(labels),
+    _tui_result("fleet_health", query=filter_query,
                 hosts={label: {"state": "matched", "reason": "Fleetroll health matched at scan time"}
                        for label in labels},
                 summary=f"{len(hosts)} {'host' if len(hosts) == 1 else 'hosts'} matched at scan time")
@@ -1432,14 +1442,15 @@ def show_host_labels(hosts: list[str]) -> None:
 def show_auto_checks(result: str, *, hosts: list[str] | None = None, action: str = "",
                      fleetroll_fresh: bool = True) -> None:
     title = f"Check 1 — Automated recovery: {result}"
-    filter_line = f"Fleetroll candidate filter: {recovery_candidate_filter()}"
+    filter_query = recovery_candidate_filter()
+    filter_line = f"Fleetroll candidate filter: {filter_query}"
     info(title)
     _emit(f"  {filter_line}")
     show_host_labels(hosts or [])
     if action:
         _emit(f"  Action: {action}")
     labels = [short_label(host) for host in hosts or ()]
-    _tui_result("recovery", title, filter_line, " ".join(labels), f"Action: {action}" if action else "",
+    _tui_result("recovery", query=filter_query, action=action,
                 summary=result, alert=result.startswith(("Unavailable", "Skipped")),
                 hosts={label: {"state": "eligible", "reason": "Eligible for automated recovery at scan time"}
                        for label in labels})
@@ -1448,7 +1459,7 @@ def show_auto_checks(result: str, *, hosts: list[str] | None = None, action: str
     else:
         title = "Check 2 — Fleetroll health: Skipped — Fleetroll freshness check failed"
         info(title)
-        _tui_result("fleet_health", title, summary="Skipped · Fleetroll freshness check failed", alert=True)
+        _tui_result("fleet_health", summary="Skipped · Fleetroll freshness check failed", alert=True)
 
 
 def historical_identity_problem(record: dict, *, now: datetime.datetime,
@@ -2076,7 +2087,7 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
     results = report["results"]
     if not results and not args.diagnose_workers:
         info("Worker diagnosis: no candidates")
-        _tui_result("diagnosis", "Worker diagnosis: no candidates")
+        _tui_result("diagnosis", summary="No candidates")
         return True
 
     now = datetime.datetime.now(datetime.UTC)
@@ -2108,7 +2119,8 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         label = short_label(entry["host"])
         findings[label] = {"state": state, "reason": reason}
         rows.append(f"{label}  {state.replace('_', ' ')} — {reason}")
-    _tui_result("diagnosis", title, *rows, hosts=findings)
+    _tui_result("diagnosis", hosts=findings, report=report_path,
+                query=INACTIVE_MOONSHOTS_FILTER if args.diagnose_workers else "")
     if args.diagnose_workers:
         for entry in results:
             _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
@@ -2151,7 +2163,8 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         ):
             matching = [entry["host"] for entry in candidates if entry["diagnosis"]["worker_state"] == worker_state]
             if matching:
-                info(f"Check 2 recovery preview: {action}")
+                info(f"Check 2 recovery preview: {action}", dashboard=False)
+                _tui_activity(f"Recovery preview · {' '.join(short_label(host) for host in matching)} · {action}")
                 show_host_labels(matching)
         return True
 
@@ -2178,9 +2191,7 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         report_path.write_text(json.dumps(report, indent=2) + "\n")
         log_check_2_intervention(entry, recovery["outcome"], recovery["reason"], report_path)
         result = f"{short_label(host)}: {recovery['outcome']} — {recovery['reason']}"
-        info(f"Check 2 recovery {result}")
-        rows.append(f"Recovery {result}")
-        _tui_result("diagnosis", title, *rows, hosts=findings)
+        info(f"Check 2 recovery {result}", dashboard=False)
     return all(entry.get("recovery", {}).get("outcome") not in ("failed", "unverified") for entry in candidates)
 
 
@@ -2654,7 +2665,7 @@ def main() -> None:
             return report_worker_diagnoses(args, stale_threshold, check_1_hosts)
         except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
             warn(f"Worker diagnosis failed: {exc}")
-            _tui_result("diagnosis", "Worker diagnosis unavailable", str(exc), alert=True)
+            _tui_result("diagnosis", title="Worker diagnosis unavailable", alert=True)
             return False
 
     def check_1_eligible_hosts(hosts: list[str]) -> list[str]:
