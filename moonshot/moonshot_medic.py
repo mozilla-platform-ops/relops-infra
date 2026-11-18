@@ -29,6 +29,7 @@ import textwrap
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
+from html import escape
 from http.client import HTTPException
 from pathlib import Path
 from urllib.request import urlopen
@@ -56,6 +57,7 @@ MEDIC_LOGO = (
 STATE_FILE = RESULTS_BASE / "state.json"
 OVERVIEW_FILE = RESULTS_BASE / "OVERVIEW.md"
 OVERVIEW_HTML_FILE = RESULTS_BASE / "OVERVIEW.html"
+REPORT_THEME_FILE = SCRIPT_DIR / "moonshot_medic_report.css"
 FAVICON_FILE = RESULTS_BASE / "favicon.svg"
 SKIP_THRESHOLD_CONSECUTIVE = 3
 SKIP_DURATION_HOURS = 6
@@ -819,9 +821,13 @@ def update_overview_html(state: dict) -> None:
     def fmt(s: str | None) -> str:
         if not s:
             return ""
-        iso = s if ("+" in s or s.endswith("Z")) else s[:19] + "+00:00"
-        display = s[:19].replace("T", " ") + " UTC"
-        return f'<span class="utc-time" data-utc="{iso}">{display}</span>'
+        try:
+            stamp = datetime.datetime.fromisoformat(s)
+        except ValueError:
+            return escape(s)
+        stamp = stamp.replace(tzinfo=stamp.tzinfo or datetime.UTC).astimezone(datetime.UTC)
+        iso = stamp.isoformat()
+        return f'<time datetime="{iso}" data-utc="{iso}">{stamp:%Y-%m-%d %H:%M:%S UTC}</time>'
 
     skipped = {
         fqdn: h for fqdn, h in hosts.items()
@@ -863,306 +869,88 @@ def update_overview_html(state: dict) -> None:
         for i in range(_max_bucket + 1)
     ]
 
-    parts = [
-        "<!DOCTYPE html>",
-        '<html lang="en">',
-        "<head>",
-        '<meta charset="utf-8">',
-        '<meta http-equiv="refresh" content="60">',
-        '<link rel="icon" href="favicon.svg" type="image/svg+xml">',
-        "<title>Moonshot Medic: Overview</title>",
-        "<style>",
-        "  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }",
-        "  h1 { color: #fff; }",
-        "  h2 { color: #f90; margin-top: 2rem; }",
-        "  .generated { color: #666; font-size: .85em; margin-bottom: 1rem; }",
-        "  .tz-toggle { margin-bottom: 1.5rem; font-size: .85em; color: #aaa; }",
-        "  .tz-toggle label { margin-right: 1rem; cursor: pointer; }",
-        "  table { border-collapse: collapse; width: 100%; }",
-        "  th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; cursor: pointer; user-select: none; }",
-        "  th:hover { color: #fff; }",
-        "  th[data-sort='asc']::after  { content: ' ▲'; color: #f90; }",
-        "  th[data-sort='desc']::after { content: ' ▼'; color: #f90; }",
-        "  td { padding: .35rem .8rem; border-bottom: 1px solid #2a2a2a; }",
-        "  tr:hover td { background: #1a1a1a; }",
-        "  .skip { background: #2a1a00; }",
-        "  .skip td { color: #f90; }",
-        "  .ok { color: #4c4; }",
-        "  .bad { color: #f44; }",
-        "  .warn { color: #f90; }",
-        "  .chart-tip { position:absolute; background:#222; border:1px solid #444; padding:.4rem .6rem; font-size:.8rem; color:#ccc; pointer-events:none; display:none; z-index:10; max-width:320px; }",
-        "  .chart-tip strong { color:#fff; }",
-        "  .summary-box { background:#1a1a1a; border:1px solid #444; border-radius:3px; padding:.6rem 1rem; margin-bottom:1.2rem; display:inline-block; }",
-        "  .summary-box .stat { color:#fff; font-size:.95rem; }",
-        "  .summary-box .stat + .stat { margin-top:.2rem; }",
-        "</style>",
-        "</head>",
-        "<body>",
-        '<pre style="color:#0ff;line-height:1;margin:0 0 .5rem;font-size:1rem">',
-        *MEDIC_LOGO,
-        '<span style="color:#888;font-size:.75rem;letter-spacing:.15em"> OVERVIEW</span>',
-        "</pre>",
-        f'<p class="generated">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
-        '<div class="tz-toggle">',
-        '  <label><input type="radio" name="tz" value="local" checked> Local time</label>',
-        '  <label><input type="radio" name="tz" value="utc"> UTC</label>',
-        '</div>',
-        '<h2>Summary</h2>' if hosts else "",
-        ('<div class="summary-box"><span class="stat">'
-         + f'{total_resets} reset{"s" if total_resets != 1 else ""} &nbsp;·&nbsp; {unique_hosts} unique host{"s" if unique_hosts != 1 else ""} &nbsp;·&nbsp; {resets_24h} last 24h &nbsp;·&nbsp; {resets_7d} last 7d'
-         + (f' &nbsp;·&nbsp; {len(never_reset_hosts)} of {len(fleet_hosts)} {fleet_source} never reset ({never_reset_pct}%)' if never_reset_pct is not None else "")
-         + '</span></div>') if hosts else "",
-        "<h2>Reset Frequency (last 30 days)</h2>",
-        '<div id="reset-chart" style="position:relative;margin-bottom:1.5rem;max-width:860px"></div>',
-        f'<script>const RESET_CHART_DATA = {json.dumps(chart_data)};</script>',
-    ]
+    metrics = "".join(
+        f'<div class="metric"><strong class="number">{value}</strong><span class="muted">{label}</span></div>'
+        for label, value in (
+            ("Lifetime iLO resets", total_resets), ("Hosts reset", unique_hosts),
+            ("Resets · 24h", resets_24h), ("Resets · 7d", resets_7d),
+        )
+    )
+    never_reset = ""
+    if never_reset_pct is not None:
+        never_reset = (
+            '<p class="secondary inventory">'
+            f'{len(never_reset_hosts)} of {len(fleet_hosts)} {escape(fleet_source)} '
+            f'never reset ({never_reset_pct}%)</p>'
+        )
 
-    counts = daily_counts()
-    if counts:
-        parts.append("<h2>Diagnostics Collected</h2>")
-        parts.append("<table>")
-        parts.append("  <thead><tr><th>Date</th><th>Hosts collected</th></tr></thead>")
-        parts.append("  <tbody>")
-        for date_str, count in counts:
-            parts.append(f'  <tr><td>{date_str}</td><td class="ok">{count}</td></tr>')
-        parts += ["  </tbody>", "</table>"]
-
+    backoff = '<p class="empty">No hosts currently in reset backoff.</p>'
     if skipped:
-        parts.append('<h2>&#x26A0; Needs Human Attention (currently skipped)</h2>')
-        parts.append("<ul>")
-        for fqdn, h in sorted(skipped.items()):
-            label = short_label(fqdn)
-            parts.append(
-                f'  <li class="bad"><strong>{label}</strong> ({fqdn}): '
-                f'{h["consecutive_reset_failures"]} consecutive failures, '
-                f'skip until {fmt(h.get("skip_until"))}, '
-                f'last failure: {fmt(h.get("last_failure"))}</li>'
-            )
-        parts.append("</ul>")
+        backoff = '<ul class="backoff">' + "".join(
+            f'<li><strong class="mono">{escape(short_label(fqdn))}</strong> '
+            f'<span class="secondary">({escape(fqdn)})</span> · '
+            f'{entry.get("consecutive_reset_failures", 0)} consecutive failures · '
+            f'Retry after {fmt(entry.get("skip_until"))} · '
+            f'Last failure {fmt(entry.get("last_failure"))}</li>'
+            for fqdn, entry in sorted(skipped.items())
+        ) + '</ul>'
 
-    if hosts:
-        parts += [
-            "<h2>Host History</h2>",
-            '<div id="hist-chart" style="position:relative;margin-bottom:1.5rem;max-width:860px"></div>',
-            f'<script>const HIST_DATA = {json.dumps(hist_data)};</script>',
-            "<table>",
-            "  <thead><tr>",
-            "    <th>Host</th><th>Total Resets</th><th>Reset Failures</th>"
-            "<th>Consec Reset Fails</th><th>Last Reset Success</th><th>Last Reset Failure</th><th>Skip Until</th>",
-            "  </tr></thead>",
-            "  <tbody>",
-        ]
-        for fqdn, h in sorted(hosts.items()):
-            label = short_label(fqdn)
-            is_skip = fqdn in skipped
-            consec = h.get("consecutive_reset_failures", 0)
-            row_class = ' class="skip"' if is_skip else ""
-            consec_class = ' class="bad"' if consec >= SKIP_THRESHOLD_CONSECUTIVE else (' class="warn"' if consec > 0 else ' class="ok"')
-            parts.append(
-                f'  <tr{row_class}>'
-                f"<td>{label}</td>"
-                f'<td class="ok">{h.get("total_resets", 0)}</td>'
-                f'<td>{h.get("total_failures", 0)}</td>'
-                f"<td{consec_class}>{consec}</td>"
-                f"<td>{fmt(h.get('last_success'))}</td>"
-                f"<td>{fmt(h.get('last_failure'))}</td>"
-                f"<td>{fmt(h.get('skip_until'))}</td>"
-                f"</tr>"
-            )
-        parts += ["  </tbody>", "</table>"]
+    def table(table_id: str, headings: list[str], rows: list[str], empty: str) -> str:
+        if not rows:
+            return f'<p class="empty">{empty}</p>'
+        header = "".join(f'<th scope="col"><button type="button">{escape(heading)}</button></th>'
+                         for heading in headings)
+        return (
+            f'<div class="table-scroll"><table id="{table_id}"><thead><tr>{header}</tr></thead>'
+            '<tbody>' + "\n".join(rows) + '</tbody></table></div>'
+        )
 
-    action_rows = action_report_rows(hosts)
-    if action_rows:
-        from html import escape
-        parts += ["<h2>Clock Repairs and Diagnostics</h2>",
-                  "<p>Clock success means verified clock correction; it does not confirm Taskcluster recovery. "
-                  "Counts cover recorded outcomes; historical reset data is unchanged.</p>",
-                  "<table><thead><tr>" + "".join(f"<th>{h}</th>" for h in ACTION_REPORT_HEADERS)
-                  + "</tr></thead><tbody>"]
-        for row in action_rows:
-            cells = [fmt(value) if i == 5 else escape(value) for i, value in enumerate(row)]
-            parts.append("<tr>" + "".join(f"<td>{value}</td>" for value in cells) + "</tr>")
-        parts.append("</tbody></table>")
+    host_rows = []
+    for fqdn, entry in sorted(hosts.items()):
+        streak = entry.get("consecutive_reset_failures", 0)
+        tone = "bad" if streak >= SKIP_THRESHOLD_CONSECUTIVE else "warn" if streak else ""
+        row_class = ' class="skip"' if fqdn in skipped else ""
+        host_rows.append(
+            f'<tr data-host="{escape(fqdn.lower())}"{row_class}>'
+            f'<td class="mono">{escape(short_label(fqdn))}</td>'
+            f'<td>{entry.get("total_resets", 0)}</td>'
+            f'<td>{entry.get("total_failures", 0)}</td>'
+            f'<td class="{tone}">{streak}</td>'
+            f'<td>{fmt(entry.get("last_success"))}</td>'
+            f'<td>{fmt(entry.get("last_failure"))}</td>'
+            f'<td>{fmt(entry.get("skip_until"))}</td></tr>'
+        )
+    host_table = table("host-table", [
+        "Host", "Total iLO Resets", "Reset Failures", "Failure Streak",
+        "Last Reset Success", "Last Reset Failure", "Skip Until",
+    ], host_rows, "No recorded host history.")
 
-    parts += [
-        "<script>",
-        "  function formatTime(isoStr, mode) {",
-        "    const d = new Date(isoStr);",
-        "    if (mode === 'utc') {",
-        "      return isoStr.slice(0, 19).replace('T', ' ') + ' UTC';",
-        "    }",
-        "    return d.toLocaleString(undefined, {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});",
-        "  }",
-        "  function updateTimes() {",
-        "    const mode = document.querySelector('input[name=\"tz\"]:checked').value;",
-        "    document.querySelectorAll('.utc-time').forEach(el => {",
-        "      el.textContent = formatTime(el.dataset.utc, mode);",
-        "    });",
-        "  }",
-        "  document.querySelectorAll('input[name=\"tz\"]').forEach(r => r.addEventListener('change', updateTimes));",
-        "  updateTimes();",
-        "  function cellValue(tr, idx) {",
-        "    const el = tr.children[idx];",
-        "    const utc = el.querySelector('.utc-time');",
-        "    return utc ? utc.dataset.utc : el.textContent.trim();",
-        "  }",
-        "  function sortTable(th) {",
-        "    const table = th.closest('table');",
-        "    const tbody = table.querySelector('tbody');",
-        "    const idx = Array.from(th.parentElement.children).indexOf(th);",
-        "    const asc = th.dataset.sort === 'desc';",
-        "    table.querySelectorAll('th').forEach(h => delete h.dataset.sort);",
-        "    th.dataset.sort = asc ? 'asc' : 'desc';",
-        "    const rows = Array.from(tbody.querySelectorAll('tr'));",
-        "    rows.sort((a, b) => {",
-        "      const av = cellValue(a, idx), bv = cellValue(b, idx);",
-        "      const an = Number(av), bn = Number(bv);",
-        "      const cmp = (av !== '' && bv !== '' && !isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);",
-        "      return asc ? cmp : -cmp;",
-        "    });",
-        "    rows.forEach(r => tbody.appendChild(r));",
-        "  }",
-        "  document.querySelectorAll('th').forEach(th => th.addEventListener('click', () => sortTable(th)));",
-        "  (function() {",
-        "    const data = RESET_CHART_DATA;",
-        "    const W = 600, H = 65, PAD_B = 16, BAR_GAP = 2;",
-        "    const maxVal = Math.max(...data.map(d => d.total), 1);",
-        "    const barW = (W - BAR_GAP * (data.length - 1)) / data.length;",
-        "    const svgNS = 'http://www.w3.org/2000/svg';",
-        "    const svg = document.createElementNS(svgNS, 'svg');",
-        "    svg.setAttribute('viewBox', `0 0 ${W} ${H + PAD_B}`);",
-        "    svg.setAttribute('width', '100%');",
-        "    svg.setAttribute('preserveAspectRatio', 'none');",
-        "    svg.style.display = 'block';",
-        "    data.forEach((d, i) => {",
-        "      const barH = d.total > 0 ? Math.max(2, (d.total / maxVal) * H) : 2;",
-        "      const x = i * (barW + BAR_GAP);",
-        "      const rect = document.createElementNS(svgNS, 'rect');",
-        "      rect.setAttribute('x', x);",
-        "      rect.setAttribute('y', H - barH);",
-        "      rect.setAttribute('width', barW);",
-        "      rect.setAttribute('height', barH);",
-        "      const hue = d.total > 0 ? Math.round(60 * (1 - d.total / maxVal)) : 0;",
-        "      rect.setAttribute('fill', d.total > 0 ? `hsl(${hue},75%,42%)` : '#333');",
-        "      rect.dataset.date = d.date;",
-        "      rect.dataset.hosts = JSON.stringify(d.hosts);",
-        "      rect.dataset.total = d.total;",
-        "      svg.appendChild(rect);",
-        "      const hit = document.createElementNS(svgNS, 'rect');",
-        "      hit.setAttribute('x', x); hit.setAttribute('y', 0);",
-        "      hit.setAttribute('width', barW); hit.setAttribute('height', H);",
-        "      hit.setAttribute('fill', 'transparent');",
-        "      hit.dataset.date = d.date; hit.dataset.hosts = JSON.stringify(d.hosts); hit.dataset.total = d.total;",
-        "      svg.appendChild(hit);",
-        "      if (i % 5 === 0 || i === data.length - 1) {",
-        "        const txt = document.createElementNS(svgNS, 'text');",
-        "        txt.setAttribute('x', x + barW / 2);",
-        "        txt.setAttribute('y', H + PAD_B - 2);",
-        "        txt.setAttribute('text-anchor', 'middle');",
-        "        txt.setAttribute('font-size', '9');",
-        "        txt.setAttribute('fill', '#666');",
-        "        txt.setAttribute('font-family', 'monospace');",
-        "        txt.textContent = d.date.slice(5);",
-        "        svg.appendChild(txt);",
-        "      }",
-        "    });",
-        "    const tip = document.createElement('div');",
-        "    tip.className = 'chart-tip';",
-        "    const container = document.getElementById('reset-chart');",
-        "    container.appendChild(svg);",
-        "    container.appendChild(tip);",
-        "    svg.addEventListener('mousemove', e => {",
-        "      const rect = e.target.closest('rect');",
-        "      if (!rect) { tip.style.display = 'none'; return; }",
-        "      const hosts = JSON.parse(rect.dataset.hosts);",
-        "      const total = parseInt(rect.dataset.total, 10);",
-        "      const sorted = Object.entries(hosts).sort((a, b) => b[1] - a[1]);",
-        "      const lines = sorted.map(([h, n]) => n > 1 ? `${h} ×${n}` : h).join(', ');",
-        "      tip.innerHTML = `<strong>${rect.dataset.date} — ${total} reset${total !== 1 ? 's' : ''}</strong>${lines ? '<br>' + lines : ''}`;",
-        "      const cr = container.getBoundingClientRect();",
-        "      const x = e.clientX - cr.left + 8;",
-        "      const y = e.clientY - cr.top - 10;",
-        "      tip.style.left = (x + 150 > cr.width ? x - 160 : x) + 'px';",
-        "      tip.style.top = Math.max(0, y) + 'px';",
-        "      tip.style.display = 'block';",
-        "    });",
-        "    svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; });",
-        "  })();",
-        "  (function() {",
-        "    const data = HIST_DATA;",
-        "    if (!data.length) return;",
-        "    const W = 600, H = 65, PAD_B = 16, BAR_GAP = 2;",
-        "    const maxCount = Math.max(...data.map(d => d.count), 1);",
-        "    const maxResets = Math.max(...data.map(d => d.resets), 1);",
-        "    const barW = Math.max(6, (W - BAR_GAP * (data.length - 1)) / data.length);",
-        "    const svgW = barW * data.length + BAR_GAP * (data.length - 1);",
-        "    const svgNS = 'http://www.w3.org/2000/svg';",
-        "    const svg = document.createElementNS(svgNS, 'svg');",
-        "    svg.setAttribute('viewBox', `0 0 ${svgW} ${H + PAD_B}`);",
-        "    svg.setAttribute('width', '100%');",
-        "    svg.setAttribute('preserveAspectRatio', 'none');",
-        "    svg.style.display = 'block';",
-        "    data.forEach((d, i) => {",
-        "      const barH = d.count > 0 ? Math.max(2, (d.count / maxCount) * H) : 0;",
-        "      const x = i * (barW + BAR_GAP);",
-        "      const hue = Math.round(120 * (1 - d.resets / maxResets));",
-        "      const fill = `hsl(${hue},65%,42%)`;",
-        "      if (barH > 0) {",
-        "        const rect = document.createElementNS(svgNS, 'rect');",
-        "        rect.setAttribute('x', x);",
-        "        rect.setAttribute('y', H - barH);",
-        "        rect.setAttribute('width', barW);",
-        "        rect.setAttribute('height', barH);",
-        "        rect.setAttribute('fill', fill);",
-        "        rect.dataset.resets = d.resets;",
-        "        rect.dataset.count = d.count;",
-        "        rect.dataset.hosts = JSON.stringify(d.hosts);",
-        "        svg.appendChild(rect);",
-        "      }",
-        "      const hit = document.createElementNS(svgNS, 'rect');",
-        "      hit.setAttribute('x', x); hit.setAttribute('y', 0);",
-        "      hit.setAttribute('width', barW); hit.setAttribute('height', H);",
-        "      hit.setAttribute('fill', 'transparent');",
-        "      hit.dataset.resets = d.resets; hit.dataset.count = d.count; hit.dataset.hosts = JSON.stringify(d.hosts);",
-        "      svg.appendChild(hit);",
-        "      const txt = document.createElementNS(svgNS, 'text');",
-        "      txt.setAttribute('x', x + barW / 2);",
-        "      txt.setAttribute('y', H + PAD_B - 2);",
-        "      txt.setAttribute('text-anchor', 'middle');",
-        "      txt.setAttribute('font-size', '9');",
-        "      txt.setAttribute('fill', '#666');",
-        "      txt.setAttribute('font-family', 'monospace');",
-        "      txt.textContent = d.resets;",
-        "      svg.appendChild(txt);",
-        "    });",
-        "    const tip = document.createElement('div');",
-        "    tip.className = 'chart-tip';",
-        "    const container = document.getElementById('hist-chart');",
-        "    container.appendChild(svg);",
-        "    container.appendChild(tip);",
-        "    svg.addEventListener('mousemove', e => {",
-        "      const rect = e.target.closest('rect');",
-        "      if (!rect) { tip.style.display = 'none'; return; }",
-        "      const hosts = JSON.parse(rect.dataset.hosts);",
-        "      const count = parseInt(rect.dataset.count, 10);",
-        "      const resets = rect.dataset.resets;",
-        "      tip.innerHTML = `<strong>${resets} reset${resets !== '1' ? 's' : ''} — ${count} host${count !== 1 ? 's' : ''}</strong><br>` + hosts.join(', ');",
-        "      const cr = container.getBoundingClientRect();",
-        "      const x = e.clientX - cr.left + 8;",
-        "      const y = e.clientY - cr.top - 10;",
-        "      tip.style.left = (x + 150 > cr.width ? x - 160 : x) + 'px';",
-        "      tip.style.top = Math.max(0, y) + 'px';",
-        "      tip.style.display = 'block';",
-        "    });",
-        "    svg.addEventListener('mouseleave', () => { tip.style.display = 'none'; });",
-        "  })();",
-        "</script>",
-        "</body>", "</html>", "",
-    ]
+    action_rows = []
+    for row in action_report_rows(hosts):
+        cells = [fmt(value) if i == 5 else escape(value) for i, value in enumerate(row)]
+        action_rows.append("<tr>" + "".join(f"<td>{value}</td>" for value in cells) + "</tr>")
+    action_table = table("action-table", ACTION_REPORT_HEADERS, action_rows, "No clock repairs or diagnostics recorded.")
+    daily_table = table("daily-table", ["UTC date", "Hosts collected"], [
+        f'<tr><td>{escape(date)}</td><td class="ok">{count}</td></tr>'
+        for date, count in daily_counts()
+    ], "No daily diagnostics counts recorded.")
+
+    # Embed data as JSON and keep the report usable as a local HTML file.
+    data = json.dumps({"days": chart_data, "distribution": hist_data}).replace("<", r"\u003c")
+    html = (SCRIPT_DIR / "moonshot_medic_overview.html").read_text(encoding="utf-8")
+    for name, value in {
+        "REPORT THEME": REPORT_THEME_FILE.read_text(encoding="utf-8"),
+        "MEDIC LOGO": escape("\n".join(MEDIC_LOGO)),
+        "GENERATED": fmt(now.isoformat()),
+        "METRICS": metrics, "NEVER RESET": never_reset, "BACKOFF": backoff,
+        "HOST TABLE": host_table, "ACTION TABLE": action_table, "DAILY TABLE": daily_table,
+        "REPORT DATA": data,
+    }.items():
+        html = html.replace(f"<!-- {name} -->", value)
 
     RESULTS_BASE.mkdir(parents=True, exist_ok=True)
     update_favicon()
-    OVERVIEW_HTML_FILE.write_text("\n".join(parts))
+    OVERVIEW_HTML_FILE.write_text(html, encoding="utf-8")
 
 
 # --- daily activity ---

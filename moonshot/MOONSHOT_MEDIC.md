@@ -357,6 +357,10 @@ moonshot_debugging_results/
     ...
 ```
 
+The original `OVERVIEW.html` shows fleet reset history and links to
+`OVERVIEW2.html`. Expand the clock and diagnostics, daily counts, or lifetime
+distribution sections to browse older records.
+
 Generate the experimental browser report with `uv run moonshot_medic_overview2.py`.
 Open `moonshot_debugging_results/OVERVIEW2.html` to search hosts, expand a
 30-day activity timeline, or select a day in the reset and remediation chart.

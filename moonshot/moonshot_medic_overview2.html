@@ -6,57 +6,10 @@
   <meta name="description" content="Moonshot Medic fleet health and host intervention history">
   <title>Moonshot Medic · Fleet overview</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --page: #111619;
-      --panel: #181f23;
-      --inset: #141a1e;
-      --border: #38454b;
-      --text: #eaf1f2;
-      --muted: #a6b7be;
-      --accent: #64e4d5;
-      --attention: #f4c47b;
-      --failure: #ff9f9a;
-      --success: #a9dfa8;
-      --ilo: #64e4d5;
-      --remediation: #c2adff;
-      --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
-      font-family: system-ui, sans-serif;
-      background: var(--page);
-      color: var(--text);
-    }
-    * { box-sizing: border-box; }
-    [hidden] { display: none !important; }
-    body { margin: 0; }
-    main { max-width: 86rem; margin: auto; padding: 2.25rem clamp(1rem, 4vw, 3rem) 4rem; }
-    h1, h2, h3, p { margin: 0; }
-    h1 { font-size: clamp(1.85rem, 4vw, 2.8rem); letter-spacing: -.035em; line-height: 1.15; }
-    h2 { font-size: 1.3rem; letter-spacing: -.015em; }
-    h3 { font-size: 1rem; }
-    a { color: var(--accent); text-underline-offset: .2em; }
-    button, input, select { font: inherit; color: inherit; }
-    button { cursor: pointer; }
-    :focus-visible { outline: .15rem solid var(--accent); outline-offset: .15rem; }
-    .muted { color: var(--muted); }
-    .secondary { color: var(--muted); font-size: .875rem; }
-    .mono, time, .number { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-    .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; padding-bottom: 1.6rem; }
-    .logo { color: var(--accent); overflow: hidden; font: 700 clamp(.55rem, 1.5vw, .83rem)/1.18 var(--mono); margin: 0 0 .85rem; }
-    .snapshot { display: grid; gap: .4rem; justify-items: end; }
-    .zone { display: flex; gap: .55rem; align-items: center; }
-    .control { min-height: 2.5rem; border: 1px solid var(--border); border-radius: .45rem; padding: .45rem .65rem; background: var(--inset); }
-    select.control {
-      appearance: none; padding-right: 2rem;
-      background: var(--inset) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%23a6b7be' stroke-width='1.5' d='m1 1 5 5 5-5'/%3E%3C/svg%3E") no-repeat right .7rem center;
-    }
-    #metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; margin-bottom: 1rem; }
-    .metric, .panel { border: 1px solid var(--border); background: var(--panel); border-radius: .65rem; }
-    .metric { display: flex; gap: .7rem; align-items: baseline; width: 100%; text-align: left; padding: .9rem 1rem; }
-    button.metric:hover, .metric[aria-pressed="true"] { border-color: var(--accent); }
-    .metric strong { font-size: 1.45rem; line-height: 1; }
-    .metric :is(span, p) { font-size: .9rem; }
-    section { margin-bottom: 1rem; }
-    .panel-head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: .55rem 1rem; padding: 1rem 1.2rem; }
+<!-- REPORT THEME -->
+    #hosts > thead { position: sticky; top: 0; z-index: 1; }
+    #hosts { min-width: 63rem; }
+    #history > .table-scroll { max-height: 37rem; }
     .attention-grid { border-top: 1px solid var(--border); display: grid; grid-template-columns: 1fr 1fr; }
     .attention-grid > div { padding: .9rem 1.2rem; min-width: 0; }
     .attention-grid > div + div { border-left: 1px solid var(--border); }
@@ -71,18 +24,6 @@
     .attention-text { color: var(--attention); }
     .filters { display: flex; flex-wrap: wrap; gap: .55rem; align-items: center; }
     .filters input { width: min(15rem, 100%); }
-    .table-scroll { overflow-x: auto; }
-    #history > .table-scroll { max-height: 37rem; }
-    table { border-collapse: collapse; width: 100%; text-align: left; }
-    #hosts { min-width: 63rem; }
-    #hosts > thead { position: sticky; top: 0; z-index: 1; }
-    th, td { padding: .65rem 1rem; border-top: 1px solid var(--border); vertical-align: top; }
-    thead { background: var(--inset); color: var(--muted); }
-    th { font-size: .875rem; font-weight: 600; white-space: nowrap; }
-    th button, .host-button { border: 0; background: transparent; padding: 0; text-align: left; }
-    th button:hover { color: var(--text); }
-    th[aria-sort="ascending"] button::after { content: " ▲"; color: var(--accent); }
-    th[aria-sort="descending"] button::after { content: " ▼"; color: var(--accent); }
     .host-button { color: var(--accent); font: 600 .95rem var(--mono); text-decoration: underline; text-underline-offset: .2em; }
     .host-row:hover td, .host-row:focus-within td { background: #202a2f; }
     .host-row .reason { margin-top: .25rem; }
@@ -97,40 +38,15 @@
     .timeline td:nth-child(3) { min-width: 10rem; }
     .timeline td:last-child { min-width: 11rem; }
     .evidence { display: flex; flex-wrap: wrap; gap: .35rem .75rem; font-size: .875rem; }
-    .empty { padding: 1rem; color: var(--muted); }
-    .chart-scroll { overflow-x: auto; padding: .3rem 1.2rem 0; }
-    .chart { display: grid; grid-template-columns: repeat(30, minmax(1rem, 1fr)); gap: .2rem; min-width: 35rem; padding: .2rem .2rem .8rem; }
-    .bar { display: grid; grid-template-rows: 6rem 1rem; justify-items: center; gap: .35rem; min-width: 0; border: 0; background: transparent; color: var(--muted); padding: 0; }
-    .bar-track { display: flex; flex-direction: column-reverse; justify-content: flex-start; width: 84%; height: 100%; border-bottom: 1px solid var(--border); }
-    .bar-fill { height: var(--bar-size); width: 100%; opacity: .7; }
-    .ilo { background: var(--ilo); }
-    .remediation { background: var(--remediation); }
-    .bar[aria-pressed="true"] .bar-fill, .bar:hover .bar-fill { opacity: 1; }
     .legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; padding: 0 1.2rem; }
     .legend span::before { display: inline-block; width: .65rem; height: .65rem; margin-right: .4rem; border-radius: .15rem; content: ""; }
     .legend-ilo::before { background: var(--ilo); }
     .legend-remediation::before { background: var(--remediation); }
-    .bar-date { white-space: nowrap; font: .78rem var(--mono); }
-    .chart-detail { background: var(--inset); border-top: 1px solid var(--border); padding: .85rem 1.2rem; }
     .chart-detail .contributors { margin: .45rem 0 0; padding: 0; list-style: none; display: grid; gap: .35rem; }
     .chart-detail button { text-align: left; }
-    .archive { padding: 0 1.2rem 1rem; }
-    .archive summary { cursor: pointer; padding: .85rem 0; font-weight: 600; }
-    .archive table { max-width: 42rem; }
-    .archive th, .archive td { padding-left: .5rem; }
-    .archive + .archive { border-top: 1px solid var(--border); }
-    footer { padding-top: .45rem; }
-    @media (max-width: 52rem) {
-      #metrics { grid-template-columns: repeat(2, 1fr); }
-      .top { align-items: flex-start; flex-direction: column; }
-      .snapshot { justify-items: start; }
-    }
     @media (max-width: 37rem) {
-      main { padding-top: 1.25rem; }
       .attention-grid { grid-template-columns: 1fr; }
       .attention-grid > div + div { border-left: 0; border-top: 1px solid var(--border); }
-      .metric { align-items: flex-start; flex-direction: column; }
-      .panel-head { padding: .85rem; }
     }
   </style>
 </head>

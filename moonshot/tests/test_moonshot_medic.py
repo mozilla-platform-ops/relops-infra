@@ -694,6 +694,24 @@ class TestOverviewHtml:
         assert "<svg" in favicon
         assert "Moonshot" not in favicon
 
+    def test_links_to_overview2_and_keeps_daily_history_below_host_history(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mm, "RESULTS_BASE", tmp_path)
+        monkeypatch.setattr(mm, "OVERVIEW_HTML_FILE", tmp_path / "OVERVIEW.html")
+        monkeypatch.setattr(mm, "FAVICON_FILE", tmp_path / "favicon.svg")
+        monkeypatch.setattr(mm, "_report_fleet_hosts", lambda: ({FQDN}, "configured"))
+        daily = tmp_path / "20261118"
+        daily.mkdir()
+        (daily / "audit.md").write_text("# Host audit")
+        mm.update_overview_html({"hosts": {FQDN: {"total_resets": 1}}})
+
+        html = (tmp_path / "OVERVIEW.html").read_text()
+        assert 'href="OVERVIEW2.html"' in html
+        assert "--accent: #64e4d5" in html
+        assert html.index('id="trend-heading"') < html.index('id="host-table"') < html.index('id="daily-table"')
+        assert '<details class="archive" id="daily">' in html
+        assert "<td>2026-11-18</td>" in html
+        assert '<details class="archive" id="distribution">' in html
+
     def test_announce_overview_report_prints_html_path(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setattr(mm, "OVERVIEW_HTML_FILE", tmp_path / "OVERVIEW.html")
 

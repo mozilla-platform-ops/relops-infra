@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <title>Moonshot Medic · Fleet history</title>
+  <style>
+<!-- REPORT THEME -->
+    .overview-link { border-color: var(--accent); color: var(--accent); font-weight: 600; text-decoration: none; }
+    .overview-link:hover { background: #263b3b; }
+    .inventory { margin: -.3rem 0 1rem; }
+    .backoff { margin: 0; padding: .5rem 1.2rem .9rem; list-style: none; border-top: 1px solid var(--border); }
+    .backoff li { padding: .35rem 0; }
+    .backoff strong, .warn { color: var(--attention); }
+    .bad { color: var(--failure); }
+    .ok { color: var(--success); }
+    .host-controls { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
+    .table-scroll { max-height: 31rem; }
+    .table-scroll thead { position: sticky; top: 0; z-index: 1; }
+    #host-table, #action-table { min-width: 51rem; }
+    .archive #action-table { max-width: none; }
+    tbody tr:hover td { background: #202a2f; }
+    tbody tr.skip td { background: #392d21; }
+    .chart-detail { min-height: 3rem; }
+    .chart-detail p { max-height: 8rem; overflow: auto; margin-top: .25rem; }
+    .archive .chart-scroll { padding-inline: 0; }
+    .archive > p { margin-bottom: .65rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <header class="top">
+      <div>
+        <pre class="logo" aria-hidden="true"><!-- MEDIC LOGO --></pre>
+        <h1>Fleet history</h1>
+      </div>
+      <div class="snapshot">
+        <a class="control overview-link" href="OVERVIEW2.html">Open OVERVIEW2</a>
+        <p class="secondary">Report generated <!-- GENERATED --></p>
+        <label class="zone secondary">Timezone
+          <select id="zone" class="control"><option value="local">Local</option><option value="utc">UTC</option></select>
+        </label>
+      </div>
+    </header>
+
+    <section class="panel" aria-labelledby="trend-heading">
+      <header class="panel-head">
+        <h2 id="trend-heading">iLO reset activity · 30 days</h2>
+        <p class="secondary">Verified resets · UTC days · Select a day to see its hosts</p>
+      </header>
+      <div class="chart-scroll"><div id="reset-chart" class="chart" role="group" aria-label="Verified iLO resets by UTC day"></div></div>
+      <div id="reset-detail" class="chart-detail" aria-live="polite"></div>
+    </section>
+
+    <div id="metrics" aria-label="Fleet totals"><!-- METRICS --></div>
+    <!-- NEVER RESET -->
+
+    <section class="panel" aria-labelledby="backoff-heading">
+      <header class="panel-head"><h2 id="backoff-heading">Hosts in reset backoff</h2></header>
+      <!-- BACKOFF -->
+    </section>
+
+    <section class="panel" aria-labelledby="hosts-heading">
+      <header class="panel-head">
+        <h2 id="hosts-heading">Host reset history</h2>
+        <div class="host-controls">
+          <label for="search" class="secondary">Search host</label>
+          <input class="control" id="search" type="search" placeholder="ms126" autocomplete="off">
+          <span id="host-count" class="secondary" aria-live="polite"></span>
+        </div>
+      </header>
+      <!-- HOST TABLE -->
+      <p id="host-empty" class="empty" hidden>No hosts match your search.</p>
+    </section>
+
+    <section class="panel" aria-label="Historical breakdowns">
+      <details class="archive" id="actions">
+        <summary>Clock Repairs and Diagnostics</summary>
+        <p class="secondary">Clock repair success verifies the correction. It does not confirm Taskcluster recovery.</p>
+        <!-- ACTION TABLE -->
+      </details>
+      <details class="archive" id="daily">
+        <summary>Diagnostics collected by day</summary>
+        <!-- DAILY TABLE -->
+      </details>
+      <details class="archive" id="distribution">
+        <summary>Lifetime iLO reset distribution</summary>
+        <p class="secondary">Select a reset count to see the hosts in that group.</p>
+        <div class="chart-scroll"><div id="hist-chart" class="chart" role="group" aria-label="Hosts by lifetime iLO reset count"></div></div>
+        <div id="hist-detail" class="chart-detail" aria-live="polite"></div>
+      </details>
+    </section>
+  </main>
+  <script id="report-data" type="application/json"><!-- REPORT DATA --></script>
+  <script>
+    const data = JSON.parse(document.querySelector("#report-data").textContent);
+    const $ = selector => document.querySelector(selector);
+    const storageKey = "moonshot-medic-fleet-history";
+
+    function loadView() {
+      try {
+        return JSON.parse(sessionStorage.getItem(storageKey)) || {};
+      } catch {
+        return {};
+      }
+    }
+
+    const view = Object.assign({ zone: "local", search: "", sorts: {}, charts: {}, archives: {} }, loadView());
+    function saveView() {
+      try {
+        sessionStorage.setItem(storageKey, JSON.stringify(view));
+      } catch {
+        // A browser can disable storage for local files.
+      }
+    }
+
+    function formatTimes() {
+      for (const time of document.querySelectorAll("time[data-utc]")) {
+        const options = { dateStyle: "medium", timeStyle: "medium" };
+        const date = new Date(time.dataset.utc);
+        time.textContent = view.zone === "utc"
+          ? date.toISOString().slice(0, 19).replace("T", " ") + " UTC"
+          : date.toLocaleString(undefined, options);
+      }
+    }
+
+    function sortTable(table, index, ascending) {
+      const headings = [...table.tHead.rows[0].cells];
+      if (!headings[index]) return;
+      for (const heading of headings) heading.removeAttribute("aria-sort");
+      headings[index].setAttribute("aria-sort", ascending ? "ascending" : "descending");
+      const body = table.tBodies[0];
+      const value = row => {
+        const cell = row.cells[index];
+        return cell.querySelector("time")?.dataset.utc || cell.textContent.trim();
+      };
+      const rows = [...body.rows].sort((left, right) => {
+        const a = value(left), b = value(right);
+        if (!a || !b) return Number(!a) - Number(!b);
+        const aNumber = Number(a), bNumber = Number(b);
+        const order = Number.isFinite(aNumber) && Number.isFinite(bNumber)
+          ? aNumber - bNumber : a.localeCompare(b, undefined, { numeric: true });
+        return ascending ? order : -order;
+      });
+      body.append(...rows);
+    }
+
+    function filterHosts() {
+      const needle = view.search.toLowerCase().trim();
+      const rows = [...($("#host-table")?.tBodies[0].rows || [])];
+      let visible = 0;
+      for (const row of rows) {
+        row.hidden = !row.dataset.host.includes(needle) && !row.cells[0].textContent.toLowerCase().includes(needle);
+        if (!row.hidden) visible++;
+      }
+      $("#host-count").textContent = rows.length ? visible + " of " + rows.length + " hosts" : "";
+      $("#host-empty").hidden = !rows.length || visible > 0;
+    }
+
+    function node(tag, text, className) {
+      const element = document.createElement(tag);
+      if (text !== undefined) element.textContent = text;
+      if (className) element.className = className;
+      return element;
+    }
+
+    function renderChart(chartId, detailId, items, preferredIndex) {
+      const chart = $(chartId);
+      const detail = $(detailId);
+      chart.style.setProperty("--chart-columns", items.length);
+      chart.style.setProperty("--chart-width", Math.max(18, items.length * 1.18) + "rem");
+      const maximum = Math.max(1, ...items.map(item => item.count));
+      const controls = [];
+      function select(index) {
+        const item = items[index];
+        for (const [position, control] of controls.entries()) {
+          control.setAttribute("aria-pressed", position === index);
+        }
+        detail.replaceChildren(node("strong", item.title));
+        if (item.hosts.length) detail.append(node("p", item.hosts.join(", "), "secondary"));
+      }
+      for (const [index, item] of items.entries()) {
+        const control = node("button", undefined, "bar");
+        control.type = "button";
+        control.title = item.title;
+        control.setAttribute("aria-label", item.title);
+        const track = node("span", undefined, "bar-track");
+        const fill = node("span", undefined, "bar-fill ilo");
+        fill.style.setProperty("--bar-size", 100 * item.count / maximum + "%");
+        track.append(fill);
+        control.append(track, node("span", item.label, "bar-date"));
+        control.addEventListener("click", () => {
+          select(index);
+          view.charts[chartId] = item.key;
+          saveView();
+        });
+        chart.append(control);
+        controls.push(control);
+      }
+      const saved = items.findIndex(item => item.key === view.charts[chartId]);
+      if (items.length) select(saved >= 0 ? saved : preferredIndex);
+    }
+
+    const days = data.days.map((day, index) => ({
+      key: day.date,
+      count: day.total,
+      title: day.date + " UTC · " + day.total + (day.total === 1 ? " reset" : " resets"),
+      label: index % 7 === 0 ? day.date.slice(5) : "",
+      hosts: Object.entries(day.hosts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([host, count]) => count > 1 ? host + " ×" + count : host),
+    }));
+    const buckets = data.distribution.map(bucket => ({
+      key: bucket.resets,
+      count: bucket.count,
+      title: bucket.resets + (bucket.resets === 1 ? " reset" : " resets") + " · " +
+        bucket.count + (bucket.count === 1 ? " host" : " hosts"),
+      label: bucket.resets,
+      hosts: bucket.hosts,
+    }));
+    const lastActive = days.findLastIndex(day => day.count > 0);
+    renderChart("#reset-chart", "#reset-detail", days, lastActive >= 0 ? lastActive : days.length - 1);
+    renderChart("#hist-chart", "#hist-detail", buckets, 0);
+
+    $("#zone").value = view.zone;
+    $("#zone").addEventListener("change", event => {
+      view.zone = event.target.value;
+      formatTimes();
+      saveView();
+    });
+    $("#search").value = view.search;
+    $("#search").addEventListener("input", event => {
+      view.search = event.target.value;
+      filterHosts();
+      saveView();
+    });
+    for (const table of document.querySelectorAll("table")) {
+      const previous = view.sorts[table.id];
+      if (previous) sortTable(table, previous.index, previous.ascending);
+      for (const heading of table.tHead.rows[0].cells) {
+        heading.querySelector("button").addEventListener("click", () => {
+          const index = heading.cellIndex;
+          const ascending = heading.getAttribute("aria-sort") === "descending";
+          sortTable(table, index, ascending);
+          view.sorts[table.id] = { index, ascending };
+          saveView();
+        });
+      }
+    }
+    for (const archive of document.querySelectorAll("details.archive")) {
+      archive.open = Boolean(view.archives[archive.id]);
+      archive.addEventListener("toggle", () => {
+        view.archives[archive.id] = archive.open;
+        saveView();
+      });
+    }
+    formatTimes();
+    filterHosts();
+  </script>
+</body>
+</html>

@@ -388,6 +388,7 @@ def generate_report(root: Path, inventory: set[str]) -> Path:
     # JSON lives inside a raw-text element. In particular, saved messages cannot close it.
     payload = json.dumps(data, ensure_ascii=False).replace("<", r"\u003c")
     html = TEMPLATE.read_text(encoding="utf-8")
+    html = html.replace("<!-- REPORT THEME -->", medic.REPORT_THEME_FILE.read_text(encoding="utf-8"))
     html = html.replace("<!-- MEDIC LOGO -->", escape("\n".join(medic.MEDIC_LOGO)))
     html = html.replace("<!-- REPORT DATA -->", payload)
     path = root / OUTPUT_NAME
