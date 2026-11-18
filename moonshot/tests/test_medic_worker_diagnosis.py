@@ -295,7 +295,26 @@ def test_tui_diagnosis_publishes_the_result_without_relaunching(monkeypatch, tmp
     assert status["mode"] == "Diagnosis only"
     assert status["logo"] == list(mm.MEDIC_LOGO)
     assert status["diagnosis"]["lines"] == ["ms025  zombie — confirmed zombie generic-worker"]
-    assert "ms025  zombie — confirmed zombie generic-worker" in tui.status_lines(status, 0, False)
+    _, results = tui.status_lines(status, 0, False)
+    assert "ms025  zombie — confirmed zombie generic-worker" in results
+
+
+def test_tui_header_animates_while_active_and_counts_down_while_waiting(monkeypatch):
+    import moonshot_medic_tui as tui
+
+    monkeypatch.setattr(tui.time, "monotonic", lambda: 0.4)
+    active = {"phase": "Checking Fleetroll"}
+    assert tui.status_lines(active, None, False)[0] == ["◴ Checking Fleetroll"]
+    monkeypatch.setattr(tui.time, "monotonic", lambda: 1.0)
+    assert tui.status_lines(active, None, False)[0] == ["◷ Checking Fleetroll"]
+
+    idle = {"phase": "Waiting for next scan", "next_run_at": 160.0}
+    monkeypatch.setattr(tui.time, "time", lambda: 99.1)
+    assert tui.status_lines(idle, None, False)[0] == ["Waiting for next scan", "Next run in 1:01"]
+    monkeypatch.setattr(tui.time, "time", lambda: 161.0)
+    assert tui.status_lines(idle, None, False)[0] == ["Waiting for next scan", "Next run in 0:00"]
+    assert tui.status_lines(idle, None, True)[0] == ["Stop requested | Waiting for next scan"]
+    assert tui.status_lines(idle, 0, False)[0] == ["Waiting for next scan | Exit status 0"]
 
 
 @pytest.mark.parametrize("confirm,exit_code", [([], 1), (["--confirm"], 0)])

@@ -3,6 +3,7 @@
 import codecs
 import curses
 import json
+import math
 import os
 import re
 import signal
@@ -19,6 +20,8 @@ STATUS_ENV = "MOONSHOT_MEDIC_TUI_STATUS"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SECTIONS = ("recovery", "fleet_health", "diagnosis")
 LOGO_COLOR_PAIR = 1
+SPINNER_FRAMES = "◴◷◶◵"
+SPINNER_INTERVAL = 0.8
 
 
 class MedicLogs:
@@ -51,17 +54,23 @@ class MedicLogs:
                 for line in lines]
 
 
-def status_lines(status: dict, returncode: int | None, stopping: bool) -> list[str]:
+def status_lines(status: dict, returncode: int | None, stopping: bool) -> tuple[list[str], list[str]]:
     phase = status.get("phase", "Starting Medic")
+    next_run_at = status.get("next_run_at")
+    timer = ""
     if returncode is not None:
         phase = f"{phase} | Exit status {returncode}"
     elif stopping:
         phase = f"Stop requested | {phase}"
-    elif status.get("next_run_at") is not None:
-        remaining = max(0, int(status["next_run_at"] - time.time() + 0.999))
-        phase = f"Next scan in {remaining // 60}:{remaining % 60:02d}"
+    elif next_run_at is not None:
+        remaining = max(0, math.ceil(next_run_at - time.time()))
+        timer = f"Next run in {remaining // 60}:{remaining % 60:02d}"
+    else:
+        frame = int(time.monotonic() / SPINNER_INTERVAL) % len(SPINNER_FRAMES)
+        phase = f"{SPINNER_FRAMES[frame]} {phase}"
 
-    lines = [phase]
+    header = [phase, timer] if timer else [phase]
+    lines = []
     if mode := status.get("mode"):
         lines.append(f"Mode: {mode}")
     if detail := status.get("detail"):
@@ -69,12 +78,12 @@ def status_lines(status: dict, returncode: int | None, stopping: bool) -> list[s
     for key in SECTIONS:
         if result := status.get(key):
             lines.extend(["", result["title"], f"Updated {result['updated_at']}", *result["lines"]])
-    return lines
+    return header, lines
 
 
 def draw_pane(screen, bounds: tuple[int, int, int, int], title: str, lines: list[str],
               offset: int, *, active: bool, follow: bool = False,
-              pin_first: bool = False, logo: tuple[str, ...] = (),
+              header: list[str] | None = None, logo: tuple[str, ...] = (),
               logo_style: int = curses.A_NORMAL) -> tuple[int, int]:
     height, width, y, x = bounds
     pane = screen.derwin(height, width, y, x)
@@ -87,10 +96,8 @@ def draw_pane(screen, bounds: tuple[int, int, int, int], title: str, lines: list
     if logo and body_height >= len(logo) + 4 and all(len(row) <= content_width for row in logo):
         pinned.extend((*logo, ""))
         logo_height = len(logo)
-    if pin_first and lines:
-        phase_rows = (body_height - len(pinned)) // 2
-        pinned.extend(wrap(lines[0], content_width)[:phase_rows])
-        lines = lines[1:]
+    header_rows = [row for line in header or () for row in wrap(line, content_width)]
+    pinned.extend(header_rows[:body_height - len(pinned) - 1])
     rows = [row for line in lines for row in (wrap(line, content_width) or [""])]
     page = body_height - len(pinned)
     limit = max(0, len(rows) - page)
@@ -147,9 +154,10 @@ def display(screen, process: subprocess.Popen, status_file: Path, logs: MedicLog
                 main_height = (height - 1) * 3 // 5
                 panes = ((main_height, width, 0, 0),
                          (height - 1 - main_height, width, main_height, 0))
+                header, results = status_lines(status, returncode, stop_requested.requested)
                 offsets[0], pages[0] = draw_pane(
-                    screen, panes[0], "Moonshot Medic", status_lines(status, returncode, stop_requested.requested),
-                    offsets[0], active=focus == 0, pin_first=True, logo=tuple(status.get("logo", ())),
+                    screen, panes[0], "Moonshot Medic", results, offsets[0], active=focus == 0,
+                    header=header, logo=tuple(status.get("logo", ())),
                     logo_style=logo_style,
                 )
                 offsets[1], pages[1] = draw_pane(

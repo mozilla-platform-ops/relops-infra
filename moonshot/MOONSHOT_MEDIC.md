@@ -160,9 +160,11 @@ Add `--tui` to the usual auto command to run Medic in a terminal dashboard.
 ./moonshot_medic.py --auto --confirm --tui
 ```
 
-The main pane shows the current phase, the next-scan countdown, and the latest
-results for both checks and worker diagnosis. The log pane below it streams
-Medic's output, including warnings from cycles that found no recovery candidates.
+The main pane shows the current phase and a slow activity spinner while Medic
+works. A pinned countdown shows the time until the next run while Medic waits.
+Below the status are the latest results for both checks and worker diagnosis.
+The bottom pane streams Medic's logs, including warnings from cycles that found
+no recovery candidates.
 
 Press `Tab` to switch panes, use arrows or Page Up and Page Down to scroll,
 and press `End` to resume following the log. `q` or `Ctrl-C` requests the
