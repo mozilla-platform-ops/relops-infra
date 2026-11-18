@@ -323,6 +323,60 @@ def test_tui_header_animates_while_active_and_counts_down_while_waiting(monkeypa
     assert tui.status_header(idle, 0, False)[0] == "Waiting for next scan · Exit status 0"
 
 
+@pytest.mark.parametrize("height, logs_height", [(12, 4), (32, 8)])
+def test_tui_keeps_panes_and_phase_row_stable_through_startup_and_scans(
+    monkeypatch, tmp_path, height, logs_height,
+):
+    import moonshot_medic_tui as tui
+
+    path = tmp_path / "status.json"
+    width = 60
+    status = {"logo": mm.MEDIC_LOGO, "mode": "Confirmed recovery", "confirm": True}
+    updates = iter([
+        {"phase": "Checking Fleetroll", "detail": "Fetching host data for the Moonshot fleet",
+         "scan_started_at": "12:43"},
+        {"phase": "Waiting for next scan", "next_run_at": 100, "scan_started_at": "12:43",
+         "recovery": {"title": "Automated recovery", "summary": "0 hosts eligible", "updated_at": "",
+                      "alert": False, "query": "", "hosts": {}, "action": ""}},
+        {"phase": "Starting scan", "scan_started_at": "12:44", "recovery": None},
+    ])
+    screen = Mock()
+    screen.getmaxyx.return_value = height, width
+    status_pane = Mock()
+    log_pane = Mock()
+    screen.derwin.side_effect = [status_pane, log_pane] * 4
+    frames = []
+
+    def advance():
+        frames.append([call.args for call in status_pane.addnstr.call_args_list])
+        status_pane.addnstr.reset_mock()
+        if update := next(updates, None):
+            path.write_text(json.dumps({**status, **update}))
+            return -1
+        return ord("q")
+
+    screen.getch.side_effect = advance
+    process = Mock()
+    process.poll.side_effect = [None, None, None, 0]
+    monkeypatch.setattr(tui.curses, "curs_set", lambda *_: None)
+    monkeypatch.setattr(tui.time, "time", lambda: 40)
+
+    assert tui.display(screen, process, path, Mock(), tui.StopRequest(), startup_logo=mm.MEDIC_LOGO) == 0
+
+    main_height = height - 1 - logs_height
+    assert [call.args for call in screen.derwin.call_args_list] == [
+        (main_height, width, 0, 0), (logs_height, width, main_height, 0),
+    ] * 4
+    logo_visible = height == 32
+    assert all(any(row[2] == mm.MEDIC_LOGO[0] for row in frame) == logo_visible for frame in frames)
+    phase_rows = [next(row for row in frame if phase in row[2]) for frame, phase in zip(
+        frames, ("Starting Medic", "Checking Fleetroll", "Next scan in 1:00", "Starting scan"), strict=True,
+    )]
+    assert {row[0] for row in phase_rows} == ({4} if logo_visible else {1})
+    assert phase_rows[1][2].endswith("… · Recovery enabled")
+    assert all(len(row[2]) <= width - 4 for row in phase_rows)
+
+
 @pytest.mark.parametrize("waiting", [False, True])
 @pytest.mark.parametrize("size", [(15, 84), (10, 84)])
 def test_tui_rescan_key_only_signals_during_countdown(monkeypatch, tmp_path, waiting, size):

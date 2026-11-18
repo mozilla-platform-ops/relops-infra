@@ -78,7 +78,8 @@ class MedicErrors:
                 break
 
 
-def status_header(status: dict, returncode: int | None, stopping: bool) -> Line:
+def status_header(status: dict, returncode: int | None, stopping: bool,
+                  *, width: int | None = None) -> Line:
     phase = status.get("phase", "Starting Medic")
     next_run_at = status.get("next_run_at")
     mode = status.get("mode", "")
@@ -100,7 +101,12 @@ def status_header(status: dict, returncode: int | None, stopping: bool) -> Line:
         if detail := status.get("detail"):
             phase += f" · {shorten(detail, width=36, placeholder=' …')}"
 
-    return (f"{phase} · {MODES.get(mode, mode)}" if mode else phase, tone)
+    suffix = f" · {MODES.get(mode, mode)}" if mode else ""
+    if width is not None:
+        if suffix and len(suffix) < width:
+            return clip_line(phase, width - len(suffix)) + suffix, tone
+        return clip_line(phase + suffix, width), tone
+    return phase + suffix, tone
 
 
 def host_state(state: str) -> Line:
@@ -265,7 +271,7 @@ def color_palette() -> dict[str, int]:
 
 
 def display(screen, process: subprocess.Popen, status_file: Path, errors: MedicErrors,
-            stop_requested: "StopRequest") -> int:
+            stop_requested: "StopRequest", *, startup_logo: tuple[str, ...] = ()) -> int:
     screen.keypad(True)
     screen.timeout(200)
     try:
@@ -296,7 +302,6 @@ def display(screen, process: subprocess.Popen, status_file: Path, errors: MedicE
 
         screen.erase()
         height, width = screen.getmaxyx()
-        header = status_header(status, returncode, stop_requested.requested)
         if stop_requested.requested:
             footer = "Ctrl-C: exit immediately"
         else:
@@ -304,19 +309,19 @@ def display(screen, process: subprocess.Popen, status_file: Path, errors: MedicE
         if height >= 12 and width >= 36:
             try:
                 content_width = width - 4
-                header_rows = wrap_lines([header], content_width)
-                logo = [(line, "accent") for line in status.get("logo", ())] + [("", "")]
+                header = status_header(status, returncode, stop_requested.requested, width=content_width)
+                logo = [(line, "accent") for line in status.get("logo", startup_logo)] + [("", "")]
                 if len(logo) == 1 or any(len(line) > content_width for line, _ in logo):
                     logo = []
                 results = wrap_lines(dashboard_lines(status), content_width)
-                desired = len(logo) + len(header_rows) + max(1, len(results)) + 3
-                main_height = min(max(5, desired), height - 1 - max(4, (height - 1) // 3))
+                logs_height = max(4, height // 4)
+                main_height = height - 1 - logs_height
                 panes = ((main_height, width, 0, 0),
-                         (height - 1 - main_height, width, main_height, 0))
+                         (logs_height, width, main_height, 0))
                 offsets[0], pages[0] = draw_pane(
                     screen, panes[0], "Moonshot Medic",
                     results, offsets[0], active=focus == 0,
-                    header=header_rows + [("", "")], logo=logo, palette=palette,
+                    header=[header, ("", "")], logo=logo, palette=palette,
                 )
                 failure = errors.latest if returncode and status.get("phase") != "Recovery preview complete" else ""
                 activity = activity_lines(status, content_width, failure, failure_time)
@@ -330,9 +335,9 @@ def display(screen, process: subprocess.Popen, status_file: Path, errors: MedicE
                 pass
             footer += " | Tab: pane | ↑/↓: scroll | End: follow"
         else:
-            if width > 1:
-                for row, (line, tone) in enumerate(wrap_lines([header], width - 1)[:height - 1]):
-                    screen.addnstr(row, 0, line, width - 1, palette[tone])
+            if height > 1 and width > 1:
+                line, tone = status_header(status, returncode, stop_requested.requested, width=width - 1)
+                screen.addnstr(0, 0, line, width - 1, palette[tone])
             footer += " | Resize for dashboard"
         if can_rescan:
             footer = "r: recheck now | " + footer
@@ -388,7 +393,7 @@ def request_stop(process: subprocess.Popen, stop_requested: StopRequest, *, esca
             pass
 
 
-def run_dashboard(command: list[str]) -> int:
+def run_dashboard(command: list[str], *, startup_logo: tuple[str, ...] = ()) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print("--tui requires an interactive terminal.", file=sys.stderr)
         return 1
@@ -411,7 +416,8 @@ def run_dashboard(command: list[str]) -> int:
                     sig: signal.signal(sig, handle_signal) for sig in signals
                 }
                 try:
-                    returncode = display(screen, process, status_file, errors, stop_requested)
+                    returncode = display(screen, process, status_file, errors, stop_requested,
+                                         startup_logo=startup_logo)
                     if stop_requested.forced:
                         return 128 + signal.SIGINT
                     return returncode if returncode >= 0 else 128 - returncode

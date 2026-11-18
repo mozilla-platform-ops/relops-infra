@@ -2636,7 +2636,8 @@ def main() -> None:
                          looping=args.confirm and not args.once and not args.update_report)
             _tui_phase("Starting Medic")
         else:
-            sys.exit(run_dashboard([sys.executable, "-u", str(Path(__file__).resolve()), *sys.argv[1:]]))
+            command = [sys.executable, "-u", str(Path(__file__).resolve()), *sys.argv[1:]]
+            sys.exit(run_dashboard(command, startup_logo=MEDIC_LOGO))
 
     if args.update_report:
         state = load_state()
