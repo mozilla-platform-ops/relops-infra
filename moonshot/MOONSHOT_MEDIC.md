@@ -289,6 +289,23 @@ attempts this at most once per boot. It verifies a changed boot ID, a live
 worker that logged `workerReady`, and new Taskcluster contact for the same
 identity. Preview, diagnosis-only mode, and `--no-reset` leave the host alone.
 
+#### Ubuntu 24.04 task resolution stall
+
+Medic checks a live but inactive worker for the journal sequence
+`Reclaiming task`, `Resolving task`, and `Successfully reclaimed task` for
+one task ID. The worker must still be sleeping without task child processes,
+and the worker journal must have stayed quiet for at least five minutes.
+Medic checks the Queue's original run, including its pool and worker identity,
+and requires `exception/claim-expired`. The worker's latest Taskcluster
+observation must still point to that run and show no newer contact.
+
+Confirmed auto mode saves the evidence and current-boot diagnostics, refreshes
+the worker's Taskcluster record and expired claim, and rechecks the same boot,
+process, stall signature, and operator hold before requesting one SSH reboot
+per boot. Medic verifies a new boot, a live worker with a `workerReady` event,
+and fresh Taskcluster contact for the original identity. Preview,
+diagnosis-only mode, and `--no-reset` keep this check read-only.
+
 The one-shot command emits `medic_worker_diagnosis` JSON events. Diagnosis reports
 are saved under `moonshot_debugging_results/YYYYMMDD/*-worker-diagnosis.json`.
 Selection reasons, refreshed TC evidence for queried hosts, and live diagnosis
