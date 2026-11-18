@@ -9,7 +9,7 @@ import requests
 
 from moonshot_lib import expand_host, hostname_to_cart, normalize_node, make_headers, load_credentials, send_reboot, wait_for_online, worker_fqdn, print_success, get_pyfiglet_output
 
-# uses HTTP requests to reboot a Moonshot node via iLO Redfish API
+# uses HTTP requests to reset cartridge power via the iLO Redfish API
 
 # example usage (chassis + node):
 #   ./reset_moonshot.py \
@@ -25,11 +25,11 @@ from moonshot_lib import expand_host, hostname_to_cart, normalize_node, make_hea
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Reboot a Moonshot node via iLO Redfish API"
+        description="Reset a Moonshot cartridge's power via iLO Redfish API"
     )
     parser.add_argument("-f", "--force", action="store_true", help="Force the operation without confirmation")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show request and response details")
-    parser.add_argument("--no-wait", action="store_true", help="Do not wait for the node(s) to come back online after reboot")
+    parser.add_argument("--no-wait", action="store_true", help="Do not wait for the node(s) to come back online after the cartridge power reset")
 
     mode = parser.add_mutually_exclusive_group(required=False)
     mode.add_argument(
@@ -64,13 +64,13 @@ def parse_args():
 
 
 def build_targets(args) -> list[tuple[str, str, str | None]]:
-    """Return a list of (chassis_fqdn, node_id, label) tuples to reboot."""
+    """Return (chassis_fqdn, node_id, label) targets for cartridge power resets."""
     if args.hostname:
         targets = []
         for h in args.hostname:
             for chassis_fqdn, nodes in hostname_to_cart([h]).items():
                 for node in nodes:
-                    targets.append((chassis_fqdn, f"c{node}n1", h.split(".")[0]))
+                    targets.append((chassis_fqdn, f"c{node}n1", worker_fqdn(h)))
         return targets
 
     host = expand_host(args.host)
@@ -80,6 +80,18 @@ def build_targets(args) -> list[tuple[str, str, str | None]]:
     if node != args.node:
         print(f"Expanding node {args.node} to {node}...")
     return [(host, node, None)]
+
+
+def print_target_number(text: str) -> None:
+    lines = get_pyfiglet_output(
+        text, font=["bigmono12", "ansi_shadow", "4max", "smmono12"]
+    ).splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    print()
+    print("\n".join(lines))
 
 
 def main():
@@ -94,20 +106,30 @@ def main():
     headers = make_headers(username, password)
 
     if not args.force:
-        print("This will reboot:")
-        for host, node, label in targets:
-            print(f"  {node} @ {host}")
         if args.hostname:
             for h in args.hostname:
                 slot = re.findall(r'\d+', h.split(".")[0])
                 label = slot[-1] if slot else h
-                print(get_pyfiglet_output(label, font=["bigmono12", "ansi_shadow", "4max", "smmono12"]))
+                print_target_number(label)
         else:
             for host, node, _ in targets:
                 chassis = re.search(r'moon-chassis-(\d+)', host)
                 cart = re.search(r'c(\d+)', node)
                 if chassis and cart:
-                    print(get_pyfiglet_output(f"{chassis.group(1)}-{cart.group(1)}", font=["bigmono12", "ansi_shadow", "4max", "smmono12"]))
+                    print_target_number(f"{chassis.group(1)}-{cart.group(1)}")
+        print()
+        print("=" * 72)
+        print("VERIFY CARTRIDGE POWER RESET TARGETS")
+        for host, node, label in targets:
+            print("-" * 72)
+            if label:
+                print(f"  Worker:    {label}")
+            print(f"  Chassis:   {host}")
+            cart = re.fullmatch(r"c(\d+)n\d+", node)
+            if cart:
+                print(f"  Cartridge: {cart.group(1)}")
+            print(f"  Node:      {node}")
+        print("=" * 72)
         chassis_count = len({host for host, node, label in targets})
         print(f"{len(targets)} node(s) across {chassis_count} chassis.")
         confirm = input("Are you sure you want to proceed? (y/N) ")
@@ -121,7 +143,7 @@ def main():
         progress = f"{i}/{total}" if total > 1 else None
         send_reboot(system_url, headers, verbose=args.verbose, label=label, progress=progress)
 
-    print_success(f"Reboot command sent successfully ({len(targets)} node(s)).")
+    print_success(f"Cartridge power reset command sent successfully ({len(targets)} node(s)).")
 
     if not args.no_wait:
         if args.hostname:
