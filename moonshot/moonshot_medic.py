@@ -17,6 +17,7 @@ import argparse
 import datetime
 import json
 import math
+import os
 import re
 import shlex
 import signal
@@ -38,6 +39,10 @@ CLOCK_SKEW_SECONDS = 5 * 60
 RECENCY_MINUTES = 60
 AUTO_BATCH_SIZE = 10
 SCRIPT_VOICE_NAME = "Moonshot Medic"
+MEDIC_LOGO = (
+    " ▄▀▄▀▄ ▄▀▄ ▄▀▄ ▄▀█ █▀ █░░ ▄▀▄ ▄█▄    ▄▀▄▀▄ ██▀ ▄▄█ ▀ ▄▀▀",
+    " █░▀░█ ▀▄▀ ▀▄▀ █░█ ▄█ █▀█ ▀▄▀ ░█▄    █░▀░█ █▄▄ █▄█ █ ▀▄▄",
+)
 STATE_FILE = RESULTS_BASE / "state.json"
 OVERVIEW_FILE = RESULTS_BASE / "OVERVIEW.md"
 OVERVIEW_HTML_FILE = RESULTS_BASE / "OVERVIEW.html"
@@ -84,6 +89,35 @@ def _sigint_handler(sig, frame):
 
 _use_color = sys.stdout.isatty()
 _log_fh = None
+_tui_status_path: Path | None = None
+_tui_status: dict = {}
+
+
+def _publish_tui(**changes) -> None:
+    global _tui_status_path
+    if _tui_status_path is None:
+        return
+    _tui_status.update(changes)
+    try:
+        pending = _tui_status_path.with_suffix(".tmp")
+        pending.write_text(json.dumps(_tui_status), encoding="utf-8")
+        pending.replace(_tui_status_path)
+    except OSError as exc:
+        _tui_status_path = None
+        warn(f"Dashboard status updates unavailable: {exc}")
+
+
+def _tui_phase(phase: str, detail: str = "", *, next_run_at: float | None = None) -> None:
+    _publish_tui(phase=phase, detail=detail, next_run_at=next_run_at)
+
+
+def _tui_result(key: str, title: str, *lines: str) -> None:
+    if _tui_status_path is not None:
+        _publish_tui(**{key: {
+            "title": title,
+            "lines": [line for line in lines if line],
+            "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }})
 
 
 def _c(code: str, text: str) -> str:
@@ -308,13 +342,16 @@ def reset_batch(batch: list[str], state: dict, *,
                 authorize_reset: Callable[[list[str]], list[str]] | None = None,
                 ) -> tuple[list[str], list[str]]:
     """Repair skew before rebooting; retain repaired hosts for diagnostics."""
+    _tui_phase("Checking clocks", " ".join(short_label(host) for host in batch))
     repaired = {host for host in batch if remediate_clock_skew(worker_fqdn(host), state) is True}
     reset_hosts = [host for host in batch if host not in repaired]
     if authorize_reset and reset_hosts:
         # Clock repair may take minutes. Refresh TC evidence after that work.
+        _tui_phase("Rechecking Taskcluster before reset", " ".join(short_label(host) for host in reset_hosts))
         reset_hosts = authorize_reset(reset_hosts)
         batch = [host for host in batch if host in repaired or host in reset_hosts]
     if reset_hosts:
+        _tui_phase("Resetting via iLO and waiting for SSH", " ".join(short_label(host) for host in reset_hosts))
         info("Resetting hosts via iLO (waiting for them to come back online)...")
         run(["uv", "run", "./reset_moonshot.py", "--force"] + reset_hosts,
             cwd=RESET_DIR, check=False)
@@ -712,8 +749,7 @@ def update_overview_html(state: dict) -> None:
         "</head>",
         "<body>",
         '<pre style="color:#0ff;line-height:1;margin:0 0 .5rem;font-size:1rem">',
-        " ▄▀▄▀▄ ▄▀▄ ▄▀▄ ▄▀█ █▀ █░░ ▄▀▄ ▄█▄    ▄▀▄▀▄ ██▀ ▄▄█ ▀ ▄▀▀",
-        " █░▀░█ ▀▄▀ ▀▄▀ █░█ ▄█ █▀█ ▀▄▀ ░█▄    █░▀░█ █▄▄ █▄█ █ ▀▄▄",
+        *MEDIC_LOGO,
         '<span style="color:#888;font-size:.75rem;letter-spacing:.15em"> OVERVIEW</span>',
         "</pre>",
         f'<p class="generated">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
@@ -1135,6 +1171,7 @@ def validate_fleetroll_freshness(raw: str, returncode: int) -> tuple[bool, list[
 
 def check_fleetroll_data_freshness(stale_threshold: int, min_fresh_pct: int) -> bool:
     """Run and strictly validate Fleetroll's host and Taskcluster freshness check."""
+    _tui_phase("Checking Fleetroll freshness")
     cmd = [
         "uv", "run", "fleetroll", "data", "freshness",
         "configs/host-lists/linux/all.list",
@@ -1182,6 +1219,7 @@ def _fleetroll_command(*args: str, timeout: int = 60) -> str:
 def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False) -> dict:
     args = ["host", "monitor", host_source, "--once", "--json"]
     if candidates:
+        _tui_phase("Selecting automated recovery candidates")
         args.extend(["--filter-file", RECOVERY_FILTER_FILE])
     report = json.loads(_fleetroll_command(*args))
     if not isinstance(report, dict):
@@ -1195,6 +1233,8 @@ def fleetroll_worker_snapshot(host_source: str, *, candidates: bool = False) -> 
 
 
 def show_unnoted_unhealthy_moonshots() -> None:
+    _tui_phase("Checking Fleetroll health")
+    filter_line = f"Fleetroll filter: {UNHEALTHY_MOONSHOTS_FILTER}"
     try:
         output = _fleetroll_command(
             "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--hostname-only",
@@ -1204,13 +1244,17 @@ def show_unnoted_unhealthy_moonshots() -> None:
         if any(canonical_moonshot_fqdn(host) != host for host in hosts):
             raise ValueError("Fleetroll returned an invalid Moonshot hostname")
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        warn(f"Check 2 — Fleetroll health: Unavailable ({exc})")
-        _emit(f"  Fleetroll filter: {UNHEALTHY_MOONSHOTS_FILTER}")
+        title = f"Check 2 — Fleetroll health: Unavailable ({exc})"
+        warn(title)
+        _emit(f"  {filter_line}")
+        _tui_result("fleet_health", title, filter_line)
         return
 
-    info(f"Check 2 — Fleetroll health: {len(hosts)} unnoted Moonshots with HEALTHY=N")
-    _emit(f"  Fleetroll filter: {UNHEALTHY_MOONSHOTS_FILTER}")
+    title = f"Check 2 — Fleetroll health: {len(hosts)} unnoted Moonshots with HEALTHY=N"
+    info(title)
+    _emit(f"  {filter_line}")
     show_host_labels(hosts)
+    _tui_result("fleet_health", title, filter_line, " ".join(short_label(host) for host in hosts))
 
 
 def recovery_candidate_filter() -> str:
@@ -1235,11 +1279,15 @@ def show_host_labels(hosts: list[str]) -> None:
 
 
 def show_auto_checks(result: str, *, hosts: list[str] | None = None, action: str = "") -> None:
-    info(f"Check 1 — Automated recovery: {result}")
-    _emit(f"  Fleetroll candidate filter: {recovery_candidate_filter()}")
+    title = f"Check 1 — Automated recovery: {result}"
+    filter_line = f"Fleetroll candidate filter: {recovery_candidate_filter()}"
+    info(title)
+    _emit(f"  {filter_line}")
     show_host_labels(hosts or [])
     if action:
         _emit(f"  Action: {action}")
+    _tui_result("recovery", title, filter_line, " ".join(short_label(host) for host in hosts or ()),
+                f"Action: {action}" if action else "")
     show_unnoted_unhealthy_moonshots()
 
 
@@ -1597,6 +1645,7 @@ def diagnose_worker_probe(fqdn: str, *, startup_grace_seconds: int) -> dict:
 def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours: int,
                                limit: int, startup_grace_seconds: int) -> dict:
     """A separate, diagnosis-only path. No clock repair, reset, or recovery state writes."""
+    _tui_phase("Selecting workers for diagnosis")
     raw = json.loads(_fleetroll_command(
         "host", "monitor", "configs/host-lists/linux/all.list", "--once", "--json",
         "--filter", "host~t-linux64-ms tc_act>4h note= sort:host:asc",
@@ -1633,6 +1682,8 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
         else:
             candidates.append(host)
     decisions: dict = {}
+    if candidates:
+        _tui_phase("Checking Taskcluster before worker diagnosis", f"{len(candidates)} candidate hosts")
     eligible = set(eligible_auto_hosts(
         candidates, freshness_seconds=freshness_seconds,
         max_identity_age_hours=max_identity_age_hours, allow_recent_identity=True, decisions=decisions,
@@ -1642,6 +1693,7 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
             results.append({"host": host, "selection": "deferred",
                             **decisions.get(host, {"reason": "Taskcluster/identity evidence did not pass"})})
             continue
+        _tui_phase("Diagnosing worker", short_label(host))
         diagnosis = diagnose_worker(host, startup_grace_seconds=startup_grace_seconds)
         results.append({"host": host, "selection": "diagnosed",
                         "host_audit_ts": raw[host]["ts"],
@@ -1659,6 +1711,7 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int) ->
     results = report["results"]
     if not results and not args.diagnose_workers:
         info("Worker diagnosis: no candidates")
+        _tui_result("diagnosis", "Worker diagnosis: no candidates")
         return
 
     now = datetime.datetime.now(datetime.UTC)
@@ -1667,22 +1720,26 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int) ->
     report_path = run_dir / f"{now:%Y%m%dT%H%M%S%fZ}-worker-diagnosis.json"
     report_path.write_text(json.dumps(report, indent=2) + "\n")
 
+    diagnosed = sum(entry["selection"] == "diagnosed" for entry in results)
+    zombies = sum(entry.get("diagnosis", {}).get("worker_state") == "zombie" for entry in results)
+    zombie_label = "zombie" if zombies == 1 else "zombies"
+    title = (f"Worker diagnosis: {diagnosed} diagnosed, {zombies} confirmed {zombie_label}, "
+             f"{len(results) - diagnosed} deferred")
+    rows = []
+    for entry in sorted(results, key=lambda entry: entry["host"]):
+        diagnosis = entry.get("diagnosis")
+        state = diagnosis["worker_state"] if diagnosis else entry["selection"]
+        reason = diagnosis["reason"] if diagnosis else entry["reason"]
+        rows.append(f"{short_label(entry['host'])}  {state.replace('_', ' ')} — {reason}")
+    _tui_result("diagnosis", title, *rows)
     if args.diagnose_workers:
         for entry in results:
             _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
         info(f"Diagnosis-only report: {report_path}")
         return
-
-    diagnosed = sum(entry["selection"] == "diagnosed" for entry in results)
-    zombies = sum(entry.get("diagnosis", {}).get("worker_state") == "zombie" for entry in results)
-    zombie_label = "zombie" if zombies == 1 else "zombies"
-    info(f"Worker diagnosis: {diagnosed} diagnosed, {zombies} confirmed {zombie_label}, "
-         f"{len(results) - diagnosed} deferred")
-    for entry in sorted(results, key=lambda entry: entry["host"]):
-        diagnosis = entry.get("diagnosis")
-        state = diagnosis["worker_state"] if diagnosis else entry["selection"]
-        reason = diagnosis["reason"] if diagnosis else entry["reason"]
-        _emit(f"  {short_label(entry['host'])}  {state.replace('_', ' ')} — {reason}")
+    info(title)
+    for row in rows:
+        _emit(f"  {row}")
     info(f"Worker diagnosis report: {report_path}")
 
 
@@ -1750,6 +1807,8 @@ def parse_args() -> argparse.Namespace:
                         help="Short (ms025) or FQDN. Reads stdin if omitted.")
     parser.add_argument("--auto", action="store_true",
                         help="Fetch bad-host list from fleetroll.")
+    parser.add_argument("--tui", action="store_true",
+                        help="Show an interactive dashboard and log pane in auto mode.")
     parser.add_argument("--diagnose-workers", action="store_true",
                         help="One-shot read-only diagnosis of reachable, TC-inactive workers; requires --auto.")
     parser.add_argument("--diagnosis-limit", type=int, default=10,
@@ -1790,7 +1849,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    global _log_fh, _voice_enabled, _voice_all_hours
+    global _log_fh, _voice_enabled, _voice_all_hours, _tui_status_path
 
     args = parse_args()
     _voice_enabled = not args.no_voice
@@ -1815,6 +1874,9 @@ def main() -> None:
     if args.once and not args.auto:
         err("--once requires --auto.")
         sys.exit(1)
+    if args.tui and not args.auto:
+        err("--tui requires --auto.")
+        sys.exit(1)
     if not 0 < args.max_fleet_reset_pct <= 100:
         err("--max-fleet-reset-pct must be greater than 0 and at most 100.")
         sys.exit(1)
@@ -1822,6 +1884,19 @@ def main() -> None:
         err(f"Raising --max-fleet-reset-pct above {DEFAULT_MAX_FLEET_RESET_PCT:g}% "
             "requires --once.")
         sys.exit(1)
+
+    if args.tui:
+        from moonshot_medic_tui import STATUS_ENV, run_dashboard
+
+        if status_file := os.environ.pop(STATUS_ENV, None):
+            _tui_status_path = Path(status_file)
+            mode = "Diagnosis only" if args.diagnose_workers else (
+                "Confirmed recovery" if args.confirm else "Recovery preview"
+            )
+            _publish_tui(mode=mode, logo=MEDIC_LOGO)
+            _tui_phase("Starting Medic")
+        else:
+            sys.exit(run_dashboard([sys.executable, "-u", str(Path(__file__).resolve()), *sys.argv[1:]]))
 
     if args.update_report:
         state = load_state()
@@ -1832,10 +1907,11 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, _sigint_handler)
 
-    print()
-    print(_c('1;36', " ▄▀▄▀▄ ▄▀▄ ▄▀▄ ▄▀█ █▀ █░░ ▄▀▄ ▄█▄    ▄▀▄▀▄ ██▀ ▄▄█ ▀ ▄▀▀"))
-    print(_c('1;36', " █░▀░█ ▀▄▀ ▀▄▀ █░█ ▄█ █▀█ ▀▄▀ ░█▄    █░▀░█ █▄▄ █▄█ █ ▀▄▄"))
-    print()
+    if not args.tui:
+        print()
+        for line in MEDIC_LOGO:
+            print(_c('1;36', line))
+        print()
     say(SCRIPT_VOICE_NAME)
 
     freshness_mins = args.freshness_requirement if args.freshness_requirement is not None else args.loop_interval
@@ -1846,6 +1922,7 @@ def main() -> None:
             report_worker_diagnoses(args, stale_threshold)
         except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
             warn(f"Worker diagnosis failed: {exc}")
+            _tui_result("diagnosis", "Worker diagnosis unavailable", str(exc))
 
     if args.diagnose_workers:
         if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
@@ -1878,6 +1955,7 @@ def main() -> None:
             show_auto_checks("Skipped — fleet reset circuit breaker tripped")
             say("Moonshot Medic circuit breaker tripped")
             sys.exit(1)
+        _tui_phase("Checking Taskcluster eligibility", f"{len(preview_hosts)} candidate hosts")
         preview_hosts = eligible_auto_hosts(
             preview_hosts, freshness_seconds=stale_threshold,
             max_identity_age_hours=args.max_identity_age_hours,
@@ -1899,6 +1977,7 @@ def main() -> None:
         if n:
             print()
             warn("You must watch and monitor the run. Re-run with --confirm to proceed.")
+        _tui_phase("Recovery preview complete")
         sys.exit(1)
 
     # --- verify dependencies ---
@@ -1990,6 +2069,7 @@ def main() -> None:
                 # Resolve eligibility before announcing work or creating a run log.
                 # Keep the batch/reset checks below to catch changes during waits.
                 if args.auto:
+                    _tui_phase("Checking Taskcluster eligibility", f"{len(hosts)} candidate hosts")
                     hosts = eligible_auto_hosts(
                         hosts, freshness_seconds=stale_threshold,
                         max_identity_age_hours=args.max_identity_age_hours,
@@ -2007,6 +2087,7 @@ def main() -> None:
                     say(f"Starting run. {n_total} host{'s' if n_total != 1 else ''} detected.")
 
                     if first_run:
+                        _tui_phase("Waiting to start recovery", " ".join(short_label(host) for host in hosts))
                         warn("Starting in 15 seconds — press Ctrl-C to abort.")
                         for _ in range(15):
                             if _interrupt_count:
@@ -2047,6 +2128,8 @@ def main() -> None:
                             # --- reset batch ---
                             reset_fail_labels: list[str] = []
                             if args.auto:
+                                _tui_phase("Rechecking recovery batch eligibility",
+                                           " ".join(short_label(host) for host in batch))
                                 batch = eligible_auto_hosts(
                                     batch, freshness_seconds=stale_threshold,
                                     max_identity_age_hours=args.max_identity_age_hours,
@@ -2077,6 +2160,7 @@ def main() -> None:
                                 out_file = run_dir / f"{ts}-{label}.md"
 
                                 try:
+                                    _tui_phase("Checking clock and collecting diagnostics", label)
                                     # Reboots can expose the bad RTC again; also run with --no-reset.
                                     clock_result = remediate_clock_skew(fqdn, state)
                                     save_state(state)
@@ -2131,6 +2215,7 @@ def main() -> None:
         if not args.auto or args.once or _interrupt_count:
             break
 
+        _tui_phase("Waiting for next scan", next_run_at=time.time() + args.loop_interval * 60)
         info(f"Next run in {args.loop_interval} minute{'s' if args.loop_interval != 1 else ''}. "
              f"Press Ctrl-C to stop.")
         for _ in range(args.loop_interval * 60):
@@ -2143,6 +2228,7 @@ def main() -> None:
 
         print()
 
+    _tui_phase("Run finished with errors" if last_failed else "Run complete")
     sys.exit(1 if last_failed else 0)
 
 

@@ -150,6 +150,24 @@ cannot remain active in the long-running daemon.
 Skips the iLO reset and goes straight to collection. Useful when a host was
 manually rebooted or just came back from maintenance.
 
+### Terminal dashboard
+
+Add `--tui` to the usual auto command to run Medic in a terminal dashboard.
+
+```sh
+./moonshot_medic.py --auto --tui
+./moonshot_medic.py --auto --confirm --tui
+```
+
+The main pane shows the current phase, the next-scan countdown, and the latest
+results for both checks and worker diagnosis. The log pane below it streams
+Medic's output, including warnings from cycles that found no recovery candidates.
+
+Press `Tab` to switch panes, use arrows or Page Up and Page Down to scroll,
+and press `End` to resume following the log. `q` or `Ctrl-C` requests the
+usual graceful stop. A completed preview or one-shot run stays visible until
+you press `q`. Recovery still requires `--confirm`.
+
 ### Diagnose reachable workers
 
 ```

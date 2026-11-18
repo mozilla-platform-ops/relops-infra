@@ -276,6 +276,27 @@ def test_diagnosis_main_cannot_reach_host_actions(monkeypatch, tmp_path, selecti
     assert report["results"][0]["diagnosis"]["worker_state"] == "zombie"
 
 
+def test_tui_diagnosis_publishes_the_result_without_relaunching(monkeypatch, tmp_path, selection):
+    import moonshot_medic_tui as tui
+
+    status_path = tmp_path / "status.json"
+    monkeypatch.setenv(tui.STATUS_ENV, str(status_path))
+    monkeypatch.setattr(sys, "argv", ["medic", "--auto", "--tui", "--diagnose-workers", "--no-voice"])
+    monkeypatch.setattr(mm, "RESULTS_BASE", tmp_path)
+    monkeypatch.setattr(mm, "_tui_status", {})
+    monkeypatch.setattr(mm, "_tui_status_path", None)
+    monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: True)
+    monkeypatch.setattr(tui, "run_dashboard", lambda *a: pytest.fail("dashboard relaunched itself"))
+
+    mm.main()
+
+    status = json.loads(status_path.read_text())
+    assert status["mode"] == "Diagnosis only"
+    assert status["logo"] == list(mm.MEDIC_LOGO)
+    assert status["diagnosis"]["lines"] == ["ms025  zombie — confirmed zombie generic-worker"]
+    assert "ms025  zombie — confirmed zombie generic-worker" in tui.status_lines(status, 0, False)
+
+
 @pytest.mark.parametrize("confirm,exit_code", [([], 1), (["--confirm"], 0)])
 @pytest.mark.parametrize("state,zombies", [
     ("absent", "0 confirmed zombies"),
