@@ -1599,6 +1599,41 @@ def diagnose_reachable_workers(*, freshness_seconds: int, max_identity_age_hours
             "results": results}
 
 
+def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int) -> None:
+    report = diagnose_reachable_workers(
+        freshness_seconds=freshness_seconds, max_identity_age_hours=args.max_identity_age_hours,
+        limit=args.diagnosis_limit, startup_grace_seconds=args.startup_grace_minutes * 60,
+    )
+    results = report["results"]
+    if not results and not args.diagnose_workers:
+        info("Worker diagnosis: no candidates")
+        return
+
+    now = datetime.datetime.now(datetime.UTC)
+    run_dir = RESULTS_BASE / now.strftime("%Y%m%d")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    report_path = run_dir / f"{now:%Y%m%dT%H%M%S%fZ}-worker-diagnosis.json"
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+
+    if args.diagnose_workers:
+        for entry in results:
+            _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
+        info(f"Diagnosis-only report: {report_path}")
+        return
+
+    diagnosed = sum(entry["selection"] == "diagnosed" for entry in results)
+    zombies = sum(entry.get("diagnosis", {}).get("worker_state") == "zombie" for entry in results)
+    zombie_label = "zombie" if zombies == 1 else "zombies"
+    info(f"Worker diagnosis: {diagnosed} diagnosed, {zombies} confirmed {zombie_label}, "
+         f"{len(results) - diagnosed} deferred")
+    for entry in sorted(results, key=lambda entry: entry["host"]):
+        diagnosis = entry.get("diagnosis")
+        state = diagnosis["worker_state"].replace("_", " ") if diagnosis else entry["selection"]
+        reason = diagnosis["reason"] if diagnosis else entry["reason"]
+        _emit(f"  {short_label(entry['host'])}  {state} — {reason}")
+    info(f"Worker diagnosis report: {report_path}")
+
+
 # --- per-host collection ---
 
 def collect_host(fqdn: str, label: str, out_file: Path) -> bool:
@@ -1755,31 +1790,26 @@ def main() -> None:
     freshness_label = (f"{freshness_mins}min"
                        if args.freshness_requirement is not None
                        else f"{freshness_mins}min (from loop interval)")
+    stale_threshold = freshness_mins * 60
+
+    def show_worker_diagnoses() -> None:
+        try:
+            report_worker_diagnoses(args, stale_threshold)
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
+            warn(f"Worker diagnosis failed: {exc}")
 
     if args.diagnose_workers:
-        if not check_fleetroll_data_freshness(freshness_mins * 60, args.freshness_min_pct):
+        if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
             err("Fleetroll freshness validation failed; diagnosis skipped.")
             sys.exit(1)
         try:
-            report = diagnose_reachable_workers(
-                freshness_seconds=freshness_mins * 60,
-                max_identity_age_hours=args.max_identity_age_hours,
-                limit=args.diagnosis_limit, startup_grace_seconds=args.startup_grace_minutes * 60,
-            )
-            run_dir = RESULTS_BASE / datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
-            run_dir.mkdir(parents=True, exist_ok=True)
-            report_path = run_dir / (datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ") + "-worker-diagnosis.json")
-            report_path.write_text(json.dumps(report, indent=2) + "\n")
-            for entry in report["results"]:
-                _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
-            info(f"Diagnosis-only report: {report_path}")
+            report_worker_diagnoses(args, stale_threshold)
             return
         except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
             err(f"Worker diagnosis failed: {exc}")
             sys.exit(1)
 
     if args.auto and not args.confirm:
-        stale_threshold = freshness_mins * 60
         info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
         if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
             err("Fleetroll host or Taskcluster data failed freshness validation. "
@@ -1812,6 +1842,8 @@ def main() -> None:
             warn(' '.join(preview_hosts[:n]))
         else:
             warn("Auto mode found no bad hosts to process.")
+        if not _interrupt_count:
+            show_worker_diagnoses()
         print()
         warn("This is an automated script that will reboot hosts and collect diagnostics.")
         warn("You must watch and monitor the run. Re-run with --confirm to proceed.")
@@ -1841,7 +1873,6 @@ def main() -> None:
         stale = False
         # --- freshness gate ---
         if args.auto:
-            stale_threshold = freshness_mins * 60
             info(f"Checking fleetroll data freshness (max age: {freshness_label})...")
             if not check_fleetroll_data_freshness(stale_threshold, args.freshness_min_pct):
                 print()
@@ -2037,6 +2068,9 @@ def main() -> None:
                         if _log_fh:
                             _log_fh.close()
                             _log_fh = None
+
+        if args.auto and not stale and not _interrupt_count:
+            show_worker_diagnoses()
 
         first_run = False
 

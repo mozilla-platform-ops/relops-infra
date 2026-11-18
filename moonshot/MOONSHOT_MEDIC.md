@@ -150,16 +150,20 @@ cannot remain active in the long-running daemon.
 Skips the iLO reset and goes straight to collection. Useful when a host was
 manually rebooted or just came back from maintenance.
 
-### Diagnose reachable workers (temporary, read-only)
+### Diagnose reachable workers
 
 ```
 uv run moonshot_medic.py --auto --diagnose-workers --no-voice
 ```
 
-This is a separate, one-shot diagnosis path while zombie-aware gwhc v1 is being
-deployed. It never repairs clocks, resets hosts, collects the normal hang report,
-or updates recovery counters. Do not combine it with `--confirm` or named hosts.
-`--no-reset` is not needed. Existing automatic recovery behavior is unchanged.
+Normal `--auto` previews and confirmed loops show the diagnosed, confirmed zombie,
+and deferred counts, followed by each host's state and reason. Confirmed loops
+scan after recovery work, even when there are no reset candidates. When the scan
+finds candidates, Medic saves the full evidence in a worker diagnosis JSON report.
+
+Use `--diagnose-workers` to run only the read-only scan and emit its JSON events.
+Do not combine this flag with `--confirm` or named hosts. Worker diagnosis has
+no effect on automatic recovery eligibility.
 
 Candidates have old TC activity and no Fleetroll note, without requiring old
 observation data. Medic requires configured inventory membership, a successful
@@ -206,8 +210,8 @@ not establish task health. An absent process is `startup` below
 probe does not establish whether Puppet is still provisioning. Neither diagnosis
 authorizes recovery. Holds and incomplete process inspections take precedence.
 
-The command emits `medic_worker_diagnosis` JSON events and saves a separate
-`YYYYMMDD/*-worker-diagnosis.json` report under `moonshot_debugging_results/`.
+The one-shot command emits `medic_worker_diagnosis` JSON events. Diagnosis reports
+are saved under `moonshot_debugging_results/YYYYMMDD/*-worker-diagnosis.json`.
 Selection reasons, refreshed TC evidence for queried hosts, and live diagnosis
 are separate fields. A successful exit means the report was produced, including
 any deferred or unverified hosts; it does not mean every worker is healthy.

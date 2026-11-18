@@ -197,6 +197,8 @@ def fleetroll(monkeypatch, evidence):
             return "gathered"
         assert args[:2] == ("host", "monitor")
         assert "--json" in args
+        if "--filter" in args:
+            return "{}"  # No reachable workers qualify for the read-only diagnosis scan.
         return json.dumps({HOST: evidence})
 
     monkeypatch.setattr(mm, "_fleetroll_command", command)
@@ -399,7 +401,9 @@ def test_auto_main_gates_actions_with_override_evidence(
     expected += [("host", "monitor")] if missing_identity else check
     if not preview and eligible:
         expected += check * 2  # Per-batch and immediately before reset.
-    assert [cmd[:2] for cmd in fleetroll] == expected
+    assert [cmd[:2] for cmd in fleetroll[:-1]] == expected
+    assert fleetroll[-1][:2] == ("host", "monitor")
+    assert fleetroll[-1][-2:] == ("--filter", "host~t-linux64-ms tc_act>4h note= sort:host:asc")
 
 
 def test_clock_repair_delay_cannot_authorize_an_active_worker(evidence, fleetroll, monkeypatch):

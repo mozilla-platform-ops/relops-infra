@@ -213,7 +213,8 @@ def selection(monkeypatch):
     monkeypatch.setattr(mm, "eligible_auto_hosts", eligible)
     def diagnose(host, **kwargs):
         calls.append(host)
-        return {"worker_state": "zombie", "source": "medic_proc_v1"}
+        return {"worker_state": "zombie", "source": "medic_proc_v1",
+                "reason": "confirmed zombie generic-worker"}
     monkeypatch.setattr(mm, "diagnose_worker", diagnose)
     return records, calls
 
@@ -271,6 +272,40 @@ def test_diagnosis_main_cannot_reach_host_actions(monkeypatch, tmp_path, selecti
     assert len(reports) == 1
     report = json.loads(reports[0].read_text())
     assert report["results"][0]["diagnosis"]["worker_state"] == "zombie"
+
+
+@pytest.mark.parametrize("confirm,exit_code", [([], 1), (["--confirm"], 0)])
+def test_auto_prints_diagnoses_without_reset_candidates(
+    monkeypatch, tmp_path, capsys, selection, confirm, exit_code,
+):
+    results_base = tmp_path / "results"
+    monkeypatch.setattr(sys, "argv", ["medic", "--auto", "--once", "--no-voice", *confirm])
+    monkeypatch.setattr(mm, "RESULTS_BASE", results_base)
+    monkeypatch.setattr(mm, "FLEETROLL_DIR", tmp_path)
+    monkeypatch.setattr(mm, "announce_overview_report", lambda: None)
+    monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: True)
+    monkeypatch.setattr(mm, "fleetroll_worker_snapshot", lambda *a, **kw: {})
+    monkeypatch.setattr(mm, "check_fleet_reset_circuit_breaker", lambda *a: (True, [], ""))
+    eligible = mm.eligible_auto_hosts
+    monkeypatch.setattr(mm, "eligible_auto_hosts", lambda hosts, **kw: eligible(hosts, **kw) if hosts else [])
+    monkeypatch.setattr(mm, "reset_batch", lambda *a, **kw: pytest.fail("diagnosis triggered reset"))
+    records, calls = selection
+    second = mm.worker_fqdn("ms026")
+    records[second] = {**records[HOST], "host": second, "ok": False}
+
+    with pytest.raises(SystemExit) as exc:
+        mm.main()
+
+    assert exc.value.code == exit_code
+    assert calls == [HOST]
+    output = capsys.readouterr().out
+    assert "1 diagnosed, 1 confirmed zombie, 1 deferred" in output
+    assert "ms025  zombie — confirmed zombie generic-worker" in output
+    assert "ms026  deferred — latest host audit did not succeed" in output
+    assert "medic_worker_diagnosis" not in output
+    report_path, = results_base.rglob("*-worker-diagnosis.json")
+    assert str(report_path) in output
+    assert len(json.loads(report_path.read_text())["results"]) == 2
 
 
 @pytest.mark.parametrize("args", [[], ["--auto", "--confirm"], ["--auto", "ms025"],
