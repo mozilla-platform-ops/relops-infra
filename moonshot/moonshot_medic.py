@@ -147,13 +147,33 @@ def wait_for_next_scan(loop_interval: int) -> None:
         _rescan_requested = None
 
 
-def _tui_result(key: str, title: str, *lines: str) -> None:
+def _tui_result(key: str, title: str, *lines: str, summary: str = "",
+                hosts: dict[str, dict[str, str]] | None = None, alert: bool = False) -> None:
     if _tui_status_path is not None:
         _publish_tui(**{key: {
             "title": title,
             "lines": [line for line in lines if line],
             "updated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "summary": summary,
+            "hosts": hosts or {},
+            "alert": alert,
         }})
+
+
+def _tui_activity(message: str, *, host: str = "", tone: str = "") -> None:
+    if _tui_status_path is None:
+        return
+    event = {"time": datetime.datetime.now().strftime("%H:%M"), "host": host,
+             "message": " ".join(message.split()), "tone": tone}
+    _publish_tui(activity=[*_tui_status.get("activity", [])[-199:], event])
+
+
+def _tui_host_outcome(check: str, host: str, state: str, reason: str) -> None:
+    if _tui_status_path is None:
+        return
+    key = "recovery_outcomes" if check == "Check 1" else "diagnosis_outcomes"
+    outcomes = _tui_status.get(key, {})
+    _publish_tui(**{key: {**outcomes, short_label(host): {"state": state, "reason": reason}}})
 
 
 def _c(code: str, text: str) -> str:
@@ -176,6 +196,10 @@ def scan_log(mode: str, *, recovery_label: str = "Check 1"):
     started = datetime.datetime.now(datetime.UTC)
     run_dir = RESULTS_BASE / started.strftime("%Y%m%d")
     run_dir.mkdir(parents=True, exist_ok=True)
+    _publish_tui(phase="Starting scan", detail="", next_run_at=None,
+                 scan_started_at=started.astimezone().strftime("%H:%M"),
+                 recovery=None, fleet_health=None, diagnosis=None,
+                 recovery_outcomes={}, diagnosis_outcomes={})
     previous = _log_fh, _log_recovery_label
     with (run_dir / "run.log").open("a", encoding="utf-8", buffering=1) as log:
         _log_fh, _log_recovery_label = log, recovery_label
@@ -192,6 +216,20 @@ def scan_log(mode: str, *, recovery_label: str = "Check 1"):
 
 def log_intervention(check: str, host: str, action: str, outcome: str, reason: str,
                      evidence: str | Path = "") -> None:
+    if _tui_status_path is not None:
+        tone = {"failed": "error", "deferred": "attention", "unverified": "attention",
+                "verified": "success", "saved": "success", "recovered": "success",
+                "rebooted": "success"}.get(outcome, "")
+        _tui_activity(f"{action} {outcome} · {reason}", host=short_label(host), tone=tone)
+        if check == "Check 1":
+            if action == "iLO reset" and outcome == "verified":
+                _tui_host_outcome(check, host, "ssh_restored", reason)
+            elif action == "Clock fix" and outcome == "verified":
+                _tui_host_outcome(check, host, "clock_repaired", reason)
+            elif action in ("iLO reset", "Clock fix", "Collect diagnostics") and outcome == "failed":
+                _tui_host_outcome(check, host, outcome, reason)
+            elif action == "Recovery" and outcome == "deferred":
+                _tui_host_outcome(check, host, outcome, reason)
     if _log_fh is None:
         return
     timestamp = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
@@ -214,10 +252,12 @@ def ok(msg: str) -> None:
 
 
 def warn(msg: str) -> None:
+    _tui_activity(f"Warning · {msg}", tone="attention")
     _emit(f"{_c('1;33', '[WARN]')} {msg}")
 
 
 def err(msg: str) -> None:
+    _tui_activity(f"Error · {msg}", tone="error")
     _emit(f"{_c('1;31', '[ERROR]')} {msg}", stderr=True)
 
 
@@ -1353,7 +1393,7 @@ def show_unnoted_unhealthy_moonshots() -> None:
         title = f"Check 2 — Fleetroll health: Unavailable ({exc})"
         warn(title)
         _emit(f"  {filter_line}")
-        _tui_result("fleet_health", title, filter_line)
+        _tui_result("fleet_health", title, filter_line, summary="Unavailable", alert=True)
         return
 
     title = (f"Check 2 — Fleetroll health: {len(hosts)} unnoted Moonshots with HEALTHY=N "
@@ -1361,7 +1401,11 @@ def show_unnoted_unhealthy_moonshots() -> None:
     info(title)
     _emit(f"  {filter_line}")
     show_host_labels(hosts)
-    _tui_result("fleet_health", title, filter_line, " ".join(short_label(host) for host in hosts))
+    labels = [short_label(host) for host in hosts]
+    _tui_result("fleet_health", title, filter_line, " ".join(labels),
+                hosts={label: {"state": "matched", "reason": "Fleetroll health matched at scan time"}
+                       for label in labels},
+                summary=f"{len(hosts)} {'host' if len(hosts) == 1 else 'hosts'} matched at scan time")
 
 
 def recovery_candidate_filter() -> str:
@@ -1394,14 +1438,17 @@ def show_auto_checks(result: str, *, hosts: list[str] | None = None, action: str
     show_host_labels(hosts or [])
     if action:
         _emit(f"  Action: {action}")
-    _tui_result("recovery", title, filter_line, " ".join(short_label(host) for host in hosts or ()),
-                f"Action: {action}" if action else "")
+    labels = [short_label(host) for host in hosts or ()]
+    _tui_result("recovery", title, filter_line, " ".join(labels), f"Action: {action}" if action else "",
+                summary=result, alert=result.startswith(("Unavailable", "Skipped")),
+                hosts={label: {"state": "eligible", "reason": "Eligible for automated recovery at scan time"}
+                       for label in labels})
     if fleetroll_fresh:
         show_unnoted_unhealthy_moonshots()
     else:
         title = "Check 2 — Fleetroll health: Skipped — Fleetroll freshness check failed"
         info(title)
-        _tui_result("fleet_health", title)
+        _tui_result("fleet_health", title, summary="Skipped · Fleetroll freshness check failed", alert=True)
 
 
 def historical_identity_problem(record: dict, *, now: datetime.datetime,
@@ -2053,12 +2100,15 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
     if task_stalls:
         title += f", {task_stalls} task resolution {'stall' if task_stalls == 1 else 'stalls'}"
     rows = []
+    findings = {}
     for entry in sorted(results, key=lambda entry: entry["host"]):
         diagnosis = entry.get("diagnosis")
         state = diagnosis["worker_state"] if diagnosis else entry["selection"]
         reason = diagnosis["reason"] if diagnosis else entry["reason"]
-        rows.append(f"{short_label(entry['host'])}  {state.replace('_', ' ')} — {reason}")
-    _tui_result("diagnosis", title, *rows)
+        label = short_label(entry["host"])
+        findings[label] = {"state": state, "reason": reason}
+        rows.append(f"{label}  {state.replace('_', ' ')} — {reason}")
+    _tui_result("diagnosis", title, *rows, hosts=findings)
     if args.diagnose_workers:
         for entry in results:
             _emit(json.dumps({"event": "medic_worker_diagnosis", **entry}, sort_keys=True))
@@ -2130,13 +2180,14 @@ def report_worker_diagnoses(args: argparse.Namespace, freshness_seconds: int,
         result = f"{short_label(host)}: {recovery['outcome']} — {recovery['reason']}"
         info(f"Check 2 recovery {result}")
         rows.append(f"Recovery {result}")
-        _tui_result("diagnosis", title, *rows)
+        _tui_result("diagnosis", title, *rows, hosts=findings)
     return all(entry.get("recovery", {}).get("outcome") not in ("failed", "unverified") for entry in candidates)
 
 
 def log_check_2_intervention(entry: dict, outcome: str, reason: str, report_path: Path) -> None:
     diagnosis = entry["diagnosis"]
     action = "GDM restart" if diagnosis["worker_state"] == "gdm_autologin_stall" else "SSH reboot"
+    _tui_host_outcome("Check 2", entry["host"], outcome, reason)
     log_intervention("Check 2", entry["host"], action, outcome,
                      f"{diagnosis['reason']}. {reason}", report_path)
 
@@ -2195,6 +2246,9 @@ def collect_diagnostics(fqdn: str, label: str, out_file: Path, state: dict, *, b
             log_intervention(_log_recovery_label, fqdn, "Collect diagnostics", "saved" if collected else "failed",
                              "host diagnostics collected" if collected else "host diagnostics collection failed",
                              out_file if collected else "")
+        else:
+            _tui_activity("Diagnostics captured" if collected else "Diagnostics collection failed",
+                          host=label, tone="success" if collected else "error")
         save_state(state)
 
 
@@ -2600,7 +2654,7 @@ def main() -> None:
             return report_worker_diagnoses(args, stale_threshold, check_1_hosts)
         except (OSError, subprocess.SubprocessError, ValueError, TypeError) as exc:
             warn(f"Worker diagnosis failed: {exc}")
-            _tui_result("diagnosis", "Worker diagnosis unavailable", str(exc))
+            _tui_result("diagnosis", "Worker diagnosis unavailable", str(exc), alert=True)
             return False
 
     def check_1_eligible_hosts(hosts: list[str]) -> list[str]:
