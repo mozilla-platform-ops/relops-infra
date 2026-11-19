@@ -153,11 +153,15 @@ manually rebooted or just came back from maintenance.
 
 ### Terminal dashboard
 
-Add `--tui` to the usual auto command to run Medic in a terminal dashboard.
+Medic opens the dashboard by default for `--auto` runs when stdin and stdout are
+both terminals. Use `--legacy` to force plain output. Redirected runs use plain
+output by default. `--tui` explicitly requests the dashboard and requires a
+terminal.
 
 ```sh
-./moonshot_medic.py --auto --tui
-./moonshot_medic.py --auto --confirm --tui
+./moonshot_medic.py --auto
+./moonshot_medic.py --auto --confirm
+./moonshot_medic.py --auto --legacy
 ```
 
 The dashboard shows Medic's phase and recovery mode, followed by hosts that
@@ -191,7 +195,8 @@ Confirmed loops scan after recovery work, even when there are no reset candidate
 When the scan finds candidates, Medic saves the full evidence in a worker
 diagnosis JSON report.
 
-Use `--diagnose-workers` to run only the read-only scan and emit its JSON events.
+Use `--diagnose-workers` to run only the read-only scan. Add `--legacy` to emit
+its JSON events to an interactive terminal.
 Do not combine this flag with `--confirm` or named hosts. Worker diagnosis has
 no effect on automatic recovery eligibility.
 

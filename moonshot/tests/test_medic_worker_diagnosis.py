@@ -264,8 +264,16 @@ def test_unknown_inventory_blocks_diagnosis(selection, monkeypatch):
         select()
 
 
-def test_diagnosis_main_cannot_reach_host_actions(monkeypatch, tmp_path, selection):
-    monkeypatch.setattr(sys, "argv", ["medic", "--auto", "--diagnose-workers", "--no-voice"])
+@pytest.mark.parametrize("stdin_tty,stdout_tty,interface", [
+    (False, True, []), (True, False, []), (True, True, ["--legacy"]),
+])
+def test_diagnosis_main_cannot_reach_host_actions(
+    monkeypatch, tmp_path, selection, capsys, stdin_tty, stdout_tty, interface,
+):
+    args = ["--auto", "--diagnose-workers", "--no-voice", *interface]
+    monkeypatch.setattr(sys, "argv", ["medic", *args])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: stdin_tty)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: stdout_tty)
     monkeypatch.setattr(mm, "RESULTS_BASE", tmp_path)
     monkeypatch.setattr(mm, "check_fleetroll_data_freshness", lambda *a: True)
     def forbidden(*args, **kwargs):
@@ -277,6 +285,30 @@ def test_diagnosis_main_cannot_reach_host_actions(monkeypatch, tmp_path, selecti
     assert len(reports) == 1
     report = json.loads(reports[0].read_text())
     assert report["results"][0]["diagnosis"]["worker_state"] == "zombie"
+    assert '"event": "medic_worker_diagnosis"' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("interface", [[], ["--tui"]])
+def test_interactive_auto_launches_dashboard_with_explicit_child_flag(monkeypatch, interface):
+    import moonshot_medic_tui as tui
+
+    args = ["--auto", "--once", "--confirm"]
+    monkeypatch.delenv(tui.STATUS_ENV, raising=False)
+    monkeypatch.setattr(sys, "argv", ["medic", *interface, *args, "--"])
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+
+    def run_dashboard(command, *, startup_logo):
+        assert command[:3] == [sys.executable, "-u", str(Path(mm.__file__).resolve())]
+        assert command[3:] == ["--tui", *args, "--"]
+        assert startup_logo == mm.MEDIC_LOGO
+        return 17
+
+    monkeypatch.setattr(tui, "run_dashboard", run_dashboard)
+    with pytest.raises(SystemExit) as exc:
+        mm.main()
+
+    assert exc.value.code == 17
 
 
 def test_tui_diagnosis_publishes_the_result_without_relaunching(monkeypatch, tmp_path, selection):

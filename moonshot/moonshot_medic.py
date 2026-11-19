@@ -2,9 +2,10 @@
 """Automated triage for hung t-linux64-ms-* Moonshot cartridges: resets via iLO, collects hang diagnostics, and tracks repeat offenders.
 
 Usage:
-  moonshot_medic.py [--auto] [--once] [--no-reset] [--ignore-recency] [HOST ...]
+  moonshot_medic.py [--auto] [--legacy] [--once] [--no-reset] [--ignore-recency] [HOST ...]
 
   --auto                    Fetch bad-host list from fleetroll instead of reading argv/stdin (requires --confirm).
+  --legacy                  Force plain terminal output in auto mode.
   --once                    Run one auto-mode iteration, then exit.
   --max-fleet-reset-pct     Maximum auto-selected percentage of configured fleet (default: 20).
   --no-reset                Skip iLO resets and SSH reboots.
@@ -2335,8 +2336,11 @@ def parse_args() -> argparse.Namespace:
                         help="Short (ms025) or FQDN. Reads stdin if omitted.")
     parser.add_argument("--auto", action="store_true",
                         help="Fetch bad-host list from fleetroll.")
-    parser.add_argument("--tui", action="store_true",
-                        help="Show an interactive dashboard and log pane in auto mode.")
+    interface = parser.add_mutually_exclusive_group()
+    interface.add_argument("--tui", action="store_true",
+                           help="Require the dashboard (default for interactive auto runs).")
+    interface.add_argument("--legacy", action="store_true",
+                           help="Force plain terminal output in auto mode.")
     parser.add_argument("--diagnose-workers", action="store_true",
                         help="One-shot read-only diagnosis of reachable, TC-inactive workers; requires --auto.")
     parser.add_argument("--diagnosis-limit", type=int, default=10,
@@ -2413,7 +2417,11 @@ def main() -> None:
             "requires --once.")
         sys.exit(1)
 
-    if args.tui:
+    use_tui = args.tui or (
+        args.auto and not args.legacy and not args.update_report
+        and sys.stdin.isatty() and sys.stdout.isatty()
+    )
+    if use_tui:
         from moonshot_medic_tui import STATUS_ENV, run_dashboard
 
         if status_file := os.environ.pop(STATUS_ENV, None):
@@ -2425,7 +2433,11 @@ def main() -> None:
                          looping=args.confirm and not args.once and not args.update_report)
             _tui_phase("Starting Medic")
         else:
-            command = [sys.executable, "-u", str(Path(__file__).resolve()), *sys.argv[1:]]
+            command = [sys.executable, "-u", str(Path(__file__).resolve())]
+            # The dashboard child has redirected streams and needs an explicit flag.
+            if not args.tui:
+                command.append("--tui")
+            command.extend(sys.argv[1:])
             sys.exit(run_dashboard(command, startup_logo=MEDIC_LOGO))
 
     if args.update_report:
@@ -2436,10 +2448,10 @@ def main() -> None:
         return
 
     signal.signal(signal.SIGINT, _sigint_handler)
-    if args.tui:
+    if use_tui:
         signal.signal(signal.SIGUSR1, _rescan_signal_handler)
 
-    if not args.tui:
+    if not use_tui:
         print()
         for line in MEDIC_LOGO:
             print(_c('1;36', line))
