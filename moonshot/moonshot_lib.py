@@ -63,21 +63,37 @@ def load_credentials():
         sys.exit(1)
 
 
-def send_reboot(system_url, headers, verbose=False, label=None, progress=None):
-    payload = {
-        "Action": "Reset",
-        "ResetType": "ColdReset"
-    }
-    prefix = f"{progress}: " if progress else ""
-    prefix += f"{label}: " if label else ""
-    print(f"{prefix}Sending cartridge power reset request (ColdReset) via POST {system_url}...")
+def get_node_power(system_url: str, headers: dict) -> str | None:
+    """Read the legacy Moonshot ComputerSystem Power property."""
+    try:
+        response = requests.get(system_url, headers=headers, verify=False, timeout=10, allow_redirects=False)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    power = data.get("Power") if isinstance(data, dict) else None
+    return power if power in ("On", "Off", "Reset") else None
+
+
+def post_node_reset(system_url: str, headers: dict, reset_type: str, *,
+                    verbose: bool = False, **request_options) -> requests.Response:
+    payload = {"Action": "Reset", "ResetType": reset_type}
     if verbose:
         print(f"[VERBOSE] POST {system_url}")
         print(f"[VERBOSE] Headers: {headers}")
         print(f"[VERBOSE] Payload: {json.dumps(payload)}")
-    response = requests.post(system_url, headers=headers, json=payload, verify=False)
+    response = requests.post(system_url, headers=headers, json=payload, verify=False, **request_options)
     if verbose:
         print(f"[VERBOSE] Response: {response.status_code} {response.text}")
+    return response
+
+
+def send_reboot(system_url, headers, verbose=False, label=None, progress=None):
+    prefix = f"{progress}: " if progress else ""
+    prefix += f"{label}: " if label else ""
+    print(f"{prefix}Sending cartridge power reset request (ColdReset) via POST {system_url}...")
+    response = post_node_reset(system_url, headers, "ColdReset", verbose=verbose)
     if not response.ok:
         print(f"[ERROR] Failed to send cartridge power reset: {response.status_code} {response.text}")
         sys.exit(1)
@@ -188,22 +204,24 @@ def ssh_ready(fqdn: str, timeout: float = 10.0) -> bool:
         return False
 
 
-def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10) -> bool:
-    """Wait for a host to respond to ping then accept SSH connections.
+def wait_for_online(fqdn: str, timeout: int = 600, poll_interval: int = 10, *, require_ping: bool = True) -> bool:
+    """Wait for authenticated SSH, optionally checking ping first.
 
     Prints progress to stdout. Returns True if online, False if timeout reached.
     """
     deadline = time.monotonic() + timeout
 
-    print(f"  [{fqdn}] Waiting for ping...", flush=True)
-    while time.monotonic() < deadline:
-        if ping_host(fqdn):
-            break
-        time.sleep(poll_interval)
-    else:
-        print(f"[ERROR] Timed out waiting for {fqdn} to respond to ping.")
-        return False
-    print(f"  [{fqdn}] Ping OK. Waiting for SSH...", flush=True)
+    if require_ping:
+        print(f"  [{fqdn}] Waiting for ping...", flush=True)
+        while time.monotonic() < deadline:
+            if ping_host(fqdn):
+                break
+            time.sleep(poll_interval)
+        else:
+            print(f"[ERROR] Timed out waiting for {fqdn} to respond to ping.")
+            return False
+        print(f"  [{fqdn}] Ping OK.", flush=True)
+    print(f"  [{fqdn}] Waiting for SSH...", flush=True)
 
     while time.monotonic() < deadline:
         if ssh_ready(fqdn):

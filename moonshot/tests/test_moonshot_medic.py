@@ -1,11 +1,13 @@
 import datetime
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import moonshot_medic as mm
+import moonshot_lib as ml
 
 
 class TestAnnouncements:
@@ -176,14 +178,22 @@ class TestClockRemediation:
         batch = [mm.worker_fqdn(f"ms{i}") for i in (155, 156, 157, 158)]
         outcomes = dict(zip(batch, [True, None, False, None]))
         monkeypatch.setattr(mm, "remediate_clock_skew", lambda host, state: outcomes[host])
-        monkeypatch.setattr(mm, "ssh_is_online", lambda host: host != batch[3])
         calls = []
-        monkeypatch.setattr(mm, "run", lambda cmd, **kw: calls.append(cmd))
+        monkeypatch.setattr(mm, "load_credentials", lambda: ("user", "password"))
+        monkeypatch.setattr(mm, "get_node_power", lambda *args: "On")
+        monkeypatch.setattr(mm.time, "sleep", lambda seconds: None)
+        monkeypatch.setattr(mm, "wait_for_online", lambda host, **kwargs: host != batch[3])
+
+        def post(url, headers, action, **kwargs):
+            calls.append((url.rsplit("/", 1)[-1], action))
+            return SimpleNamespace(status_code=200)
+
+        monkeypatch.setattr(mm, "post_node_reset", post)
         state = _state()
         online, failed = mm.reset_batch(batch, state)
         assert online == batch[:3]
         assert failed == ["ms158"]
-        assert calls == [["uv", "run", "./reset_moonshot.py", "--force", *batch[1:]]]
+        assert calls == [("c21n1", "ColdReset"), ("c22n1", "ColdReset"), ("c23n1", "ColdReset")]
         assert batch[0] not in state["hosts"]
         assert state["hosts"][batch[1]]["total_resets"] == 1
         assert state["hosts"][batch[2]]["total_resets"] == 1
@@ -191,9 +201,91 @@ class TestClockRemediation:
 
     def test_all_repaired_hosts_skip_reset(self, monkeypatch):
         monkeypatch.setattr(mm, "remediate_clock_skew", lambda host, state: True)
-        monkeypatch.setattr(mm, "run", lambda *a, **kw: pytest.fail("unexpected reset"))
-        monkeypatch.setattr(mm, "ssh_is_online", lambda *a: pytest.fail("unexpected reset probe"))
+        monkeypatch.setattr(mm, "recover_ilo_batch", lambda *a: pytest.fail("unexpected iLO recovery"))
         assert mm.reset_batch([FQDN], _state()) == ([FQDN], [])
+
+
+@pytest.mark.parametrize("powers,responses,eligible,ssh_ready,actions,reason", [
+    (["Off"], [], True, None, [], "already powered off"),
+    (["Unknown"], [], True, None, [], "power state unknown"),
+    (["On"], [503], True, None, ["ColdReset"], "ColdReset request failed (HTTP 503)"),
+    (["On", "Unknown"], [200], True, None, ["ColdReset"], "confirm power state after ColdReset"),
+    (["On", "On"], [200], True, False, ["ColdReset"], "power on, but SSH did not return"),
+    (["On", "Off", "Off"], [200], False, None, ["ColdReset"], "Power On no longer authorized"),
+    (["On", "Off", "Unknown"], [200], True, None, ["ColdReset"], "before fallback Power On"),
+    (["On", "Off", "On"], [200], True, True, ["ColdReset"], "SSH responded after reset"),
+    (["On", "Off", "Off"], [200, 503], True, None, ["ColdReset", "On"], "Power On request failed"),
+    (["On", "Off", "Off", "Off"], [200, 200], True, None, ["ColdReset", "On"], "stayed off after fallback"),
+    (["On", "Off", "Off", "On"], [200, 200], True, True, ["ColdReset", "On"], "SSH responded after reset"),
+])
+def test_ilo_recovery_only_powers_on_after_an_accepted_reset(
+    monkeypatch, powers, responses, eligible, ssh_ready, actions, reason,
+):
+    expected_url = "https://moon-chassis-1.inband.releng.mdc1.mozilla.com/rest/v1/Systems/c25n1"
+    checks = []
+    interventions = []
+    requests_sent = []
+    power_states = iter(powers)
+    response_codes = iter(responses)
+    last_power = None
+
+    def get(url, **kwargs):
+        nonlocal last_power
+        assert url == expected_url
+        last_power = next(power_states)
+        return SimpleNamespace(status_code=200, json=lambda: {"Power": last_power})
+
+    def post(url, *, json, **kwargs):
+        assert url == expected_url
+        assert json["Action"] == "Reset"
+        requests_sent.append(json["ResetType"])
+        return SimpleNamespace(status_code=next(response_codes))
+
+    def authorize(hosts):
+        assert hosts == [FQDN]
+        checks.append(last_power)
+        return hosts if len(checks) == 1 or eligible else []
+
+    def wait_for_ssh(host, *, require_ping):
+        assert host == FQDN
+        assert last_power == "On"
+        assert not require_ping
+        assert ssh_ready is not None
+        return ssh_ready
+
+    monkeypatch.setattr(ml.requests, "get", get)
+    monkeypatch.setattr(ml.requests, "post", post)
+    monkeypatch.setattr(mm, "remediate_clock_skew", lambda *args: None)
+    monkeypatch.setattr(mm, "load_credentials", lambda: ("user", "password"))
+    monkeypatch.setattr(mm, "ILO_RESET_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(mm, "ILO_POWER_WAIT_SECONDS", 0)
+    monkeypatch.setattr(mm, "wait_for_online", wait_for_ssh)
+    monkeypatch.setattr(mm, "log_intervention", lambda *args: interventions.append(args))
+
+    state = _state()
+    online, failed = mm.reset_batch([FQDN], state, authorize_reset=authorize)
+    assert requests_sent == actions
+    assert next(power_states, None) is None
+    assert checks == ([None, "Off"] if len(powers) >= 3 else [None])
+    assert reason in interventions[-1][4]
+    if not actions:
+        assert (online, failed, state) == ([], [], _state())
+        assert interventions[-1][3] == "deferred"
+    elif ssh_ready:
+        assert (online, failed) == ([FQDN], [])
+    else:
+        assert (online, failed) == ([], ["ms025"])
+        assert reason in state["hosts"][FQDN]["last_actions"]["reset"]["reason"]
+
+
+def test_ilo_power_poll_waits_through_a_transient_off_state(monkeypatch):
+    observed = iter(["Reset", "Off", "On"])
+    delays = []
+    monkeypatch.setattr(mm, "get_node_power", lambda *args: next(observed))
+    monkeypatch.setattr(mm.time, "sleep", delays.append)
+
+    assert mm.wait_for_ilo_power_on("https://ilo.example", {}) == "On"
+    assert delays == [mm.ILO_POWER_POLL_SECONDS] * 2
 
 
 def _freshness_report():
@@ -209,34 +301,6 @@ def _freshness_report():
         },
         "failures": [],
     }
-
-
-class TestSshReadiness:
-    def test_requires_authenticated_remote_command(self, monkeypatch):
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append((cmd, kwargs))
-            return mm.subprocess.CompletedProcess(cmd, 0)
-
-        monkeypatch.setattr(mm.subprocess, "run", fake_run)
-
-        assert mm.ssh_is_online(FQDN, timeout=12) is True
-        cmd, kwargs = calls[0]
-        assert cmd[0] == "ssh"
-        assert "BatchMode=yes" in cmd
-        assert "ConnectTimeout=12" in cmd
-        assert cmd[-2:] == [FQDN, "true"]
-        assert kwargs["timeout"] == 17
-
-    def test_returns_false_when_session_cannot_start(self, monkeypatch):
-        monkeypatch.setattr(
-            mm.subprocess,
-            "run",
-            lambda *args, **kwargs: mm.subprocess.CompletedProcess(args[0], 255),
-        )
-
-        assert mm.ssh_is_online(FQDN) is False
 
 
 class TestFleetrollFreshness:

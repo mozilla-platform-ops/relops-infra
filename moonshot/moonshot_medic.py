@@ -29,25 +29,33 @@ import tempfile
 import textwrap
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from html import escape
 from http.client import HTTPException
 from pathlib import Path
 from urllib.request import urlopen
 
+from requests import RequestException
+
 from moonshot_gdm_probe import SIGNATURE_KEYS
+from moonshot_lib import (
+    get_node_power, hostname_to_cart, load_credentials, make_headers, post_node_reset, wait_for_online,
+)
 from moonshot_oom_probe import SIGNATURE_KEYS as OOM_SIGNATURE_KEYS
 from moonshot_task_stall_probe import SIGNATURE_KEYS as TASK_STALL_SIGNATURE_KEYS, TASK_ID as TASK_STALL_TASK_ID
 
 FLEETROLL_DIR = Path.home() / "git/fleetroll_mvp"
 SCRIPT_DIR = Path(__file__).parent.resolve()
-RESET_DIR = SCRIPT_DIR
 RESULTS_BASE = SCRIPT_DIR / "moonshot_debugging_results"
 HANG_SCRIPT = SCRIPT_DIR / "moonshot_hang_report.py"
 CLOCK_FIX_SCRIPT = SCRIPT_DIR / "install_clock_fix.py"
 CLOCK_SKEW_SECONDS = 5 * 60
 RECENCY_MINUTES = 60
 AUTO_BATCH_SIZE = 10
+ILO_RESET_SETTLE_SECONDS = 15
+ILO_POWER_WAIT_SECONDS = 30
+ILO_POWER_POLL_SECONDS = 5
 SSH_REBOOT_WAIT_SECONDS = 180
 GDM_VERIFY_WAIT_SECONDS = 60
 SCRIPT_VOICE_NAME = "Moonshot Medic"
@@ -392,29 +400,6 @@ def unreachable_recovery_hosts(hosts: list[str]) -> list[str]:
     return unreachable
 
 
-def ssh_is_online(fqdn: str, timeout: int = 10) -> bool:
-    """Check that SSH can authenticate and execute a command, as scp requires."""
-    try:
-        result = subprocess.run(
-            [
-                "ssh",
-                "-o", "BatchMode=yes",
-                "-o", "StrictHostKeyChecking=accept-new",
-                "-o", f"ConnectTimeout={timeout}",
-                "-o", "ConnectionAttempts=1",
-                fqdn,
-                "true",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=timeout + 5,
-        )
-        return result.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
 # --- Ubuntu 18.04 clock remediation ---
 
 def probe_1804_clock(fqdn: str) -> tuple[float, str] | None:
@@ -483,6 +468,128 @@ def remediate_clock_skew(fqdn: str, state: dict) -> bool | None:
     return repaired
 
 
+def wait_for_ilo_power_on(url: str, headers: dict) -> str | None:
+    deadline = time.monotonic() + ILO_POWER_WAIT_SECONDS
+    while True:
+        power = get_node_power(url, headers)
+        remaining = deadline - time.monotonic()
+        if power == "On" or remaining <= 0:
+            return power
+        time.sleep(min(remaining, ILO_POWER_POLL_SECONDS))
+
+
+def request_ilo_reset(host: str, url: str, headers: dict, reset_type: str) -> str:
+    """Log the controller response and return a failure reason, if any."""
+    action = "Power On" if reset_type == "On" else reset_type
+    try:
+        response = post_node_reset(url, headers, reset_type, timeout=10, allow_redirects=False)
+    except RequestException as exc:
+        return f"iLO {action} request could not be confirmed ({type(exc).__name__})"
+    info(f"[{short_label(host)}] iLO {action} returned HTTP {response.status_code}")
+    if not 200 <= response.status_code < 300:
+        return f"iLO {action} request failed (HTTP {response.status_code})"
+    return ""
+
+
+def recover_ilo_batch(hosts: list[str], state: dict,
+                      authorize_reset: Callable[[list[str]], list[str]] | None) -> tuple[set[str], list[str]]:
+    try:
+        headers = make_headers(*load_credentials())
+    except SystemExit as exc:
+        if exc.code != 1:
+            raise
+        for host in hosts:
+            log_intervention(_log_recovery_label, host, "Recovery", "deferred", "iLO credentials unavailable")
+        return set(), []
+
+    _tui_phase("Checking iLO power before reset", " ".join(short_label(host) for host in hosts))
+    reset_urls = {}
+    failures = {}
+    for host in hosts:
+        targets = hostname_to_cart([worker_fqdn(host)])
+        if not targets:
+            log_intervention(_log_recovery_label, host, "Recovery", "deferred", "iLO node mapping unavailable")
+            continue
+        chassis, nodes = next(iter(targets.items()))
+        url = f"https://{chassis}/rest/v1/Systems/c{nodes[0]}n1"
+        power = get_node_power(url, headers)
+        info(f"[{short_label(host)}] iLO power before reset: {power or 'unknown'}")
+        if power != "On" or _interrupt_count:
+            reason = {"Off": "already powered off", "On": "interrupted before recovery"}.get(
+                power, "iLO power state unknown or transitioning",
+            )
+            log_intervention(_log_recovery_label, host, "Recovery", "deferred", reason)
+        elif failure := request_ilo_reset(host, url, headers, "ColdReset"):
+            failures[host] = failure
+        else:
+            reset_urls[host] = url
+
+    powered_on = set()
+    online = set()
+    if reset_urls:
+        _tui_phase("Verifying iLO power after reset")
+        # The original On state can still be visible just after iLO accepts the reset.
+        time.sleep(ILO_RESET_SETTLE_SECONDS)
+        with ThreadPoolExecutor() as executor:
+            power_after_reset = dict(zip(reset_urls, executor.map(
+                lambda url: wait_for_ilo_power_on(url, headers), reset_urls.values(),
+            ), strict=True))
+            powered_on = {host for host, power in power_after_reset.items() if power == "On"}
+            still_off = [host for host, power in power_after_reset.items() if power == "Off"]
+            for host, power in power_after_reset.items():
+                info(f"[{short_label(host)}] iLO power after ColdReset: {power or 'unknown'}")
+                if power not in ("On", "Off"):
+                    failures[host] = "iLO could not confirm power state after ColdReset"
+
+            if still_off:
+                _tui_phase("Rechecking eligibility before iLO power-on")
+                eligible = set(authorize_reset(still_off) if authorize_reset and not _interrupt_count else still_off)
+                power_on_urls = {}
+                for host in still_off:
+                    url = reset_urls[host]
+                    power = get_node_power(url, headers)
+                    if power == "On":
+                        powered_on.add(host)
+                    elif power != "Off":
+                        failures[host] = "iLO could not confirm power state before fallback Power On"
+                    elif _interrupt_count or host not in eligible:
+                        failures[host] = "Node stayed off after ColdReset; fallback Power On no longer authorized"
+                    elif failure := request_ilo_reset(host, url, headers, "On"):
+                        failures[host] = failure
+                    else:
+                        power_on_urls[host] = url
+
+                for host, power in zip(power_on_urls, executor.map(
+                    lambda url: wait_for_ilo_power_on(url, headers), power_on_urls.values(),
+                ), strict=True):
+                    info(f"[{short_label(host)}] iLO power after fallback Power On: {power or 'unknown'}")
+                    if power == "On":
+                        powered_on.add(host)
+                    else:
+                        failures[host] = ("Node stayed off after fallback Power On" if power == "Off"
+                                          else "iLO could not confirm power state after fallback Power On")
+
+            if powered_on:
+                _tui_phase("Waiting for SSH after iLO confirmed power on")
+                ssh_hosts = [host for host in hosts if host in powered_on]
+                ssh_results = executor.map(
+                    lambda host: wait_for_online(worker_fqdn(host), require_ping=False), ssh_hosts,
+                )
+                for host, ready in zip(ssh_hosts, ssh_results, strict=True):
+                    if ready:
+                        online.add(host)
+                    else:
+                        failures[host] = "iLO confirmed power on, but SSH did not return"
+
+    for host in hosts:
+        if host in online:
+            record_reset_success(state, worker_fqdn(host))
+        elif failure := failures.get(host):
+            err(f"[{short_label(host)}] {failure} — skipping collection")
+            record_reset_failure(state, worker_fqdn(host), failure)
+    return online, [short_label(host) for host in hosts if host in failures]
+
+
 def reset_batch(batch: list[str], state: dict, *,
                 authorize_reset: Callable[[list[str]], list[str]] | None = None,
                 ) -> tuple[list[str], list[str]]:
@@ -494,25 +601,8 @@ def reset_batch(batch: list[str], state: dict, *,
         # Clock repair may take minutes. Refresh TC evidence after that work.
         _tui_phase("Rechecking Taskcluster before reset", " ".join(short_label(host) for host in reset_hosts))
         reset_hosts = authorize_reset(reset_hosts)
-        batch = [host for host in batch if host in repaired or host in reset_hosts]
-    if reset_hosts:
-        _tui_phase("Resetting via iLO and waiting for SSH", " ".join(short_label(host) for host in reset_hosts))
-        info("Resetting hosts via iLO (waiting for them to come back online)...")
-        run(["uv", "run", "./reset_moonshot.py", "--force"] + reset_hosts,
-            cwd=RESET_DIR, check=False)
-    online_hosts, failed_labels = [], []
-    for host in batch:
-        fqdn, label = worker_fqdn(host), short_label(host)
-        if host in repaired:
-            online_hosts.append(host)
-        elif ssh_is_online(fqdn):
-            online_hosts.append(host)
-            record_reset_success(state, fqdn)
-        else:
-            err(f"[{label}] did not come back online — skipping collection")
-            record_reset_failure(state, fqdn)
-            failed_labels.append(label)
-    return online_hosts, failed_labels
+    online, failed = recover_ilo_batch(reset_hosts, state, authorize_reset) if reset_hosts else (set(), [])
+    return [host for host in batch if host in repaired or host in online], failed
 
 
 # --- persistent host state ---
@@ -582,13 +672,12 @@ def record_reset_success(state: dict, fqdn: str) -> None:
     log_intervention(_log_recovery_label, fqdn, "iLO reset", "verified", reason, STATE_FILE)
 
 
-def record_reset_failure(state: dict, fqdn: str) -> None:
+def record_reset_failure(state: dict, fqdn: str, reason: str = "SSH did not return after reset") -> None:
     h = _host_entry(state, fqdn)
     h["consecutive_reset_failures"] = h.get("consecutive_reset_failures", 0) + 1
     h["last_failure"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     h["total_failures"] = h.get("total_failures", 0) + 1
-    record_action(state, fqdn, "reset", False)
-    reason = "SSH did not return after reset"
+    record_action(state, fqdn, "reset", False, reason=reason)
     if _log_recovery_label == "Check 1":
         reason = "Host unreachable with stale Taskcluster activity. " + reason
     log_intervention(_log_recovery_label, fqdn, "iLO reset", "failed", reason, STATE_FILE)
@@ -2594,10 +2683,9 @@ def main() -> None:
         return
 
     # --- verify dependencies ---
-    for d in (FLEETROLL_DIR, RESET_DIR):
-        if not d.is_dir():
-            err(f"Required directory not found: {d}")
-            sys.exit(1)
+    if not FLEETROLL_DIR.is_dir():
+        err(f"Required directory not found: {FLEETROLL_DIR}")
+        sys.exit(1)
     if not HANG_SCRIPT.is_file():
         err(f"Diagnostic script not found: {HANG_SCRIPT}")
         sys.exit(1)
@@ -2797,7 +2885,7 @@ def main() -> None:
                     ok_n, fail_n = len(ok_hosts), len(fail_hosts)
                     if fail_n:
                         say(f"{ok_n} succeeded, {fail_n} failed.")
-                    else:
+                    elif ok_n:
                         say(f"All {ok_n} host{'s' if ok_n != 1 else ''} succeeded.")
 
                     last_failed = bool(fail_hosts)

@@ -488,8 +488,7 @@ def test_clock_repair_delay_cannot_authorize_an_active_worker(evidence, fleetrol
         return None
 
     monkeypatch.setattr(mm, "remediate_clock_skew", repair)
-    monkeypatch.setattr(mm, "run", lambda *a, **kw: pytest.fail("unexpected iLO reset"))
-    monkeypatch.setattr(mm, "ssh_is_online", lambda *a: pytest.fail("unexpected reset accounting"))
+    monkeypatch.setattr(mm, "recover_ilo_batch", lambda *a: pytest.fail("unexpected iLO recovery"))
     state = {"hosts": {}}
     assert mm.reset_batch(
         [HOST], state, authorize_reset=lambda hosts: mm.eligible_auto_hosts(

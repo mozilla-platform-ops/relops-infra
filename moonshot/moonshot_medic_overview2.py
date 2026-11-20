@@ -130,7 +130,7 @@ def recorded_event(root: Path, item: dict) -> Event | None:
     )
     label, tone = action_outcome(action, result)
     trigger = DIAGNOSIS_NAMES.get(item.get("trigger"), "")
-    reason = ""
+    reason = item.get("reason") or ""
     if key == "clock_fix" and item.get("skew_seconds") is not None:
         reason = f"Initial skew {item['skew_seconds']}s"
         if item.get("verified_skew_seconds") is not None:
