@@ -401,10 +401,13 @@ def test_tui_keeps_panes_and_phase_row_stable_through_startup_and_scans(
     ] * 4
     logo_visible = height == 32
     assert all(any(row[2] == mm.MEDIC_LOGO[0] for row in frame) == logo_visible for frame in frames)
+    if logo_visible:
+        assert all([(row[0], row[2]) for row in frame[1:3]] == [(1, ""), (2, mm.MEDIC_LOGO[0])]
+                   for frame in frames)
     phase_rows = [next(row for row in frame if phase in row[2]) for frame, phase in zip(
         frames, ("Starting Medic", "Checking Fleetroll", "Next scan in 1:00", "Starting scan"), strict=True,
     )]
-    assert {row[0] for row in phase_rows} == ({4} if logo_visible else {1})
+    assert {row[0] for row in phase_rows} == ({5} if logo_visible else {1})
     assert phase_rows[1][2].endswith("… · Recovery enabled")
     assert all(len(row[2]) <= width - 4 for row in phase_rows)
 

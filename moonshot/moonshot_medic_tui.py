@@ -250,6 +250,7 @@ def color_palette() -> dict[str, int]:
         "success": curses.COLOR_GREEN,
         "error": curses.COLOR_RED,
         "preview": curses.COLOR_MAGENTA,
+        "logo": curses.COLOR_MAGENTA,
     }
     palette = dict.fromkeys(colors, curses.A_BOLD)
     palette["muted"] = curses.A_DIM
@@ -310,8 +311,10 @@ def display(screen, process: subprocess.Popen, status_file: Path, errors: MedicE
             try:
                 content_width = width - 4
                 header = status_header(status, returncode, stop_requested.requested, width=content_width)
-                logo = [(line, "accent") for line in status.get("logo", startup_logo)] + [("", "")]
-                if len(logo) == 1 or any(len(line) > content_width for line, _ in logo):
+                logo = [(line, "logo") for line in status.get("logo", startup_logo)]
+                if logo and all(len(line) <= content_width for line, _ in logo):
+                    logo = [("", ""), *logo, ("", "")]
+                else:
                     logo = []
                 results = wrap_lines(dashboard_lines(status), content_width)
                 logs_height = max(4, height // 4)
