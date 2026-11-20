@@ -1396,11 +1396,27 @@ def historical_identity_problem(record: dict, *, now: datetime.datetime,
     baseline = record.get("historical_worker_identity")
     if not isinstance(baseline, dict) or baseline.get("status") != "present":
         return "no historical worker identity"
+    reasons = baseline.get("reasons")
     if (baseline.get("collection_status") != "ok"
             or baseline.get("source") != "host_configuration"
             or baseline.get("contradiction_status") != "none_known"
-            or baseline.get("reasons") != []):
-        return "historical identity is uncertain or contradicted"
+            or reasons != []):
+        messages = {
+            "worker_configuration_missing": "worker configuration is missing",
+            "identity_collection_unusable": "latest host audit could not verify worker identity",
+            "observation_conflict": "host audits disagree on worker configuration",
+            "configured_destination_unresolved": "could not resolve the configured worker pool",
+            "configured_destination_mismatch": "observed worker identity disagrees with the configured pool",
+            "override_application_unconfirmed": "Puppet has not confirmed the worker configuration",
+            "override_change_unverified": "override change remains unverified",
+        }
+        details = []
+        if isinstance(reasons, list):
+            for reason in reasons:
+                code = reason.get("code") if isinstance(reason, dict) else None
+                if isinstance(code, str) and code in messages:
+                    details.append(messages[code])
+        return " · ".join(details) or "could not verify historical worker identity"
     identity = {key: baseline.get(key) for key in WORKER_IDENTITY_FIELDS}
     if not all(isinstance(value, str) and value.strip() for value in identity.values()):
         return "historical identity is incomplete"

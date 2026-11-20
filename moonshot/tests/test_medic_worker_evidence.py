@@ -166,6 +166,16 @@ def test_incomplete_or_mismatched_evidence_fails_closed(evidence, path, value):
     assert problem(evidence)
 
 
+@pytest.mark.parametrize("reasons,expected", [
+    ([{"code": "override_application_unconfirmed"}, {"code": "override_change_unverified"}],
+     "Puppet has not confirmed the worker configuration · override change remains unverified"),
+    ([{"code": "unrecognized_reason"}], "could not verify historical worker identity"),
+])
+def test_historical_worker_identity_deferral_explains_fleetroll_evidence(evidence, reasons, expected):
+    evidence["historical_worker_identity"].update(contradiction_status="contradicted", reasons=reasons)
+    assert problem(evidence) == expected
+
+
 @pytest.mark.parametrize("age,eligible", [(3, False), (8, True), (168, True), (169, False), (-1, False)])
 def test_baseline_age_policy_does_not_require_fresh_ssh(evidence, age, eligible):
     baseline = evidence["historical_worker_identity"]
