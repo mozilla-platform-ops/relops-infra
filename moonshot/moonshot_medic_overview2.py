@@ -339,7 +339,8 @@ def build_report(root: Path, state: dict, inventory: set[str], now: dt.datetime)
             if event.time[:10] in trend:
                 trend[event.time[:10]][fqdn, label, event.action, event.check, event.trigger, category] += 1
 
-        last_action = next((event for event in events if event.action != "Worker diagnosis"), None)
+        last_action = next((event for event in events
+                            if event.action != "Worker diagnosis" and event.outcome != "Deferred"), None)
         failure = next((event for event in events if event.tone == "failure" and event.time >= older_than_7d), None)
         until = utc_time(host.get("skip_until"))
         streak = host.get("consecutive_reset_failures", 0)

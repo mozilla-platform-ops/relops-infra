@@ -39,6 +39,9 @@ button { cursor: pointer; }
 .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; padding-bottom: 1.6rem; }
 .logo { color: var(--accent); overflow: hidden; font: 700 clamp(.55rem, 1.5vw, .83rem)/1.18 var(--mono); margin: 0 0 .85rem; }
 .snapshot { display: grid; gap: .4rem; justify-items: end; }
+.overview-nav { display: inline-flex; gap: .15rem; padding: .12rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--inset); }
+.overview-nav a { display: block; padding: .28rem .55rem; border-radius: .25rem; color: var(--muted); font-size: .8rem; text-decoration: none; }
+.overview-nav a:hover, .overview-nav a[aria-current="page"] { background: #263137; color: var(--text); }
 .zone { display: flex; gap: .55rem; align-items: center; }
 .control { min-height: 2.5rem; border: 1px solid var(--border); border-radius: .45rem; padding: .45rem .65rem; background: var(--inset); }
 select.control {

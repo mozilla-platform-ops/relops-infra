@@ -85,6 +85,7 @@ def test_report_combines_saved_actions_with_completed_scan_findings(tmp_path):
         "Scan started at 2026-11-18T12:00:00Z | confirmed auto\n"
         "  Check 2 — Fleetroll health: 1 host matched\n"
         f"2026-11-18T12:00:02Z | Check 1 | ms126 | Collect diagnostics | saved | Collected | Evidence: {audit}\n"
+        "2026-11-18T12:00:05Z | Check 1 | ms126 | Recovery | deferred | recently processed\n"
         "Scan ended at 2026-11-18T12:00:09Z\n"
         "Scan started at 2026-11-18T13:00:00Z | confirmed auto\n"
     )
@@ -112,10 +113,12 @@ def test_report_combines_saved_actions_with_completed_scan_findings(tmp_path):
                                "remediations24": 0, "remediations7": 0}
     assert row["backoffReason"] == "3 consecutive reset failures"
     assert row["latest"]["outcome"] == "Deferred"
+    assert row["lastAction"]["outcome"] == "Diagnostics saved"
     assert row["lastAction"]["reason"] == "Collected"
     assert row["lastAction"]["links"] == [{"label": "Host audit", "href": "20261118/worker-audit.md"}]
     assert sum(event["action"] == "Collect diagnostics" for event in row["events"]) == 1
     assert sum(event["action"] == "Worker diagnosis" for event in row["events"]) == 1
+    assert any(event["action"] == "Recovery" and event["outcome"] == "Deferred" for event in row["events"])
     scan = result["latestScan"]
     assert scan["health"] == "1 host matched"
     finding, = scan["findings"]

@@ -9,7 +9,7 @@
   <style>
 <!-- REPORT THEME -->
     #hosts > thead { position: sticky; top: 0; z-index: 1; }
-    #hosts { min-width: 63rem; }
+    #hosts { min-width: 51rem; }
     #history > .table-scroll { max-height: 37rem; }
     .attention-grid { border-top: 1px solid var(--border); display: grid; grid-template-columns: 1fr 1fr; }
     .attention-grid > div { padding: .9rem 1.2rem; min-width: 0; }
@@ -17,6 +17,7 @@
     .attention-grid h3 { margin-bottom: .45rem; }
     .flag { display: grid; grid-template-columns: max-content 1fr; gap: .25rem .7rem; align-items: baseline; margin: .55rem 0; }
     .flag .reason { grid-column: 2; }
+    .scan-deferrals { margin: .35rem 0; padding-inline-start: 1.2rem; }
     .reason { color: var(--muted); font-size: .875rem; overflow-wrap: anywhere; }
     .badge { display: inline-block; width: fit-content; border: 1px solid transparent; border-radius: .3rem; padding: .15rem .42rem; font-size: .875rem; background: #29363d; }
     .badge.attention { background: #392d21; border-color: #644b2e; color: var(--attention); }
@@ -28,6 +29,7 @@
     .host-button { color: var(--accent); font: 600 .95rem var(--mono); text-decoration: underline; text-underline-offset: .2em; }
     .host-row:hover td, .host-row:focus-within td { background: #202a2f; }
     .host-row .reason { margin-top: .25rem; }
+    .action-summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: .25rem .5rem; }
     .host-row time { display: block; font-size: .875rem; color: var(--muted); margin-top: .25rem; }
     .host-row td:first-child { width: 12%; }
     .host-row td:nth-child(2) { width: 28%; }
@@ -56,9 +58,13 @@
     <header class="top">
       <div>
         <pre class="logo" aria-hidden="true"><!-- MEDIC LOGO --></pre>
-        <h1>Fleet overview</h1>
+        <h1>Fleet overview, v2</h1>
       </div>
       <div class="snapshot">
+        <nav class="overview-nav" aria-label="Medic reports">
+          <a href="OVERVIEW.html">Overview 1</a>
+          <a href="OVERVIEW2.html" aria-current="page">Overview 2</a>
+        </nav>
         <p class="secondary">Report generated <time id="generated"></time></p>
         <label class="zone secondary">Timezone
           <select id="zone" class="control"><option value="local">Local</option><option value="utc">UTC</option></select>
@@ -114,7 +120,6 @@
         <table id="hosts">
           <thead><tr>
             <th scope="col"><button type="button" data-sort="label">Host</button></th>
-            <th scope="col"><button type="button" data-sort="outcome">Latest recorded outcome</button></th>
             <th scope="col"><button type="button" data-sort="time">Last action</button></th>
             <th scope="col"><button type="button" data-sort="resets30">iLO resets · 30d</button></th>
             <th scope="col"><button type="button" data-sort="remediations30">Check 2 remediations · 30d</button></th>
@@ -138,7 +143,7 @@
         <table><thead><tr><th scope="col">Verified iLO resets per host</th><th scope="col">Hosts</th></tr></thead><tbody id="distribution"></tbody></table>
       </details>
     </section>
-    <footer class="secondary">Moonshot Medic · <a href="OVERVIEW.html">Original overview</a></footer>
+    <footer class="secondary">Moonshot Medic</footer>
     <noscript><p class="empty">Enable JavaScript to browse the report snapshot.</p></noscript>
   </main>
   <script id="report-data" type="application/json"><!-- REPORT DATA --></script>
@@ -146,18 +151,22 @@
     const report = JSON.parse(document.querySelector("#report-data").textContent);
     const $ = selector => document.querySelector(selector);
     const locationState = new URLSearchParams(location.hash.slice(1));
-    const keys = ["label", "outcome", "time", "resets30", "remediations30", "failureStreak", "priority"];
+    const keys = ["label", "time", "resets30", "remediations30", "failureStreak", "priority"];
+    const savedSort = locationState.get("sort");
     const state = {
       search: locationState.get("q") || "",
       filter: "all",
-      sort: keys.includes(locationState.get("sort")) ? locationState.get("sort") : "priority",
-      ascending: locationState.get("direction") === "asc",
+      sort: keys.includes(savedSort) ? savedSort : "time",
+      ascending: keys.includes(savedSort) && locationState.get("direction") === "asc",
       zone: locationState.get("zone") === "utc" ? "utc" : "local",
       open: locationState.get("host") || "",
       day: report.trend.find(day => day.date === locationState.get("day"))?.date
         || report.trend.findLast(day => day.total > 0)?.date || report.trend.at(-1)?.date,
     };
-    const diagnosed = new Set((report.latestScan?.findings || []).map(finding => finding.host));
+    const findings = report.latestScan?.findings || [];
+    const diagnosed = new Set(findings.map(finding => finding.host));
+    const attentionFindings = new Set(findings.filter(finding =>
+      finding.outcome !== "Deferred" && finding.tone === "attention").map(finding => finding.host));
 
     function node(tag, text, className) {
       const element = document.createElement(tag);
@@ -249,14 +258,28 @@
       }
       $("#scan").append(stamp(latest.end));
       if (latest.health) $("#scan").append(" · " + latest.health);
-      if (!latest.findings.length) $("#findings").append(node("p", "No saved worker findings for this scan.", "secondary"));
-      for (const finding of latest.findings) {
+      const scanFindings = $("#findings");
+      if (!findings.length) scanFindings.append(node("p", "No saved worker findings for this scan.", "secondary"));
+      const deferrals = new Map();
+      for (const finding of findings) {
+        if (finding.outcome === "Deferred") {
+          const reason = finding.reason || "Reason unrecorded";
+          deferrals.set(reason, (deferrals.get(reason) || 0) + 1);
+          continue;
+        }
         const flag = node("div", undefined, "flag");
         const label = report.hosts.find(row => row.host === finding.host)?.label || finding.host;
         flag.append(hostWithOS(hostButton(label, finding.host, jumpToHost), label), badge(finding.outcome, finding.tone));
         if (finding.trigger) flag.append(node("p", actionLabel(finding), "reason"));
         if (finding.reason) flag.append(node("p", finding.reason, "reason"));
-        $("#findings").append(flag);
+        scanFindings.append(flag);
+      }
+      if (deferrals.size) {
+        const summary = node("ul", undefined, "scan-deferrals secondary");
+        for (const [reason, count] of [...deferrals].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))) {
+          summary.append(node("li", count + " deferred · " + reason));
+        }
+        scanFindings.append(summary);
       }
     }
 
@@ -310,7 +333,7 @@
 
     function priority(host) {
       if (host.backoff) return 0;
-      if (diagnosed.has(host.host) && host.latest?.tone === "attention") return 1;
+      if (attentionFindings.has(host.host)) return 1;
       if (host.recentFailure) return 2;
       if (host.resets30 + host.remediations30 >= 2) return 3;
       return 4;
@@ -326,7 +349,7 @@
           (b.resets30 + b.remediations30) - (a.resets30 + a.remediations30) || byHost(a, b);
       }
       const key = state.sort;
-      const value = host => key === "outcome" ? host.latest?.outcome : key === "time" ? host.lastAction?.time : host[key];
+      const value = host => key === "time" ? host.lastAction?.time : host[key];
       const av = value(a), bv = value(b);
       if (av == null || bv == null) return Number(av == null) - Number(bv == null) || byHost(a, b);
       const order = typeof av === "number" ? av - bv : av.localeCompare(bv, undefined, { numeric: true });
@@ -351,7 +374,7 @@
       const detail = node("tr", undefined, "host-detail");
       detail.id = "events-" + host.host;
       const cell = detail.insertCell();
-      cell.colSpan = 6;
+      cell.colSpan = 5;
       const hostname = node("p", undefined, "secondary");
       hostname.append(hostWithOS(node("span", host.host), host.label));
       cell.append(node("h3", host.label + " · Activity in the last 30 days"), hostname);
@@ -420,19 +443,14 @@
       control.dataset.host = host.host;
       control.setAttribute("aria-expanded", state.open === host.host);
       control.setAttribute("aria-controls", "events-" + host.host);
-      row.insertCell().append(hostWithOS(control, host.label));
-      const outcome = row.insertCell();
-      if (host.backoff) outcome.append(badge("In backoff", "attention"), " ");
-      if (host.latest) {
-        outcome.append(badge(host.latest.outcome, host.latest.tone));
-        if (host.latest.reason) outcome.append(node("p", host.latest.reason, "reason"));
-        if (!host.lastAction || host.latest.time !== host.lastAction.time) appendEventTime(outcome, host.latest);
-      } else {
-        outcome.append(node("span", "No recorded outcome", "muted"));
-      }
+      const hostCell = row.insertCell();
+      hostCell.append(hostWithOS(control, host.label));
+      if (host.backoff) hostCell.append(node("p", "In backoff", "reason attention-text"));
       const lastAction = row.insertCell();
       if (host.lastAction) {
-        lastAction.append(actionLabel(host.lastAction));
+        const summary = node("div", undefined, "action-summary");
+        summary.append(node("span", actionLabel(host.lastAction)), badge(host.lastAction.outcome, host.lastAction.tone));
+        lastAction.append(summary);
         appendEventTime(lastAction, host.lastAction);
       }
       else lastAction.append(node("span", "No recorded action", "muted"));
@@ -559,7 +577,7 @@
     for (const button of document.querySelectorAll("#hosts > thead button[data-sort]")) {
       button.addEventListener("click", () => {
         const key = button.dataset.sort;
-        state.ascending = key === state.sort ? !state.ascending : key === "label" || key === "outcome";
+        state.ascending = key === state.sort ? !state.ascending : key === "label";
         state.sort = key;
         renderHosts();
         saveView();

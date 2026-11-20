@@ -8,8 +8,6 @@
   <title>Moonshot Medic · Fleet history</title>
   <style>
 <!-- REPORT THEME -->
-    .overview-link { border-color: var(--accent); color: var(--accent); font-weight: 600; text-decoration: none; }
-    .overview-link:hover { background: #263b3b; }
     .inventory { margin: -.3rem 0 1rem; }
     .backoff { margin: 0; padding: .5rem 1.2rem .9rem; list-style: none; border-top: 1px solid var(--border); }
     .backoff li { padding: .35rem 0; }
@@ -34,10 +32,13 @@
     <header class="top">
       <div>
         <pre class="logo" aria-hidden="true"><!-- MEDIC LOGO --></pre>
-        <h1>Fleet history</h1>
+        <h1>Fleet overview</h1>
       </div>
       <div class="snapshot">
-        <a class="control overview-link" href="OVERVIEW2.html">Open OVERVIEW2</a>
+        <nav class="overview-nav" aria-label="Medic reports">
+          <a href="OVERVIEW.html" aria-current="page">Overview 1</a>
+          <a href="OVERVIEW2.html">Overview 2</a>
+        </nav>
         <p class="secondary">Report generated <!-- GENERATED --></p>
         <label class="zone secondary">Timezone
           <select id="zone" class="control"><option value="local">Local</option><option value="utc">UTC</option></select>
