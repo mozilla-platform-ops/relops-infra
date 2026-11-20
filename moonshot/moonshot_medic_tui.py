@@ -328,6 +328,8 @@ def display(screen, process: subprocess.Popen, status_file: Path, errors: MedicE
                 )
                 failure = errors.latest if returncode and status.get("phase") != "Recovery preview complete" else ""
                 activity = activity_lines(status, content_width, failure, failure_time)
+                if max(0, offsets[1]) + (logs_height - 2) >= len(activity):
+                    follow = True
                 offsets[1], pages[1] = draw_pane(
                     screen, panes[1], "Logs" if follow else "Logs (paused)",
                     activity, offsets[1],

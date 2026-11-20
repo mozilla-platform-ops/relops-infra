@@ -412,6 +412,41 @@ def test_tui_keeps_panes_and_phase_row_stable_through_startup_and_scans(
     assert all(len(row[2]) <= width - 4 for row in phase_rows)
 
 
+@pytest.mark.parametrize("scroll_down", ["KEY_DOWN", "KEY_NPAGE"])
+def test_tui_resumes_log_follow_at_the_end(monkeypatch, tmp_path, scroll_down):
+    import moonshot_medic_tui as tui
+
+    status = tmp_path / "status.json"
+    activity = [{"time": "", "host": "", "message": f"Entry {i}", "tone": ""} for i in range(7)]
+    status.write_text(json.dumps({"activity": activity[:-1]}))
+    screen = Mock()
+    screen.getmaxyx.return_value = (16, 84)
+    log_pane = Mock()
+    screen.derwin.side_effect = lambda height, width, y, x: log_pane if y else Mock()
+    frames = []
+    keys = iter([ord("\t"), tui.curses.KEY_UP, getattr(tui.curses, scroll_down), -1, ord("q")])
+
+    def advance():
+        frames.append([call.args[2].strip() for call in log_pane.addnstr.call_args_list])
+        log_pane.addnstr.reset_mock()
+        key = next(keys)
+        if key == -1:
+            status.write_text(json.dumps({"activity": activity}))
+        return key
+
+    screen.getch.side_effect = advance
+    process = Mock()
+    process.poll.return_value = 0
+    monkeypatch.setattr(tui.curses, "curs_set", lambda *_: None)
+
+    assert tui.display(screen, process, status, Mock(), tui.StopRequest()) == 0
+    assert frames[2:] == [
+        ["Logs (paused)", "Entry 3", "Entry 4"],
+        ["Logs", "Entry 4", "Entry 5"],
+        ["Logs", "Entry 5", "Entry 6"],
+    ]
+
+
 @pytest.mark.parametrize("waiting", [False, True])
 @pytest.mark.parametrize("size", [(15, 84), (10, 84)])
 def test_tui_rescan_key_only_signals_during_countdown(monkeypatch, tmp_path, waiting, size):
