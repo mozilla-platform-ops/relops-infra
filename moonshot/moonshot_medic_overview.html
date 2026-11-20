@@ -166,6 +166,19 @@
       return element;
     }
 
+    function chartHost(label, count) {
+      const host = node("span", undefined, "host-with-os");
+      host.append(node("span", count > 1 ? label + " ×" + count : label));
+      const os = data.hostOS?.[label];
+      if (os) {
+        const badge = node("span", os.label, "os-badge");
+        badge.dataset.os = os.label;
+        badge.title = "Last observed in diagnostics at " + os.observed_at;
+        host.append(badge);
+      }
+      return host;
+    }
+
     function renderChart(chartId, detailId, items, preferredIndex) {
       const chart = $(chartId);
       const detail = $(detailId);
@@ -179,7 +192,14 @@
           control.setAttribute("aria-pressed", position === index);
         }
         detail.replaceChildren(node("strong", item.title));
-        if (item.hosts.length) detail.append(node("p", item.hosts.join(", "), "secondary"));
+        if (item.hosts.length) {
+          const hosts = node("p", undefined, "secondary");
+          for (const [position, [label, count]] of item.hosts.entries()) {
+            if (position) hosts.append(", ");
+            hosts.append(chartHost(label, count));
+          }
+          detail.append(hosts);
+        }
       }
       for (const [index, item] of items.entries()) {
         const control = node("button", undefined, "bar");
@@ -208,8 +228,7 @@
       count: day.total,
       title: day.date + " UTC · " + day.total + (day.total === 1 ? " reset" : " resets"),
       label: index % 7 === 0 ? day.date.slice(5) : "",
-      hosts: Object.entries(day.hosts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-        .map(([host, count]) => count > 1 ? host + " ×" + count : host),
+      hosts: Object.entries(day.hosts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),
     }));
     const buckets = data.distribution.map(bucket => ({
       key: bucket.resets,
@@ -217,7 +236,7 @@
       title: bucket.resets + (bucket.resets === 1 ? " reset" : " resets") + " · " +
         bucket.count + (bucket.count === 1 ? " host" : " hosts"),
       label: bucket.resets,
-      hosts: bucket.hosts,
+      hosts: bucket.hosts.map(host => [host, 1]),
     }));
     const lastActive = days.findLastIndex(day => day.count > 0);
     renderChart("#reset-chart", "#reset-detail", days, lastActive >= 0 ? lastActive : days.length - 1);

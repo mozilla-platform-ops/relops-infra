@@ -4,10 +4,75 @@ import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import moonshot_medic_overview2 as overview
+from moonshot_medic_tui import STATUS_ENV
 
 HOST = "t-linux64-ms-126.test.releng.mdc1.mozilla.com"
+
+
+def test_both_overviews_use_the_latest_saved_os_observation(monkeypatch, tmp_path):
+    medic = overview.medic
+    day = tmp_path / "20261118"
+    day.mkdir()
+    for hour, version in ((10, "18.04"), (11, "24.04"), (12, "")):
+        (day / f"20261118T{hour}0000Z-ms126.md").write_text(
+            '# Moonshot Hang Report\n\n## os-release\n\n```\n'
+            + (f'NAME="Ubuntu"\nVERSION_ID="{version}"\n' if version else "[unavailable]\n")
+            + '```\n\n## uptime\n',
+        )
+    monkeypatch.setattr(medic, "RESULTS_BASE", tmp_path)
+    monkeypatch.setattr(medic, "OVERVIEW_HTML_FILE", tmp_path / "OVERVIEW.html")
+    monkeypatch.setattr(medic, "FAVICON_FILE", tmp_path / "favicon.svg")
+    monkeypatch.setattr(medic, "_report_fleet_hosts", lambda: (set(), ""))
+    state = {"hosts": {HOST: {}}}
+
+    data = overview.build_report(tmp_path, state, {HOST}, dt.datetime(2026, 11, 18, 13, tzinfo=dt.UTC))
+    medic.update_overview_html(state)
+
+    assert data["hostOS"] == {"ms126": {"label": "Ubuntu 24.04", "observed_at": "2026-11-18T11:00:00+00:00"}}
+    html = (tmp_path / "OVERVIEW.html").read_text()
+    assert '<span class="os-badge" data-os="Ubuntu 24.04"' in html
+    assert 'title="Last observed in diagnostics at 2026-11-18T11:00:00+00:00">Ubuntu 24.04</span>' in html
+    assert '<span class="os-badge" data-os="Ubuntu 18.04"' not in html
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+def test_confirmed_auto_scan_refreshes_both_reports_without_check_1_hosts(monkeypatch, tmp_path, fresh):
+    medic = overview.medic
+    results = tmp_path / "results"
+    monkeypatch.setattr(sys, "argv", ["moonshot_medic.py", "--auto", "--confirm", "--once", "--tui", "-q"])
+    monkeypatch.setenv(STATUS_ENV, str(tmp_path / "tui-status.json"))
+    monkeypatch.setattr(medic, "_tui_status_path", None)
+    monkeypatch.setattr(medic, "_tui_status", {})
+    monkeypatch.setattr(medic.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(medic, "FLEETROLL_DIR", tmp_path)
+    monkeypatch.setattr(medic, "RESULTS_BASE", results)
+    monkeypatch.setattr(medic, "STATE_FILE", results / "state.json")
+    monkeypatch.setattr(medic, "OVERVIEW_HTML_FILE", results / "OVERVIEW.html")
+    monkeypatch.setattr(medic, "FAVICON_FILE", results / "favicon.svg")
+    monkeypatch.setattr(medic, "_voice_enabled", False)
+    monkeypatch.setattr(medic, "_voice_all_hours", False)
+    monkeypatch.setattr(medic, "check_fleetroll_data_freshness", lambda *_: fresh)
+    monkeypatch.setattr(medic, "fleetroll_worker_snapshot", lambda *_, **__: [])
+    monkeypatch.setattr(medic, "check_fleet_reset_circuit_breaker", lambda *_: (True, [], ""))
+    monkeypatch.setattr(medic, "show_unnoted_unhealthy_moonshots",
+                        lambda: medic.info("Check 2 — Fleetroll health: 0 hosts matched"))
+    monkeypatch.setattr(medic, "report_worker_diagnoses", lambda *_: True)
+
+    with pytest.raises(SystemExit) as exc:
+        medic.main()
+
+    assert exc.value.code == (0 if fresh else 1)
+    assert "Report generated" in (results / "OVERVIEW.html").read_text()
+    snapshot = (results / "OVERVIEW2.html").read_text()
+    payload = snapshot.split('<script id="report-data" type="application/json">', 1)[1].split("</script>", 1)[0]
+    scan = json.loads(payload)["latestScan"]
+    assert scan["mode"] == "confirmed auto"
+    assert scan["end"] >= scan["start"]
+    assert scan["health"] == ("0 hosts matched" if fresh else "Skipped — Fleetroll freshness check failed")
 
 
 def test_report_combines_saved_actions_with_completed_scan_findings(tmp_path):

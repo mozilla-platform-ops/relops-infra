@@ -205,6 +205,19 @@
       return button;
     }
 
+    function hostWithOS(host, label) {
+      const container = node("span", undefined, "host-with-os");
+      container.append(host);
+      const os = report.hostOS?.[label];
+      if (os) {
+        const badge = node("span", os.label, "os-badge");
+        badge.dataset.os = os.label;
+        badge.title = "Last observed in diagnostics at " + os.observed_at;
+        container.append(badge);
+      }
+      return container;
+    }
+
     function jumpToHost(host) {
       state.search = report.hosts.find(row => row.host === host)?.label || host;
       state.filter = "all";
@@ -225,7 +238,8 @@
         const flag = node("div", undefined, "flag");
         const retry = node("span", "Retry after ", "secondary");
         retry.append(stamp(host.backoff));
-        flag.append(hostButton(host.label, host.host, jumpToHost), retry, node("p", host.backoffReason, "reason"));
+        flag.append(hostWithOS(hostButton(host.label, host.host, jumpToHost), host.label), retry,
+          node("p", host.backoffReason, "reason"));
         container.append(flag);
       }
       const latest = report.latestScan;
@@ -239,7 +253,7 @@
       for (const finding of latest.findings) {
         const flag = node("div", undefined, "flag");
         const label = report.hosts.find(row => row.host === finding.host)?.label || finding.host;
-        flag.append(hostButton(label, finding.host, jumpToHost), badge(finding.outcome, finding.tone));
+        flag.append(hostWithOS(hostButton(label, finding.host, jumpToHost), label), badge(finding.outcome, finding.tone));
         if (finding.trigger) flag.append(node("p", actionLabel(finding), "reason"));
         if (finding.reason) flag.append(node("p", finding.reason, "reason"));
         $("#findings").append(flag);
@@ -338,7 +352,15 @@
       detail.id = "events-" + host.host;
       const cell = detail.insertCell();
       cell.colSpan = 6;
-      cell.append(node("h3", host.label + " · Activity in the last 30 days"), node("p", host.host, "secondary"));
+      const hostname = node("p", undefined, "secondary");
+      hostname.append(hostWithOS(node("span", host.host), host.label));
+      cell.append(node("h3", host.label + " · Activity in the last 30 days"), hostname);
+      const os = report.hostOS?.[host.label];
+      if (os) {
+        const observed = node("p", "OS last observed in diagnostics ", "secondary");
+        observed.append(stamp(os.observed_at));
+        cell.append(observed);
+      }
       if (!host.events.length) {
         cell.append(node("p", "No recorded events in this window.", "empty"));
         return detail;
@@ -398,7 +420,7 @@
       control.dataset.host = host.host;
       control.setAttribute("aria-expanded", state.open === host.host);
       control.setAttribute("aria-controls", "events-" + host.host);
-      row.insertCell().append(control);
+      row.insertCell().append(hostWithOS(control, host.label));
       const outcome = row.insertCell();
       if (host.backoff) outcome.append(badge("In backoff", "attention"), " ");
       if (host.latest) {
@@ -460,7 +482,7 @@
       for (const action of [...day.actions].sort((a, b) => b.count - a.count || byHost(a, b))) {
         const item = node("li");
         const description = [checkLabel(action), actionLabel(action)].join(" · ");
-        item.append(hostButton(action.label, action.host, jumpToHost),
+        item.append(hostWithOS(hostButton(action.label, action.host, jumpToHost), action.label),
           node("span", " · " + description + (action.count > 1 ? " ×" + action.count : ""), "secondary"));
         contributors.append(item);
       }

@@ -714,6 +714,44 @@ def action_report_rows(hosts: dict) -> list[list[str]]:
     return rows
 
 
+def last_observed_host_os(root: Path) -> dict[str, dict[str, str]]:
+    """Find the newest saved OS release observation for each Moonshot label."""
+    observations = {}
+    reports = sorted(root.glob("20*/*-ms*.md"), key=lambda path: path.name, reverse=True)
+    for report in reports:
+        match = re.fullmatch(r"(\d{8}T\d{6}Z)-(ms\d+)\.md", report.name)
+        if not match or match[2] in observations:
+            continue
+        try:
+            observed_at = datetime.datetime.strptime(match[1], "%Y%m%dT%H%M%SZ").replace(tzinfo=datetime.UTC)
+            with report.open(encoding="utf-8", errors="replace") as stream:
+                if stream.readline().strip() != "# Moonshot Hang Report":
+                    continue
+                for line in stream:
+                    if line.strip() == "## os-release":
+                        break
+                    if line.startswith("## uptime"):
+                        break
+                else:
+                    continue
+                if line.strip() != "## os-release":
+                    continue
+                release = {}
+                for line in stream:
+                    if line.startswith("## "):
+                        break
+                    key, _, value = line.strip().partition("=")
+                    if key in {"NAME", "VERSION_ID", "PRETTY_NAME"}:
+                        release[key] = value.strip("\"'")
+        except (OSError, ValueError):
+            continue
+        name = release.get("NAME")
+        display = " ".join(filter(None, (name, release.get("VERSION_ID")))) if name else release.get("PRETTY_NAME")
+        if display:
+            observations[match[2]] = {"label": display, "observed_at": observed_at.isoformat()}
+    return observations
+
+
 ACTION_REPORT_HEADERS = [
     "Host", "Action", "Recorded Attempts", "Successes", "Failures", "Last Attempt",
     "Last Outcome", "Skew Before (s)", "Verified Skew (s)",
@@ -819,6 +857,14 @@ def update_favicon(path: Path | None = None) -> None:
 def update_overview_html(state: dict) -> None:
     now = datetime.datetime.now(datetime.timezone.utc)
     hosts = state.get("hosts", {})
+    host_os = last_observed_host_os(RESULTS_BASE)
+
+    def os_badge(label: str) -> str:
+        if observation := host_os.get(label):
+            title = f'Last observed in diagnostics at {observation["observed_at"]}'
+            os_label = escape(observation["label"])
+            return f' <span class="os-badge" data-os="{os_label}" title="{escape(title)}">{os_label}</span>'
+        return ""
 
     def fmt(s: str | None) -> str:
         if not s:
@@ -890,6 +936,7 @@ def update_overview_html(state: dict) -> None:
     if skipped:
         backoff = '<ul class="backoff">' + "".join(
             f'<li><strong class="mono">{escape(short_label(fqdn))}</strong> '
+            f'{os_badge(short_label(fqdn))} '
             f'<span class="secondary">({escape(fqdn)})</span> · '
             f'{entry.get("consecutive_reset_failures", 0)} consecutive failures · '
             f'Retry after {fmt(entry.get("skip_until"))} · '
@@ -914,7 +961,7 @@ def update_overview_html(state: dict) -> None:
         row_class = ' class="skip"' if fqdn in skipped else ""
         host_rows.append(
             f'<tr data-host="{escape(fqdn.lower())}"{row_class}>'
-            f'<td class="mono">{escape(short_label(fqdn))}</td>'
+            f'<td class="mono">{escape(short_label(fqdn))}{os_badge(short_label(fqdn))}</td>'
             f'<td>{entry.get("total_resets", 0)}</td>'
             f'<td>{entry.get("total_failures", 0)}</td>'
             f'<td class="{tone}">{streak}</td>'
@@ -930,6 +977,7 @@ def update_overview_html(state: dict) -> None:
     action_rows = []
     for row in action_report_rows(hosts):
         cells = [fmt(value) if i == 5 else escape(value) for i, value in enumerate(row)]
+        cells[0] += os_badge(row[0])
         action_rows.append("<tr>" + "".join(f"<td>{value}</td>" for value in cells) + "</tr>")
     action_table = table("action-table", ACTION_REPORT_HEADERS, action_rows, "No clock repairs or diagnostics recorded.")
     daily_table = table("daily-table", ["UTC date", "Hosts collected"], [
@@ -938,7 +986,7 @@ def update_overview_html(state: dict) -> None:
     ], "No daily diagnostics counts recorded.")
 
     # Embed data as JSON and keep the report usable as a local HTML file.
-    data = json.dumps({"days": chart_data, "distribution": hist_data}).replace("<", r"\u003c")
+    data = json.dumps({"days": chart_data, "distribution": hist_data, "hostOS": host_os}).replace("<", r"\u003c")
     html = (SCRIPT_DIR / "moonshot_medic_overview.html").read_text(encoding="utf-8")
     for name, value in {
         "REPORT THEME": REPORT_THEME_FILE.read_text(encoding="utf-8"),
@@ -2766,6 +2814,20 @@ def main() -> None:
     while True:
         with scan_log(mode, recovery_label=recovery_label) as run_dir:
             last_failed, stop = run_scan(first_run, run_dir)
+
+        if args.auto:
+            _tui_phase("Refreshing overview reports")
+            try:
+                update_overview_html(load_state())
+            except Exception as exc:
+                warn(f"Could not refresh OVERVIEW.html: {exc}")
+            try:
+                from moonshot_medic_overview2 import generate_report
+
+                generate_report(RESULTS_BASE, _configured_linux_moonshot_hosts())
+            except Exception as exc:
+                warn(f"Could not refresh OVERVIEW2.html: {exc}")
+
         if stop:
             break
         first_run = False

@@ -32,6 +32,10 @@ button { cursor: pointer; }
 .muted { color: var(--muted); }
 .secondary { color: var(--muted); font-size: .875rem; }
 .mono, time, .number { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.os-badge { display: inline-block; border: 1px solid var(--border); border-radius: .3rem; padding: .08rem .35rem; color: var(--muted); font: .75rem system-ui, sans-serif; white-space: nowrap; }
+.os-badge[data-os="Ubuntu 18.04"] { background: #2c2620; border-color: #554838; color: #c7b59b; }
+.os-badge[data-os="Ubuntu 24.04"] { background: #202c2b; border-color: #39534f; color: #a1c0ba; }
+.host-with-os { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: .25rem .4rem; }
 .top { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; padding-bottom: 1.6rem; }
 .logo { color: var(--accent); overflow: hidden; font: 700 clamp(.55rem, 1.5vw, .83rem)/1.18 var(--mono); margin: 0 0 .85rem; }
 .snapshot { display: grid; gap: .4rem; justify-items: end; }

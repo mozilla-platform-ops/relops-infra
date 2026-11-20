@@ -362,6 +362,7 @@ def build_report(root: Path, state: dict, inventory: set[str], now: dt.datetime)
         })
     return {
         "generated": utc_time(now.isoformat()),
+        "hostOS": medic.last_observed_host_os(root),
         "hosts": rows,
         "stats": {"backoff": sum(bool(row["backoff"]) for row in rows),
                   "resets24": counts[24]["ilo"], "resets7": counts[168]["ilo"],
